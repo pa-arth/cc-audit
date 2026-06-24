@@ -60,6 +60,26 @@ export function renderReport(r: AuditResult, opts: { rows?: number } = {}): stri
   out.push(`      — the rest is FIXED system prompt + tool schemas you can't trim; see /context`);
   const mcpDesc = a.mcpDeferred ? 'deferred by default (~$0 standing)' : 'eagerly loaded';
   out.push(`    MCP: ${a.mcpServerCount} servers · ${mcpDesc} · invoked in ${pct(a.mcpInvokedRate)} of sessions`);
+  if (a.conditionalContext.length > 0) {
+    out.push(`    conditional context — a CLAUDE.md tells Claude to read these (loads only when it does,`);
+    out.push(`    so NOT in the total above):`);
+    for (const c of a.conditionalContext.slice(0, rows)) {
+      const where =
+        c.source === 'skill'
+          ? `skill: ${c.skill}`
+          : c.source === 'global-claude-md'
+            ? 'global CLAUDE.md'
+            : 'project CLAUDE.md';
+      // Detected deterministically; confirmed from transcripts only when the project
+      // has enough sessions to make a read-rate meaningful — otherwise say so plainly.
+      const evidence =
+        c.observedReadRate === null
+          ? `detected; too few sessions to confirm`
+          : `read in ${pct(c.observedReadRate)} of sessions` +
+            (c.observedMedianFirstTurn !== null ? ` (median turn ${c.observedMedianFirstTurn})` : '');
+      out.push(`      ${pad(c.file, 22)} ${padL(c.tokens.toLocaleString() + ' tok', 9)}  ${evidence}  ← ${where}`);
+    }
+  }
   line();
 
   out.push('  2. SLASH-COMMAND / SKILL LEAK  (low tradeoff — restructure, fork/split, or pin)');

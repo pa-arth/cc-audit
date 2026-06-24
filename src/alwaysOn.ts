@@ -11,8 +11,9 @@
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
+import { claudeMdTokensWithImports, countTokens } from './configFiles.js';
+import { detectConditionalContext, type ConditionalContextItem } from './conditionalContext.js';
 import { getAnthropicPricing } from './vendor/pricing.js';
-import { CharCountTokenizer } from './vendor/tokenizer.js';
 import type { Session } from './model.js';
 
 export interface AlwaysOnTax {
@@ -47,6 +48,12 @@ export interface AlwaysOnTax {
   /** Share of sessions that actually invoked an MCP tool (mcp__ prefix). */
   mcpInvokedRate: number;
 
+  /** CONDITIONAL context: files a CLAUDE.md instructs Claude to read ("read ERRORS.md
+   *  before…"). NOT folded into recoverable — these load only when the instruction
+   *  fires, so reporting them as always-on would repeat the over-promise mistake.
+   *  Reported separately, with an empirically observed read-rate when measurable. */
+  conditionalContext: ConditionalContextItem[];
+
   note: string;
 }
 
@@ -54,16 +61,6 @@ function median(nums: number[]): number {
   if (nums.length === 0) return 0;
   const s = [...nums].sort((a, b) => a - b);
   return s[Math.floor(s.length / 2)]!;
-}
-
-const tokenizer = new CharCountTokenizer();
-
-function countFileTokens(path: string): number {
-  try {
-    return tokenizer.count(readFileSync(path, 'utf8'));
-  } catch {
-    return 0;
-  }
 }
 
 /** Sum of `name: description` tokens for every SKILL.md directly under a skills dir.
@@ -89,7 +86,7 @@ function skillListingTokens(skillsDir: string): { tokens: number; count: number 
     }
     const name = /^name:\s*(.+)$/m.exec(txt)?.[1] ?? e.name;
     const desc = /^description:\s*(.+)$/m.exec(txt)?.[1] ?? '';
-    tokens += tokenizer.count(`${name}: ${desc}`);
+    tokens += countTokens(`${name}: ${desc}`);
     count += 1;
   }
   return { tokens, count };
@@ -121,7 +118,8 @@ export function computeAlwaysOn(sessions: Session[]): AlwaysOnTax {
   let mcpSessions = 0;
 
   // Static, machine-level config (same for every session).
-  const globalClaudeMdTokens = countFileTokens(join(homedir(), '.claude', 'CLAUDE.md'));
+  const claudeDir = join(homedir(), '.claude');
+  const globalClaudeMdTokens = claudeMdTokensWithImports(join(claudeDir, 'CLAUDE.md'), [claudeDir]);
   const userSkills = skillListingTokens(join(homedir(), '.claude', 'skills'));
 
   // Project CLAUDE.md, turn-weighted by cwd. Reading per distinct cwd (cached) and
@@ -141,7 +139,8 @@ export function computeAlwaysOn(sessions: Session[]): AlwaysOnTax {
 
     let projMd = 0;
     if (s.cwd) {
-      projMd = projectMdByCwd.get(s.cwd) ?? countFileTokens(join(s.cwd, 'CLAUDE.md'));
+      projMd =
+        projectMdByCwd.get(s.cwd) ?? claudeMdTokensWithImports(join(s.cwd, 'CLAUDE.md'), [s.cwd, claudeDir]);
       projectMdByCwd.set(s.cwd, projMd);
     }
 
@@ -190,6 +189,7 @@ export function computeAlwaysOn(sessions: Session[]): AlwaysOnTax {
     mcpServerCount: countMcpServers(),
     mcpDeferred,
     mcpInvokedRate: sessions.length ? mcpSessions / sessions.length : 0,
+    conditionalContext: detectConditionalContext(sessions),
     note:
       'Recoverable = CLAUDE.md + skill listings (measured from your files), cache-read ' +
       'into every turn — the part you can actually trim. The larger OBSERVED standing ' +

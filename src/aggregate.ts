@@ -14,7 +14,10 @@ import type { FluencySignals } from './fluency.js';
 // model-invoked-skills list; per-command context-tax fields (contextTaxRatio,
 // contextHeavy, isSystemCommand); and the always-on overhaul (observed-vs-recoverable
 // split, per-component CLAUDE.md/skill tokens, MCP deferred + invoked rate).
-export const AGGREGATE_SCHEMA_VERSION = 2;
+// v3 additions: conditionalContext — COUNTS ONLY (how many "read X" config instructions
+// were found, their total token weight, and how many were empirically confirmed). The
+// referenced filenames + skill/project names stay LOCAL; only aggregate numbers leave.
+export const AGGREGATE_SCHEMA_VERSION = 3;
 
 // Well-known public command/skill names kept verbatim; everything else is hashed
 // so a custom name like `acme-deploy` can't leak project/company info.
@@ -130,6 +133,17 @@ export const AggregateRecordSchema = z.object({
     mcpDeferred: z.boolean(),
     mcpInvokedRate: z.number(),
   }),
+  // Counts only — never the referenced filenames or the skill/project they came from.
+  conditionalContext: z.object({
+    /** Distinct "read X"-style config instructions detected (CLAUDE.md + skill bodies). */
+    refCount: z.number(),
+    /** Total tokens those referenced files would add when the instructions are followed. */
+    totalTokens: z.number(),
+    /** How many had enough sessions to confirm empirically (observedReadRate !== null). */
+    confirmedCount: z.number(),
+    /** Of the confirmed, how many were actually read in ≥50% of relevant sessions. */
+    followedCount: z.number(),
+  }),
   dataQuality: z.object({ unpricedShare: z.number() }),
 });
 export type AggregateRecord = z.infer<typeof AggregateRecordSchema>;
@@ -192,6 +206,12 @@ export function buildAggregateRecord(
       mcpServerCount: alwaysOn.mcpServerCount,
       mcpDeferred: alwaysOn.mcpDeferred,
       mcpInvokedRate: alwaysOn.mcpInvokedRate,
+    },
+    conditionalContext: {
+      refCount: alwaysOn.conditionalContext.length,
+      totalTokens: alwaysOn.conditionalContext.reduce((n, c) => n + c.tokens, 0),
+      confirmedCount: alwaysOn.conditionalContext.filter((c) => c.observedReadRate !== null).length,
+      followedCount: alwaysOn.conditionalContext.filter((c) => (c.observedReadRate ?? 0) >= 0.5).length,
     },
     dataQuality: { unpricedShare: spend.unpricedShare },
   });
