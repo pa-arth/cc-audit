@@ -29,10 +29,13 @@ export interface AlwaysOnTax {
   recoverableTokensPerTurn: number;
   /** Estimated monthly spend on the recoverable config tax — the honest "you can cut this". */
   recoverableMonthlyUsd: number;
-  /** Per-component monthly $ so each line maps to a file to edit. */
+  /** Machine-level memory: ~/.claude/CLAUDE.md (+ .local + managed policy), @imports
+   *  resolved. Field name kept for aggregate compatibility; it's the global memory set. */
   globalClaudeMdTokens: number;
   globalClaudeMdUsd: number;
-  /** Turn-weighted project CLAUDE.md tokens (handles worktree duplicates correctly). */
+  /** Turn-weighted project memory: every CLAUDE.md + CLAUDE.local.md from cwd up to the
+   *  filesystem root (CC's directory walk), not just the file at cwd. Field name kept
+   *  for aggregate compatibility; handles worktree/subdir cwds correctly. */
   projectClaudeMdTokens: number;
   projectClaudeMdUsd: number;
   /** Sum of skill name+description tokens that load every turn (a FLOOR — user skills
@@ -192,7 +195,8 @@ export function computeAlwaysOn(sessions: Session[]): AlwaysOnTax {
     mcpInvokedRate: sessions.length ? mcpSessions / sessions.length : 0,
     conditionalContext: detectConditionalContext(sessions),
     note:
-      'Recoverable = CLAUDE.md + skill listings (measured from your files), cache-read ' +
+      'Recoverable = project memory (every CLAUDE.md + CLAUDE.local.md from cwd up to the ' +
+      'repo root) + global memory + skill listings, measured from your files and cache-read ' +
       'into every turn — the part you can actually trim. The larger OBSERVED standing ' +
       'context is mostly fixed system prompt + tool schemas you cannot cut. Run /context ' +
       'in a session for the authoritative live breakdown.',

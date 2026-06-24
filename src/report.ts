@@ -44,10 +44,10 @@ export function renderReport(r: AuditResult, opts: { rows?: number } = {}): stri
   const a = r.alwaysOn;
   out.push(`    recoverable config (read every turn) — what you can actually trim:`);
   out.push(
-    `      project CLAUDE.md   ${padL(Math.round(a.projectClaudeMdTokens).toLocaleString() + ' tok', 9)}  ${padL(usd(a.projectClaudeMdUsd) + '/mo', 9)}  ← trim the repo's CLAUDE.md`,
+    `      project memory     ${padL(Math.round(a.projectClaudeMdTokens).toLocaleString() + ' tok', 9)}  ${padL(usd(a.projectClaudeMdUsd) + '/mo', 9)}  ← CLAUDE.md + .local, cwd up to repo root`,
   );
   out.push(
-    `      global CLAUDE.md    ${padL(a.globalClaudeMdTokens.toLocaleString() + ' tok', 9)}  ${padL(usd(a.globalClaudeMdUsd) + '/mo', 9)}  → ~/.claude/CLAUDE.md`,
+    `      global memory      ${padL(a.globalClaudeMdTokens.toLocaleString() + ' tok', 9)}  ${padL(usd(a.globalClaudeMdUsd) + '/mo', 9)}  → ~/.claude/CLAUDE.md (+ .local, managed policy)`,
   );
   out.push(
     `      skill listings     ≥${padL(a.skillDescriptionTokens.toLocaleString() + ' tok', 8)}  ${padL(usd(a.skillDescriptionUsd) + '/mo', 9)}  ${a.skillCount} user skills load every turn`,
