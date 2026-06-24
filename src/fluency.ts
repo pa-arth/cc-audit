@@ -139,6 +139,62 @@ function crudeLocalScore(f: CrudeInputs): number {
   return Math.round((100 * goodDirections.filter(Boolean).length) / goodDirections.length);
 }
 
+// The 7 signals scoped to a SINGLE session — the labelable unit for calibration
+// (`cc-audit label-fluency`). Per-engineer aggregates give one data point; per-
+// session gives ~one-per-real-session, enough to fit weights. Plan/compact are
+// binary at this granularity; turns/premium/diversity/subagent are per-session.
+export interface SessionFluencySignals {
+  planModeRate: number; // 0|1 — did THIS session use plan mode
+  medianTurnsPerTask: number;
+  p90TurnsPerTask: number;
+  premiumTurnShare: number;
+  modelDiversity: number;
+  subagentUsageRate: number;
+  contextBloatRate: number; // 0|1 — did THIS session use /compact
+}
+
+/** Own (non-delegated) turn count — a session is "substantive" past the threshold. */
+export function sessionOwnTurns(session: Session): number {
+  return session.spans.reduce((sum, s) => sum + (s.isSidechain ? 0 : s.turns.length), 0);
+}
+export function isSubstantiveSession(session: Session): boolean {
+  return sessionOwnTurns(session) >= SUBSTANTIVE_MIN_TURNS;
+}
+
+export function computeSessionFluencySignals(session: Session): SessionFluencySignals {
+  const turnsPerTask: number[] = [];
+  const models = new Set<string>();
+  let premiumTurns = 0;
+  let totalTurns = 0;
+  let subagentCost = 0;
+  let totalCost = 0;
+  let usedCompact = false;
+  for (const span of session.spans) {
+    if (span.command === 'compact') usedCompact = true;
+    if (!span.isSidechain) turnsPerTask.push(span.turns.length);
+    for (const t of span.turns) {
+      const usd = turnCostUsd(t.model, t.usage).usd;
+      totalCost += usd;
+      if (t.model) models.add(t.model);
+      if (span.isSidechain) subagentCost += usd;
+      else {
+        totalTurns += 1;
+        if (isPremiumModel(t.model)) premiumTurns += 1;
+      }
+    }
+  }
+  turnsPerTask.sort((a, b) => a - b);
+  return {
+    planModeRate: session.modes.some((m) => PLAN_MODE_VALUES.has(m)) ? 1 : 0,
+    medianTurnsPerTask: percentile(turnsPerTask, 50),
+    p90TurnsPerTask: percentile(turnsPerTask, 90),
+    premiumTurnShare: totalTurns ? premiumTurns / totalTurns : 0,
+    modelDiversity: models.size,
+    subagentUsageRate: totalCost ? subagentCost / totalCost : 0,
+    contextBloatRate: usedCompact ? 1 : 0,
+  };
+}
+
 /**
  * Coarse local self-band for display. Deliberately rough — the authoritative,
  * cohort-relative band comes from the hosted `--open` upload. Labeled as such in

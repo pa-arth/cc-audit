@@ -11,6 +11,8 @@
 //   cc-audit                  full local report, then interactive right-size + share
 //   cc-audit label [--out F]  judge real sessions → a sheet you hand-label (calibration)
 //   cc-audit score <F>        score your filled sheet vs the judge (the USEFUL gate)
+//   cc-audit label-fluency    sessions → a sheet you rate 0-100 (fluency calibration)
+//   cc-audit score-fluency <F> fit the server fluency shapes to your ratings
 //   cc-audit fix              turn recommendations into reviewable patches
 
 import { readFileSync, writeFileSync } from 'node:fs';
@@ -21,6 +23,7 @@ import { readConsent, writeConsent } from './consent.js';
 import { buildFootprints } from './footprint.js';
 import { judgeFootprints, postReport, type RightSizingResult } from './judgeClient.js';
 import { buildLabelSheet, renderScore, scoreLabels, type LabelRow } from './label.js';
+import { buildFluencySheet, fitFluencyWeights, renderFluencyFit, type FluencyLabelRow } from './labelFluency.js';
 import { renderFix, runFix } from './fix.js';
 import { machineAnonId, openURL } from './open.js';
 import { isPremiumModel } from './pricing.js';
@@ -198,6 +201,36 @@ function runScore(file: string): void {
   process.stdout.write(`${renderScore(scoreLabels(rows))}\n`);
 }
 
+async function runLabelFluency(args: Args): Promise<void> {
+  const interactive = isInteractive(args.json);
+  await ensureLocalReadConsent(interactive);
+  const sessions = loadSessionsOrExit(args, interactive);
+  const sheet = buildFluencySheet(sessions, args.n ?? 60);
+  if (sheet.length === 0) {
+    process.stderr.write('No substantive sessions to label (each needs ≥3 of your own turns).\n');
+    process.exit(1);
+  }
+  const out = args.out ?? 'cc-audit-fluency-labels.json';
+  writeFileSync(out, `${JSON.stringify(sheet, null, 2)}\n`);
+  process.stdout.write(
+    `\nWrote ${sheet.length} sessions to ${out}.\n` +
+      '  Open it and set "trueFluency" (0-100) on each row — your judgment of how\n' +
+      '  fluently AI was used in that session. (Leave a row null to skip it.)\n' +
+      `  Then run:  cc-audit score-fluency ${out}\n`,
+  );
+}
+
+function runScoreFluency(file: string): void {
+  let rows: FluencyLabelRow[];
+  try {
+    rows = JSON.parse(readFileSync(file, 'utf8')) as FluencyLabelRow[];
+  } catch (err) {
+    process.stderr.write(`Could not read fluency sheet ${file}: ${err instanceof Error ? err.message : String(err)}\n`);
+    process.exit(1);
+  }
+  process.stdout.write(`${renderFluencyFit(fitFluencyWeights(rows))}\n`);
+}
+
 /** Tier 1 — right-sizing. Runs on an explicit --judge (flag is consent) or, in an
  *  interactive run, after a default-Yes confirm. Returns the verdicts (or undefined). */
 async function maybeRightSize(
@@ -278,12 +311,19 @@ async function maybeShare(
     // single highest-leverage next step. Falls back to the legacy percentile line.
     const emit = (s: string) => (interactive ? p.log.success(s) : process.stdout.write(`\n  ${s}\n`));
     if (fluency?.band) {
-      emit(`Fluency band: ${fluency.band}.`);
+      const scoreLabel = fluency.score !== null ? `${fluency.score}/100 (${fluency.band})` : fluency.band;
       if (fluency.percentile !== null) {
+        // Percentile-primary once the cohort is big enough to rank against.
         emit(
           `You're in the ${ordinal(fluency.percentile)} percentile of ` +
             `${fluency.cohortSize.toLocaleString()} engineers measured.`,
         );
+        emit(`Fluency: ${scoreLabel}.`);
+      } else {
+        // Cold-start: lead with the score+band; ranking is the growth hook.
+        emit(`Fluency: ${scoreLabel}.`);
+        const toGo = Math.max(0, 30 - fluency.cohortSize);
+        emit(`Percentile ranking unlocks at 30 engineers measured — ${toGo} to go.`);
       }
       if (fluency.whatMovesYouUp) emit(`What moves you up: ${fluency.whatMovesYouUp}`);
     } else if (benchmark) {
@@ -316,6 +356,19 @@ async function main(): Promise<void> {
       process.exit(1);
     }
     runScore(file);
+    return;
+  }
+  if (sub === 'label-fluency') {
+    await runLabelFluency(parseArgs(argv.slice(1)));
+    return;
+  }
+  if (sub === 'score-fluency') {
+    const file = argv[1];
+    if (!file || file.startsWith('-')) {
+      process.stderr.write('Usage: cc-audit score-fluency <fluency-labels.json>\n');
+      process.exit(1);
+    }
+    runScoreFluency(file);
     return;
   }
   if (sub === 'fix') {

@@ -56,6 +56,7 @@ export interface PostReportResult {
   // tertiles), the relative percentile (null below MIN_COHORT), and the single
   // highest-leverage nudge. The score/thresholds themselves stay server-side.
   fluency?: {
+    score: number | null;
     band: 'Developing' | 'Strong' | 'Elite' | null;
     percentile: number | null;
     cohortSize: number;
