@@ -20,10 +20,15 @@ import { homedir } from 'node:os';
 import { dirname, join, resolve, sep } from 'node:path';
 import { CharCountTokenizer } from './vendor/tokenizer.js';
 
-export const MAX_IMPORT_DEPTH = 5; // matches CC's hop limit
+export const MAX_IMPORT_DEPTH = 4; // CC inlines @imports up to 4 hops deep
 export const MAX_FILE_BYTES = 256 * 1024; // ~64k tok; larger ⇒ size-estimate only, no read
 export const MAX_IMPORTS_PER_FILE = 25; // refs followed from a single file
 export const MAX_FILES_TOTAL = 100; // files touched per closure (depth + breadth backstop)
+export const MAX_DIR_WALK = 40; // ancestor dirs scanned for memory files (loop backstop)
+
+// The memory files Claude Code concatenates into context. Both load at every level
+// of the directory walk; CLAUDE.local.md is the gitignored personal override.
+const MEMORY_FILENAMES = ['CLAUDE.md', 'CLAUDE.local.md'];
 
 const tokenizer = new CharCountTokenizer();
 export const countTokens = (text: string): number => tokenizer.count(text);
@@ -166,6 +171,59 @@ export function claudeMdTokensWithImports(
     if (!resolved) continue;
     followed += 1;
     total += claudeMdTokensWithImports(resolved, trustRoots, seen, depth + 1, budget);
+  }
+  return total;
+}
+
+/** Managed-policy CLAUDE.md path for this OS (loaded first by CC for enterprise
+ *  deployments). Returns null on unknown platforms. */
+function managedPolicyDir(): string | null {
+  switch (process.platform) {
+    case 'darwin':
+      return '/Library/Application Support/ClaudeCode';
+    case 'win32':
+      return 'C:\\Program Files\\ClaudeCode';
+    case 'linux':
+      return '/etc/claude-code';
+    default:
+      return null;
+  }
+}
+
+/** Sum the memory CC actually concatenates into context every turn for a session in
+ *  `cwd`: CLAUDE.md AND CLAUDE.local.md at EVERY directory from cwd up to the
+ *  filesystem root (each with its @import closure), deduped by realpath across the
+ *  whole walk. This is the fix for the cwd-only undercount — CC walks the tree, so a
+ *  repo-root CLAUDE.md is loaded even when you run in a subdir or worktree. `claudeDir`
+ *  is added to each level's trust roots so a level's `@~/.claude/...` import resolves. */
+export function projectMemoryTokens(cwd: string, claudeDir: string): number {
+  const seen = new Set<string>();
+  const budget = { files: 0 };
+  let total = 0;
+  let dir = cwd;
+  for (let i = 0; i < MAX_DIR_WALK; i++) {
+    for (const name of MEMORY_FILENAMES) {
+      total += claudeMdTokensWithImports(join(dir, name), [dir, claudeDir], seen, 0, budget);
+    }
+    const parent = dirname(dir);
+    if (parent === dir) break; // reached filesystem root
+    dir = parent;
+  }
+  return total;
+}
+
+/** Machine-level memory loaded in every session regardless of project: the user
+ *  global ~/.claude/CLAUDE.md (+ CLAUDE.local.md) and the enterprise managed policy. */
+export function globalMemoryTokens(claudeDir: string): number {
+  const seen = new Set<string>();
+  const budget = { files: 0 };
+  let total = 0;
+  for (const name of MEMORY_FILENAMES) {
+    total += claudeMdTokensWithImports(join(claudeDir, name), [claudeDir], seen, 0, budget);
+  }
+  const policyDir = managedPolicyDir();
+  if (policyDir) {
+    total += claudeMdTokensWithImports(join(policyDir, 'CLAUDE.md'), [policyDir, claudeDir], seen, 0, budget);
   }
   return total;
 }

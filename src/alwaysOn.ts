@@ -11,7 +11,7 @@
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { claudeMdTokensWithImports, countTokens } from './configFiles.js';
+import { countTokens, globalMemoryTokens, projectMemoryTokens } from './configFiles.js';
 import { detectConditionalContext, type ConditionalContextItem } from './conditionalContext.js';
 import { getAnthropicPricing } from './vendor/pricing.js';
 import type { Session } from './model.js';
@@ -117,15 +117,17 @@ export function computeAlwaysOn(sessions: Session[]): AlwaysOnTax {
   let weightedRateDen = 0;
   let mcpSessions = 0;
 
-  // Static, machine-level config (same for every session).
+  // Static, machine-level config (same for every session): user global CLAUDE.md
+  // (+ .local + managed policy), with @imports resolved.
   const claudeDir = join(homedir(), '.claude');
-  const globalClaudeMdTokens = claudeMdTokensWithImports(join(claudeDir, 'CLAUDE.md'), [claudeDir]);
+  const globalClaudeMdTokens = globalMemoryTokens(claudeDir);
   const userSkills = skillListingTokens(join(homedir(), '.claude', 'skills'));
 
-  // Project CLAUDE.md, turn-weighted by cwd. Reading per distinct cwd (cached) and
-  // weighting by that project's turns avoids triple-counting a CLAUDE.md shared
-  // across git worktrees (the same 4.7k file shows up under 3 dirs but is read once
-  // per turn, not three times).
+  // Project memory, turn-weighted by cwd. CC walks cwd→root loading every CLAUDE.md +
+  // CLAUDE.local.md, so we do too (projectMemoryTokens) — counting only the file at
+  // cwd zero-counts the common case where you run in a subdir/worktree and the real
+  // CLAUDE.md sits at the repo root above you. Caching per distinct cwd and weighting
+  // by that cwd's turns still avoids inflating a file shared across worktrees.
   const projectMdByCwd = new Map<string, number>();
   let projectTokenTurns = 0;
 
@@ -139,8 +141,7 @@ export function computeAlwaysOn(sessions: Session[]): AlwaysOnTax {
 
     let projMd = 0;
     if (s.cwd) {
-      projMd =
-        projectMdByCwd.get(s.cwd) ?? claudeMdTokensWithImports(join(s.cwd, 'CLAUDE.md'), [s.cwd, claudeDir]);
+      projMd = projectMdByCwd.get(s.cwd) ?? projectMemoryTokens(s.cwd, claudeDir);
       projectMdByCwd.set(s.cwd, projMd);
     }
 
