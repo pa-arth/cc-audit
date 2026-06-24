@@ -272,14 +272,25 @@ async function maybeShare(
   }
   try {
     const post = () => postReport({ aggregate, rightSizing, anonId: machineAnonId() });
-    const { url, benchmark } = interactive ? await withSpinner('Creating shareable report', post) : await post();
-    // Global, anonymous percentile rides on the --open response (no extra egress).
-    if (benchmark) {
-      const line =
+    const { url, benchmark, fluency } = interactive ? await withSpinner('Creating shareable report', post) : await post();
+    // The gated readout rides on the --open response (no extra egress): a calibrated
+    // BAND always, the cohort percentile once the corpus is large enough, plus the
+    // single highest-leverage next step. Falls back to the legacy percentile line.
+    const emit = (s: string) => (interactive ? p.log.success(s) : process.stdout.write(`\n  ${s}\n`));
+    if (fluency?.band) {
+      emit(`Fluency band: ${fluency.band}.`);
+      if (fluency.percentile !== null) {
+        emit(
+          `You're in the ${ordinal(fluency.percentile)} percentile of ` +
+            `${fluency.cohortSize.toLocaleString()} engineers measured.`,
+        );
+      }
+      if (fluency.whatMovesYouUp) emit(`What moves you up: ${fluency.whatMovesYouUp}`);
+    } else if (benchmark) {
+      emit(
         `You're in the ${ordinal(benchmark.fluencyPercentile)} percentile of ` +
-        `${benchmark.cohortSize.toLocaleString()} engineers measured.`;
-      if (interactive) p.log.success(line);
-      else process.stdout.write(`\n  ${line}\n`);
+          `${benchmark.cohortSize.toLocaleString()} engineers measured.`,
+      );
     }
     if (interactive) p.outro(`Shareable report: ${url}`);
     else process.stdout.write(`\n  Shareable report: ${url}\n`);

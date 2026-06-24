@@ -6,6 +6,7 @@
 import type { AuditResult } from './audit.js';
 import type { SessionFootprint } from './footprint.js';
 import type { RightSizingResult } from './judgeClient.js';
+import { localBand } from './fluency.js';
 
 const usd = (n: number) => `$${n >= 100 ? Math.round(n).toLocaleString() : n.toFixed(2)}`;
 const pct = (n: number) => `${Math.round(n * 100)}%`;
@@ -115,9 +116,12 @@ export function renderReport(r: AuditResult, opts: { rows?: number } = {}): stri
 
   out.push('  FLUENCY  (the habits behind the bill)');
   const f = r.fluency;
-  out.push(`    score: ${f.score}/100   ·   premium-model share: ${pct(f.premiumTurnShare)}  ← the right-sizing lever`);
-  out.push(`    plan-mode: ${pct(f.planModeRate)} of sessions · subagent spend: ${pct(f.subagentUsageRate)} · /compact: ${pct(f.contextBloatRate)}`);
-  out.push(`    turns/task: median ${f.medianTurnsPerTask}, p90 ${f.p90TurnsPerTask} · models used: ${f.modelDiversity}`);
+  // No false-precise integer: a coarse self-band, with the calibrated (cohort-
+  // relative) band gated behind --open. The raw habits below are the user's own facts.
+  out.push(`    self-band: ${localBand(f)}  (rough — run \`cc-audit --open\` for your calibrated band & percentile)`);
+  out.push(`    plan-mode: ${pct(f.planModeRate)} of substantive sessions · turns/task: median ${f.medianTurnsPerTask}, p90 ${f.p90TurnsPerTask}`);
+  out.push(`    subagent spend: ${pct(f.subagentUsageRate)} · /compact: ${pct(f.contextBloatRate)} · models used: ${f.modelDiversity}`);
+  out.push(`    premium-model share: ${pct(f.premiumTurnShare)}  ← right-sizing lever (not a grade — match tier to task)`);
   line('═');
   out.push(`  3. MODEL RIGHT-SIZING  (policy-dependent — often the SMALLEST clean lever)`);
   out.push(`     ${pct(f.premiumTurnShare)} of turns run premium models. Run \`cc-audit --judge\` to see which`);
