@@ -1,0 +1,73 @@
+name: Publish to npm
+
+# Publishes @promptster/cc-audit to npm when a v* tag is pushed.
+# The tag MUST match the version in package.json (guarded below).
+#
+# Required repo secret:
+#   NPM_TOKEN — an npm automation token with publish rights to the
+#               @promptster scope (Settings → Secrets and variables → Actions).
+#
+# Cut a release:
+#   npm version patch    # bumps package.json + creates the vX.Y.Z tag
+#   git push --follow-tags
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Run npm publish with --dry-run (no actual publish)'
+        type: boolean
+        default: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint + typecheck + test
+        run: |
+          npm run lint
+          npm run typecheck
+          npm test
+
+      - name: Build npm artifact
+        run: npm run build:npm
+
+      - name: Verify tag matches package version
+        if: github.event_name == 'push'
+        run: |
+          PKG_VERSION="$(node -p "require('./bundles/npm/package.json').version")"
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          if [ "$PKG_VERSION" != "$TAG_VERSION" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME (=$TAG_VERSION) does not match package.json version $PKG_VERSION"
+            exit 1
+          fi
+          echo "Publishing version $PKG_VERSION"
+
+      - name: Smoke test the bundle
+        run: node bundles/npm/cc-audit.mjs --help
+
+      - name: Publish (dry-run)
+        if: github.event_name == 'workflow_dispatch' && inputs.dry_run
+        run: npm publish ./bundles/npm --access public --dry-run
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Publish
+        if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && !inputs.dry_run)
+        run: npm publish ./bundles/npm --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

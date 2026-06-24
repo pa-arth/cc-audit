@@ -1,0 +1,72 @@
+// Normalized, tool-agnostic trajectory model. Every adapter (Claude Code first;
+// Codex/Cursor later) parses its native transcript format into these types, and
+// every analysis (attribution, always-on, fluency) reads only from here. The
+// promptId SPAN is the core unit — one user prompt and the assistant turns it
+// triggered — because cost must be attributed per-span (a naive "invocation to
+// end of session" attribution was 4x wrong during exploration).
+
+/** Token usage for a single assistant turn, split the way pricing needs it. */
+export interface TurnUsage {
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheWrite5m: number;
+  cacheWrite1h: number;
+}
+
+export interface AssistantTurn {
+  /** Model id this turn ran under (per-turn — a session can switch models). */
+  model: string | null;
+  usage: TurnUsage;
+  /** tool_use names invoked this turn (e.g. Read, Edit, Bash, Task). */
+  tools: string[];
+  /** Length of reasoning/thinking text — a rough proxy for reasoning effort. */
+  thinkingChars: number;
+  /** Length of visible assistant prose. */
+  textChars: number;
+}
+
+/** A promptId span: one user prompt and the assistant turns it triggered.
+ *  Subagent (sidechain) trajectories are ALSO modeled as spans (keyed by agentId,
+ *  promptId null, `isSidechain: true`) — their cost would otherwise be invisible
+ *  per-skill, since Claude Code logs sidechain turns with no promptId. */
+export interface Span {
+  promptId: string | null;
+  /** Slash-command name if this span was an explicit `/command` invocation. */
+  command: string | null;
+  /** Skills invoked (explicitly or auto) within this span. */
+  invokedSkills: string[];
+  /** First genuine user text in the span — the task gist. NEVER leaves the
+   *  machine raw; redacted/summarized before any network call. */
+  firstUserText: string;
+  turns: AssistantTurn[];
+  /** True if this span is a subagent's sidechain trajectory, not a main-chain prompt. */
+  isSidechain: boolean;
+  /** The skill that spawned this subagent (Claude Code `attributionSkill`), if any.
+   *  Only set on sidechain spans. */
+  attributionSkill: string | null;
+  /** The subagent type that ran it (Claude Code `attributionAgent`) — e.g. 'Explore',
+   *  'general-purpose', 'workflow-subagent'. Only set on sidechain spans. */
+  attributionAgent: string | null;
+}
+
+export interface Session {
+  /** Transcript file basename (uuid), stable per session. */
+  sessionId: string;
+  /** Human-ish project label decoded from the transcript directory. */
+  project: string;
+  /** Absolute working directory this session ran in (from the transcript `cwd`).
+   *  Used ONLY locally to locate a project's CLAUDE.md for the always-on tax — the
+   *  path NEVER enters the aggregate/output (privacy invariant). null if unknown. */
+  cwd: string | null;
+  /** File mtime (epoch ms) — recency proxy + window bounds. */
+  mtime: number;
+  /** Distinct permission/agent modes seen (e.g. 'plan') — fluency signal. */
+  modes: string[];
+  spans: Span[];
+}
+
+/** Flatten every assistant turn across a session's spans. */
+export function allTurns(session: Session): AssistantTurn[] {
+  return session.spans.flatMap((s) => s.turns);
+}

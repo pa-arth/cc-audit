@@ -1,0 +1,41 @@
+{
+  "name": "@promptster/cc-audit",
+  "version": "0.2.1",
+  "description": "Audit Claude Code (and other agent) usage from local transcripts: spend attribution, model right-sizing, and AI-fluency signals.",
+  "license": "MIT",
+  "private": true,
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "bin": {
+    "cc-audit": "./dist/cli.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "dev": "tsc -p tsconfig.json --watch --preserveWatchOutput",
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "oxlint --config .oxlintrc.json src",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "bundle": "node scripts/bundle.mjs",
+    "build:npm": "node scripts/build-npm.mjs"
+  },
+  "dependencies": {
+    "@clack/prompts": "^1.6.0",
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.10",
+    "esbuild": "^0.27.3",
+    "oxlint": "^1.0.0",
+    "typescript": "^5.6.3",
+    "vitest": "^4.0.18"
+  }
+}

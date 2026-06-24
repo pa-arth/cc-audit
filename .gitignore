@@ -1,0 +1,6 @@
+node_modules/
+dist/
+bundles/
+*.tsbuildinfo
+.DS_Store
+.cc-audit/
