@@ -11,7 +11,7 @@
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { countTokens, globalMemoryTokens, projectMemoryTokens } from './configFiles.js';
+import { autoMemoryTokens, countTokens, globalMemoryTokens, projectMemoryTokens } from './configFiles.js';
 import { detectConditionalContext, type ConditionalContextItem } from './conditionalContext.js';
 import { getAnthropicPricing } from './vendor/pricing.js';
 import type { Session } from './model.js';
@@ -123,6 +123,7 @@ export function computeAlwaysOn(sessions: Session[]): AlwaysOnTax {
   // Static, machine-level config (same for every session): user global CLAUDE.md
   // (+ .local + managed policy), with @imports resolved.
   const claudeDir = join(homedir(), '.claude');
+  const projectsRoot = join(claudeDir, 'projects');
   const globalClaudeMdTokens = globalMemoryTokens(claudeDir);
   const userSkills = skillListingTokens(join(homedir(), '.claude', 'skills'));
 
@@ -144,7 +145,9 @@ export function computeAlwaysOn(sessions: Session[]): AlwaysOnTax {
 
     let projMd = 0;
     if (s.cwd) {
-      projMd = projectMdByCwd.get(s.cwd) ?? projectMemoryTokens(s.cwd, claudeDir);
+      projMd =
+        projectMdByCwd.get(s.cwd) ??
+        projectMemoryTokens(s.cwd, claudeDir) + autoMemoryTokens(s.cwd, projectsRoot);
       projectMdByCwd.set(s.cwd, projMd);
     }
 

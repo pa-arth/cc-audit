@@ -44,7 +44,7 @@ export function renderReport(r: AuditResult, opts: { rows?: number } = {}): stri
   const a = r.alwaysOn;
   out.push(`    recoverable config (read every turn) — what you can actually trim:`);
   out.push(
-    `      project memory     ${padL(Math.round(a.projectClaudeMdTokens).toLocaleString() + ' tok', 9)}  ${padL(usd(a.projectClaudeMdUsd) + '/mo', 9)}  ← CLAUDE.md + .local, cwd up to repo root`,
+    `      project memory     ${padL(Math.round(a.projectClaudeMdTokens).toLocaleString() + ' tok', 9)}  ${padL(usd(a.projectClaudeMdUsd) + '/mo', 9)}  ← CLAUDE.md/.local/rules + auto-memory, cwd→root`,
   );
   out.push(
     `      global memory      ${padL(a.globalClaudeMdTokens.toLocaleString() + ' tok', 9)}  ${padL(usd(a.globalClaudeMdUsd) + '/mo', 9)}  → ~/.claude/CLAUDE.md (+ .local, managed policy)`,

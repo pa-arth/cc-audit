@@ -15,7 +15,7 @@
 // count and NO contents; their tax is still reflected, but nothing dangerous is
 // loaded into the process.
 
-import { readFileSync, realpathSync, statSync } from 'node:fs';
+import { closeSync, existsSync, openSync, readdirSync, readFileSync, readSync, realpathSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join, resolve, sep } from 'node:path';
 import { CharCountTokenizer } from './vendor/tokenizer.js';
@@ -190,21 +190,80 @@ function managedPolicyDir(): string | null {
   }
 }
 
-/** Sum the memory CC actually concatenates into context every turn for a session in
- *  `cwd`: CLAUDE.md AND CLAUDE.local.md at EVERY directory from cwd up to the
- *  filesystem root (each with its @import closure), deduped by realpath across the
- *  whole walk. This is the fix for the cwd-only undercount — CC walks the tree, so a
- *  repo-root CLAUDE.md is loaded even when you run in a subdir or worktree. `claudeDir`
- *  is added to each level's trust roots so a level's `@~/.claude/...` import resolves. */
+/** True if a rule .md is PATH-SCOPED (`paths:` in its frontmatter). Those load only
+ *  on-demand when Claude touches matching files, so they're NOT standing context. */
+function hasPathsFrontmatter(text: string): boolean {
+  const m = /^---\r?\n([\s\S]*?)\r?\n---/.exec(text);
+  return m ? /^[ \t]*paths[ \t]*:/m.test(m[1]!) : false;
+}
+
+/** Tokens for the UNSCOPED rule files (no `paths:` frontmatter) under a `.claude/rules`
+ *  dir, discovered recursively. These load at launch with CLAUDE.md priority. */
+function rulesDirTokens(rulesDir: string, trustRoots: string[], seen: Set<string>, budget: { files: number }): number {
+  let entries;
+  try {
+    entries = readdirSync(rulesDir, { withFileTypes: true });
+  } catch {
+    return 0; // no rules dir
+  }
+  let total = 0;
+  for (const e of entries) {
+    if (budget.files > MAX_FILES_TOTAL) break;
+    const p = join(rulesDir, e.name);
+    if (e.isDirectory()) {
+      total += rulesDirTokens(p, trustRoots, seen, budget); // recurse (CC discovers nested)
+      continue;
+    }
+    if (!e.name.endsWith('.md')) continue;
+    const f = readConfigFile(p, trustRoots);
+    if (!f || seen.has(f.real)) continue;
+    if (f.text !== null && hasPathsFrontmatter(f.text)) continue; // path-scoped ⇒ on-demand
+    seen.add(f.real);
+    budget.files += 1;
+    total += f.tokens;
+  }
+  return total;
+}
+
+/** Every always-on memory file rooted at one directory level of the walk: CLAUDE.md +
+ *  CLAUDE.local.md at the dir AND at its `./.claude/` (the alternate project location),
+ *  plus unscoped `./.claude/rules/`. `skipDotClaude` avoids re-counting the user-global
+ *  ~/.claude when the walk passes through $HOME. */
+function memoryAtDir(
+  dir: string,
+  claudeDir: string,
+  seen: Set<string>,
+  budget: { files: number },
+  skipDotClaude: boolean,
+): number {
+  const roots = [dir, claudeDir];
+  let total = 0;
+  for (const name of MEMORY_FILENAMES) {
+    total += claudeMdTokensWithImports(join(dir, name), roots, seen, 0, budget);
+  }
+  const dotClaude = join(dir, '.claude');
+  if (!skipDotClaude && dotClaude !== claudeDir) {
+    for (const name of MEMORY_FILENAMES) {
+      total += claudeMdTokensWithImports(join(dotClaude, name), roots, seen, 0, budget);
+    }
+    total += rulesDirTokens(join(dotClaude, 'rules'), roots, seen, budget);
+  }
+  return total;
+}
+
+/** Sum the project memory CC concatenates into context every turn for a session in
+ *  `cwd`: at EVERY directory from cwd up to the filesystem root, the CLAUDE.md +
+ *  CLAUDE.local.md (in `./` and `./.claude/`) plus unscoped `./.claude/rules/`, each
+ *  with its @import closure, deduped by realpath across the whole walk. Walking the
+ *  tree (not just cwd) is what fixes the subdir/worktree undercount. The `~/.claude`
+ *  level is skipped here — it's counted once by globalMemoryTokens. */
 export function projectMemoryTokens(cwd: string, claudeDir: string): number {
   const seen = new Set<string>();
   const budget = { files: 0 };
   let total = 0;
   let dir = cwd;
   for (let i = 0; i < MAX_DIR_WALK; i++) {
-    for (const name of MEMORY_FILENAMES) {
-      total += claudeMdTokensWithImports(join(dir, name), [dir, claudeDir], seen, 0, budget);
-    }
+    total += memoryAtDir(dir, claudeDir, seen, budget, dir === claudeDir);
     const parent = dirname(dir);
     if (parent === dir) break; // reached filesystem root
     dir = parent;
@@ -212,8 +271,9 @@ export function projectMemoryTokens(cwd: string, claudeDir: string): number {
   return total;
 }
 
-/** Machine-level memory loaded in every session regardless of project: the user
- *  global ~/.claude/CLAUDE.md (+ CLAUDE.local.md) and the enterprise managed policy. */
+/** Machine-level memory loaded in every session regardless of project: user global
+ *  ~/.claude/CLAUDE.md (+ CLAUDE.local.md), unscoped ~/.claude/rules/, and the
+ *  enterprise managed-policy CLAUDE.md. */
 export function globalMemoryTokens(claudeDir: string): number {
   const seen = new Set<string>();
   const budget = { files: 0 };
@@ -221,9 +281,61 @@ export function globalMemoryTokens(claudeDir: string): number {
   for (const name of MEMORY_FILENAMES) {
     total += claudeMdTokensWithImports(join(claudeDir, name), [claudeDir], seen, 0, budget);
   }
+  total += rulesDirTokens(join(claudeDir, 'rules'), [claudeDir], seen, budget);
   const policyDir = managedPolicyDir();
   if (policyDir) {
     total += claudeMdTokensWithImports(join(policyDir, 'CLAUDE.md'), [policyDir, claudeDir], seen, 0, budget);
   }
   return total;
+}
+
+const AUTO_MEMORY_MAX_BYTES = 25 * 1024; // CC loads first 25KB of MEMORY.md...
+const AUTO_MEMORY_MAX_LINES = 200; // ...or first 200 lines, whichever comes first.
+
+/** Read at most `maxBytes` from the head of a file WITHOUT loading the whole thing —
+ *  bounds memory even if the file is pathologically large. Null if unreadable. */
+function readHead(path: string, maxBytes: number): string | null {
+  let fd: number;
+  try {
+    fd = openSync(path, 'r');
+  } catch {
+    return null;
+  }
+  try {
+    const buf = Buffer.alloc(maxBytes);
+    const n = readSync(fd, buf, 0, maxBytes, 0);
+    return buf.toString('utf8', 0, n);
+  } catch {
+    return null;
+  } finally {
+    closeSync(fd);
+  }
+}
+
+/** Nearest ancestor of `cwd` containing a `.git` entry — the auto-memory key. Works on
+ *  a now-deleted worktree path too, since it walks string parents and stat-checks each. */
+function gitRepoRoot(cwd: string): string | null {
+  let dir = cwd;
+  for (let i = 0; i < MAX_DIR_WALK; i++) {
+    if (existsSync(join(dir, '.git'))) return dir;
+    const parent = dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  return null;
+}
+
+/** Auto-memory (`MEMORY.md`) loaded at the start of every conversation, capped at the
+ *  first 200 lines / 25KB. It lives at ~/.claude/projects/<encoded-repo-root>/memory/
+ *  — keyed by the GIT REPO ROOT (shared across worktrees), not cwd. Best-effort: the
+ *  projects-dir encoding (path separators/dots → '-') is CC-internal and undocumented,
+ *  so a miss silently yields 0 rather than an over-count. */
+export function autoMemoryTokens(cwd: string, projectsRoot: string): number {
+  const repo = gitRepoRoot(cwd) ?? cwd;
+  const encoded = repo.replace(/[/.]/g, '-');
+  const head = readHead(join(projectsRoot, encoded, 'memory', 'MEMORY.md'), AUTO_MEMORY_MAX_BYTES);
+  if (!head) return 0;
+  const lines = head.split('\n');
+  const capped = lines.length > AUTO_MEMORY_MAX_LINES ? lines.slice(0, AUTO_MEMORY_MAX_LINES).join('\n') : head;
+  return countTokens(capped);
 }
