@@ -8,6 +8,7 @@
 
 import type { SessionFootprint } from './footprint.js';
 import { judgeFootprints, type Verdict } from './judgeClient.js';
+import { c, card, rule } from './theme.js';
 
 // Three tiers — opus & fable collapse to "frontier" (model choice within frontier
 // is policy, not waste; we don't grade Fable-vs-Opus). Labels accept the legacy
@@ -193,37 +194,41 @@ const pct = (n: number) => `${Math.round(n * 100)}%`;
 
 /** Human-readable scorecard. */
 export function renderScore(s: ScoreResult): string {
-  const out: string[] = [];
-  out.push('');
-  out.push('  RIGHT-SIZING CALIBRATION  (judge vs your labels)');
-  out.push('═'.repeat(64));
-  out.push(`  labeled: ${s.labeled}   (unlabeled rows skipped: ${s.unlabeled})`);
   if (s.labeled === 0) {
-    out.push('  Nothing labeled yet — set `trueMinTier` on rows in the sheet, then re-run.');
-    out.push('═'.repeat(64));
-    return out.join('\n');
+    return ['', ...card('RIGHT-SIZING CALIBRATION  ·  judge vs your labels', [
+      c.dim(`labeled: ${s.labeled}   (unlabeled rows skipped: ${s.unlabeled})`),
+      'Nothing labeled yet — set `trueMinTier` on rows in the sheet, then re-run.',
+    ], c.cyan), ''].join('\n');
   }
-  const gate = s.passesGate ? 'PASS ✓' : s.counts.tp + s.counts.fp < 5 ? 'need ≥5 over-modeled calls' : 'FAIL ✗';
-  out.push('');
-  out.push(`  PRECISION (over-modeled calls):  ${pct(s.precision)}   gate ≥90% → ${gate}`);
-  out.push(`    of ${s.counts.tp + s.counts.fp} "downgrade" calls, ${s.counts.tp} you agreed, ${s.counts.fp} were false`);
-  out.push(`  recall (caught your over-modeled): ${pct(s.recall)}`);
-  out.push(`  exact-tier match: ${pct(s.exactTierAccuracy)} · within-one: ${pct(s.withinOneTierAccuracy)} · direction: ${pct(s.directionAccuracy)}`);
-  out.push('');
+  const passing = s.passesGate;
+  const tooFew = s.counts.tp + s.counts.fp < 5;
+  const gate = passing ? c.emerald('PASS ✓') : tooFew ? c.amber('need ≥5 over-modeled calls') : c.red('FAIL ✗');
+  const rows: string[] = [
+    c.dim(`labeled: ${s.labeled}   (unlabeled rows skipped: ${s.unlabeled})`),
+    rule(),
+    `precision (over-modeled calls):  ${(passing ? c.emerald : c.gold)(pct(s.precision))}   ${c.dim('gate ≥90% →')} ${gate}`,
+    c.dim(`  of ${s.counts.tp + s.counts.fp} "downgrade" calls, ${s.counts.tp} you agreed, ${s.counts.fp} were false`),
+    c.dim(`recall (caught your over-modeled): ${pct(s.recall)}`),
+    c.dim(
+      `exact-tier match: ${pct(s.exactTierAccuracy)} · within-one: ${pct(s.withinOneTierAccuracy)} · direction: ${pct(s.directionAccuracy)}`,
+    ),
+  ];
   if (s.falseDowngrades.length > 0) {
-    out.push('  ⚠ FALSE DOWNGRADES (judge said cheaper, you disagreed — fix these first):');
+    rows.push(rule());
+    rows.push(c.amber('⚠ FALSE DOWNGRADES — judge said cheaper, you disagreed (fix these first):'));
     for (const f of s.falseDowngrades.slice(0, 10)) {
-      out.push(`    #${f.id} ${f.model.replace('claude-', '')}→${f.judgeTier} (you: ${f.trueTier})  ${f.taskGist.replace(/\s+/g, ' ').slice(0, 40)}`);
-      out.push(`        judge: "${f.reason.slice(0, 56)}"`);
+      rows.push(
+        `  ${c.bold(`#${f.id}`)} ${f.model.replace('claude-', '')}${c.cyan('→')}${c.amber(f.judgeTier)} ` +
+          `${c.dim(`(you: ${f.trueTier})`)}  ${c.dim(f.taskGist.replace(/\s+/g, ' ').slice(0, 38))}`,
+      );
+      rows.push(c.dim(`      judge: "${f.reason.slice(0, 54)}"`));
     }
-    out.push('');
   }
-  out.push('  CONFUSION  (rows = judge tier, cols = your tier)');
-  out.push(`           ${tiers.map((t) => t.slice(0, 6).padStart(6)).join(' ')}`);
+  rows.push(rule());
+  rows.push(c.dim('CONFUSION  (rows = judge tier, cols = your tier)'));
+  rows.push(c.dim(`         ${tiers.map((t) => t.slice(0, 6).padStart(6)).join(' ')}`));
   for (const r of tiers) {
-    out.push(`    ${r.padEnd(6)} ${tiers.map((c) => String(s.confusion[r][c]).padStart(6)).join(' ')}`);
+    rows.push(`  ${c.dim(r.slice(0, 6).padEnd(6))} ${tiers.map((col) => String(s.confusion[r][col]).padStart(6)).join(' ')}`);
   }
-  out.push('═'.repeat(64));
-  out.push('');
-  return out.join('\n');
+  return ['', ...card('RIGHT-SIZING CALIBRATION  ·  judge vs your labels', rows, c.cyan), ''].join('\n');
 }
