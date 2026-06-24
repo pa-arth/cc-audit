@@ -9,6 +9,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
 import { requestConfigRewrite } from './fixClient.js';
 import type { Recommendation } from './recommend.js';
+import { BOX_WIDTH, c, panel, wrap } from './theme.js';
 
 export interface FixProposal {
   kind: 'model-pin' | 'config-trim';
@@ -129,31 +130,33 @@ const usd = (n: number) => `$${n >= 100 ? Math.round(n).toLocaleString() : n.toF
 export function renderFix(proposals: FixProposal[]): string {
   if (proposals.length === 0) {
     return (
-      '\n  cc-audit fix — no reviewable patches.\n' +
-      '  (Your locatable skills are already pinned, and there was no CLAUDE.md to trim.)\n' +
-      '  Run `cc-audit` to see the full report and the behavioral levers.\n'
+      `\n  ${c.bold(c.orange('cc-audit fix'))} — no reviewable patches.\n` +
+      c.dim('  (Your locatable skills are already pinned, and there was no CLAUDE.md to trim.)\n') +
+      c.dim('  Run `cc-audit` to see the full report and the behavioral levers.\n')
     );
   }
-  const out: string[] = [];
-  out.push('');
-  out.push('  REVIEWABLE PATCHES  (written to ./.cc-audit/ — nothing applied)');
-  out.push('═'.repeat(64));
+  const rows: string[] = [];
   let i = 1;
   for (const p of proposals) {
-    const save = p.monthlyUsdSaved >= 0.5 ? `~${usd(p.monthlyUsdSaved)}/mo` : '—';
-    out.push(`  ${i}. [${save}] ${p.title}`);
-    out.push(`       ${p.summary}`);
+    const recoups = p.monthlyUsdSaved >= 0.5;
+    const save = recoups ? c.gold(`~${usd(p.monthlyUsdSaved)}/mo`) : c.dim('—');
+    rows.push(`${c.bold(`${i}.`)} [${save}] ${c.bold(p.title)}`);
+    for (const ln of wrap(p.summary, BOX_WIDTH - 5)) rows.push(c.dim(`   ${ln}`));
     if (p.proposalFile === '(skipped)') {
       // Network/cap failure on the hosted trim — no artifact to diff; show why.
-      out.push(`       — ${p.caution}`);
+      for (const ln of wrap(`— ${p.caution}`, BOX_WIDTH - 5)) rows.push(c.amber(`   ${ln}`));
     } else {
-      if (!p.safe) out.push(`       ⚠ SAFETY: ${p.caution} — review carefully before applying`);
-      out.push(`       review:  git diff --no-index ${p.realFile} ${p.proposalFile}`);
+      // Keep the ⚠ SAFETY prefix and the git-diff command contiguous (no color
+      // mid-string) so they stay greppable in plain mode.
+      if (!p.safe) {
+        for (const ln of wrap(`⚠ SAFETY: ${p.caution} — review carefully before applying`, BOX_WIDTH - 5)) {
+          rows.push(c.amber(`   ${ln}`));
+        }
+      }
+      rows.push(`   ${c.dim('review:')}  ${c.cyan(`git diff --no-index ${p.realFile} ${p.proposalFile}`)}`);
     }
     i += 1;
   }
-  out.push('═'.repeat(64));
-  out.push('  Apply by copying a .proposed file over the original once you\'ve reviewed it.');
-  out.push('');
-  return out.join('\n');
+  rows.push(c.dim("apply by copying a .proposed file over the original once you've reviewed it."));
+  return ['', ...panel('REVIEWABLE PATCHES  ·  written to ./.cc-audit/ — nothing applied', rows, c.gold), ''].join('\n');
 }
