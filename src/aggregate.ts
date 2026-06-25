@@ -123,7 +123,9 @@ export const AggregateRecordSchema = z.object({
     premiumTurnShare: z.number(),
     modelDiversity: z.number(),
     subagentUsageRate: z.number(),
-    contextBloatRate: z.number(),
+    carryShare: z.number(),
+    carryUsd: z.number(),
+    redundantReadRate: z.number(),
     score: z.number(),
   }),
   alwaysOn: z.object({
