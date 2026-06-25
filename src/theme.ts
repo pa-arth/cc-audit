@@ -7,8 +7,15 @@
 
 const ESC = String.fromCharCode(27); // ESC (0x1B) — kept out of source as a literal
 
-const colorEnabled =
-  Boolean(process.stdout && process.stdout.isTTY) && !process.env.NO_COLOR && process.env.TERM !== 'dumb';
+// Color is on for an interactive truecolor TTY, off when piped/redirected. Two
+// standard overrides bracket that default: NO_COLOR (any value) forces it OFF
+// (no-color.org), and FORCE_COLOR (anything but "0") forces it ON — the escape
+// hatch for IDE terminals, pagers, or agent contexts that don't report a TTY.
+// NO_COLOR wins if somehow both are set.
+const forceColor = Boolean(process.env.FORCE_COLOR) && process.env.FORCE_COLOR !== '0';
+const colorEnabled = process.env.NO_COLOR
+  ? false
+  : forceColor || (Boolean(process.stdout && process.stdout.isTTY) && process.env.TERM !== 'dumb');
 
 type Style = (s: string) => string;
 
