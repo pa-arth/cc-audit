@@ -119,3 +119,30 @@ export function topSessions(sessions: Session[], n = 5): TopSession[] {
   }
   return rows.sort((a, b) => b.costUsd - a.costUsd).slice(0, n);
 }
+
+/** The leaderboard stripped to what may leave the machine for the shared web report:
+ *  cost SHARE (never raw $), structure, and shape — NO gist, NO project, NO dollars.
+ *  Only included in the aggregate when the user opts in via --share-sessions. */
+export interface AnonTopSession {
+  /** Session cost as a share of total spend (0..1) — a share, never a raw amount. */
+  costShare: number;
+  turns: number;
+  prompts: number;
+  /** Claude model id (e.g. claude-opus-4-8) — not user data; already shipped elsewhere. */
+  topModel: string;
+  planMode: boolean;
+  /** Sparkline shape only — no content. */
+  trajectory: string;
+}
+
+export function anonymizeTopSessions(rows: TopSession[], totalUsd: number): AnonTopSession[] {
+  const denom = totalUsd || 1;
+  return rows.map((r) => ({
+    costShare: r.costUsd / denom,
+    turns: r.turns,
+    prompts: r.prompts,
+    topModel: r.topModel,
+    planMode: r.planMode,
+    trajectory: r.trajectory,
+  }));
+}

@@ -530,6 +530,24 @@ describe('aggregate record (privacy)', () => {
     expect(Object.values(aggregate.conditionalContext).every((v) => typeof v === 'number')).toBe(true);
   });
 
+  it('omits the session leaderboard from the aggregate unless --share-sessions', () => {
+    expect(aggregate.topSessions).toEqual([]); // default run: nothing leaves
+  });
+
+  it('with --share-sessions, ships ONLY anonymized leaderboard rows (no gist/project/$)', () => {
+    const { aggregate: shared } = runAudit(sessions, '2026-06-16T00:00:00.000Z', { shareSessions: true });
+    expect(shared.topSessions.length).toBeGreaterThan(0);
+    const allowed = new Set(['costShare', 'turns', 'prompts', 'topModel', 'planMode', 'trajectory']);
+    for (const row of shared.topSessions) {
+      // No field outside the anonymized allow-list (so no taskGist/project/costUsd).
+      expect(Object.keys(row).every((k) => allowed.has(k))).toBe(true);
+      expect(typeof row.costShare).toBe('number');
+      expect(row.costShare).toBeLessThanOrEqual(1); // a share, never a raw dollar amount
+    }
+    // The raw prompt gist must not appear anywhere in the serialized shared aggregate.
+    expect(JSON.stringify(shared)).not.toContain('fix the thing');
+  });
+
   it('hashes custom (non-common) command names', () => {
     const custom = [
       { type: 'user', promptId: 'q1', message: { content: '<command-message>acme-deploy</command-message>' } },

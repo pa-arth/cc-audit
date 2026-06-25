@@ -9,6 +9,7 @@ import { z } from 'zod';
 import type { AlwaysOnTax } from './alwaysOn.js';
 import type { SpendBreakdown } from './attribute.js';
 import type { FluencySignals } from './fluency.js';
+import type { AnonTopSession } from './topSessions.js';
 
 // v2 additions: subagent (delegated-spend) leak board + spend.subagentShare;
 // model-invoked-skills list; per-command context-tax fields (contextTaxRatio,
@@ -19,7 +20,10 @@ import type { FluencySignals } from './fluency.js';
 // referenced filenames + skill/project names stay LOCAL; only aggregate numbers leave.
 // v4: rename alwaysOn.recoverable* → alwaysOnConfig* — standing config is a COST we
 // surface, not "savings" to claim; the field name no longer asserts trimmability.
-export const AGGREGATE_SCHEMA_VERSION = 4;
+// v5: optional topSessions leaderboard — ANONYMIZED (cost share, turns, model, plan-
+// mode, trajectory shape; never gist/project/raw $) and EMPTY unless the user passed
+// --share-sessions. The rich version stays local in the TUI.
+export const AGGREGATE_SCHEMA_VERSION = 5;
 
 // Well-known public command/skill names kept verbatim; everything else is hashed
 // so a custom name like `acme-deploy` can't leak project/company info.
@@ -135,6 +139,18 @@ export const AggregateRecordSchema = z.object({
     mcpDeferred: z.boolean(),
     mcpInvokedRate: z.number(),
   }),
+  // Anonymized "top spenders" — empty unless --share-sessions. Cost SHARE + structure
+  // only; never the prompt gist, project, or a raw dollar amount.
+  topSessions: z.array(
+    z.object({
+      costShare: z.number(),
+      turns: z.number(),
+      prompts: z.number(),
+      topModel: z.string(),
+      planMode: z.boolean(),
+      trajectory: z.string(),
+    }),
+  ),
   // Counts only — never the referenced filenames or the skill/project they came from.
   conditionalContext: z.object({
     /** Distinct "read X"-style config instructions detected (CLAUDE.md + skill bodies). */
@@ -155,6 +171,7 @@ export function buildAggregateRecord(
   fluency: FluencySignals,
   alwaysOn: AlwaysOnTax,
   generatedAt: string,
+  topSessionsAnon: AnonTopSession[] = [],
 ): AggregateRecord {
   const safeTotal = spend.totalUsd || 1;
   return AggregateRecordSchema.parse({
@@ -162,6 +179,7 @@ export function buildAggregateRecord(
     tool: 'claude_code',
     generatedAt,
     window: { days: spend.windowDays },
+    topSessions: topSessionsAnon,
     spend: {
       perMonthUsd: spend.perMonthUsd,
       totalUsd: spend.totalUsd,
