@@ -6,7 +6,7 @@
 
 import { readdirSync, readFileSync, statSync, type Dirent } from 'node:fs';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import type { AssistantTurn, Session, Span, TurnUsage } from '../model.js';
 
 const COMMAND_RE = /<command-(?:message|name)>([^<\n]+)<\/command-(?:message|name)>/;
@@ -37,7 +37,7 @@ interface ContentBlock {
   text?: string;
   thinking?: string;
   name?: string;
-  input?: { skill?: string; command?: string };
+  input?: { skill?: string; command?: string; file_path?: string };
 }
 
 function userText(content: unknown): string {
@@ -197,6 +197,10 @@ export function parseTranscript(
         tools: blocks.filter((b) => b.type === 'tool_use' && b.name).map((b) => b.name!),
         thinkingChars: blocks.filter((b) => b.type === 'thinking').reduce((n, b) => n + (b.thinking?.length ?? 0), 0),
         textChars: blocks.filter((b) => b.type === 'text').reduce((n, b) => n + (b.text?.length ?? 0), 0),
+        // Basename only — never the full path (privacy invariant).
+        reads: blocks
+          .filter((b) => b.type === 'tool_use' && b.name === 'Read' && b.input?.file_path)
+          .map((b) => basename(b.input!.file_path!)),
       };
       if (d.isSidechain) {
         const span = ensureSubSpan((d.agentId as string | undefined) ?? 'sidechain');

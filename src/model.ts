@@ -20,6 +20,10 @@ export interface AssistantTurn {
   usage: TurnUsage;
   /** tool_use names invoked this turn (e.g. Read, Edit, Bash, Task). */
   tools: string[];
+  /** Basenames of files opened via the `Read` tool this turn. Used to EMPIRICALLY
+   *  confirm "read X before Y" config instructions (conditional-context tax) — we
+   *  keep only basenames, never full paths, so nothing path-shaped is retained. */
+  reads: string[];
   /** Length of reasoning/thinking text — a rough proxy for reasoning effort. */
   thinkingChars: number;
   /** Length of visible assistant prose. */

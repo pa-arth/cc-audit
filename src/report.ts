@@ -56,24 +56,44 @@ export function renderReport(r: AuditResult, opts: { rows?: number } = {}): stri
   blank();
   out.push(...card('BY MODEL', modelRows));
 
+  if (r.topSessions.length > 0) {
+    const topRows: string[] = [];
+    let i = 1;
+    for (const t of r.topSessions.slice(0, Math.min(rows, 5))) {
+      // Keep each row within BOX_WIDTH (card pads but won't truncate): fixed-width
+      // fields + a clipped sparkline so a 60-prompt session can't blow out the frame.
+      topRows.push(
+        `${c.bold(`#${i}`)} ${money(padL(usd(t.costUsd), 7))}  ${pad(t.topModel.replace('claude-', ''), 11)} ` +
+          `${pad(`${t.turns}t·${t.prompts}p`, 11)} plan:${t.planMode ? 'on ' : 'off'} ` +
+          `${c.dim(pad(t.topTools, 17))} ${c.dim(t.trajectory.slice(0, 12))}`,
+      );
+      const gist = t.taskGist.replace(/\s+/g, ' ').trim();
+      topRows.push(c.dim(`   “${gist.length > 69 ? gist.slice(0, 68) + '…' : gist}”`));
+      i += 1;
+    }
+    blank();
+    out.push(...card('TOP SPENDERS  ·  most expensive sessions', topRows, c.gold));
+  }
+
   // Lead with the cuts that have NO quality tradeoff. Model right-sizing
   // (policy-dependent, often the smallest clean lever) comes last, via --judge.
   blank();
   out.push(`  ${c.bold(c.orange('FIXABLE WASTE'))}  ${c.dim('— no-tradeoff cuts first')}`);
 
-  // ── 1. Always-on context tax (emerald: the cleanest, no-tradeoff cut) ──────
+  // ── 1. Always-on context tax (emerald: the standing config cost) ───────────
+  // Reframed: this is what your CHOSEN context costs every turn, not "savings" to cut.
   const a = r.alwaysOn;
   const mcpDesc = a.mcpDeferred ? 'deferred by default (~$0 standing)' : 'eagerly loaded';
   const taxRows = [
-    c.dim('recoverable config (read every turn) — what you can actually trim:'),
-    `  project CLAUDE.md   ${padL(Math.round(a.projectClaudeMdTokens).toLocaleString() + ' tok', 9)}  ` +
-      `${money(padL(usd(a.projectClaudeMdUsd) + '/mo', 9))}  ${c.dim("← trim the repo's CLAUDE.md")}`,
-    `  global CLAUDE.md    ${padL(a.globalClaudeMdTokens.toLocaleString() + ' tok', 9)}  ` +
-      `${money(padL(usd(a.globalClaudeMdUsd) + '/mo', 9))}  ${c.dim('→ ~/.claude/CLAUDE.md')}`,
+    c.dim('always-on config — context you chose, re-paid every turn (useful ≠ free):'),
+    `  project memory     ${padL(Math.round(a.projectClaudeMdTokens).toLocaleString() + ' tok', 9)}  ` +
+      `${money(padL(usd(a.projectClaudeMdUsd) + '/mo', 9))}  ${c.dim('← CLAUDE.md/.local/rules + auto-memory, cwd→root')}`,
+    `  global memory      ${padL(a.globalClaudeMdTokens.toLocaleString() + ' tok', 9)}  ` +
+      `${money(padL(usd(a.globalClaudeMdUsd) + '/mo', 9))}  ${c.dim('→ ~/.claude/CLAUDE.md (+ .local, managed policy)')}`,
     `  skill listings     ≥${padL(a.skillDescriptionTokens.toLocaleString() + ' tok', 8)}  ` +
       `${money(padL(usd(a.skillDescriptionUsd) + '/mo', 9))}  ${c.dim(`${a.skillCount} user skills load every turn`)}`,
     rule(),
-    `  ${c.emerald(`recoverable ≈ ${c.bold(usd(a.recoverableMonthlyUsd) + '/mo')}`)}`,
+    `  ${c.emerald(`your config adds ≈ ${c.bold(usd(a.alwaysOnConfigMonthlyUsd) + '/mo')} of standing context`)}`,
     c.dim(
       `observed standing context: ${a.standingContextTokens.toLocaleString()} tok/turn ` +
         `(~${usd(a.observedMonthlyUsd)}/mo of spend)`,
@@ -81,8 +101,37 @@ export function renderReport(r: AuditResult, opts: { rows?: number } = {}): stri
     c.dim("  — the rest is FIXED system prompt + tool schemas you can't trim; see /context"),
     c.dim(`MCP: ${a.mcpServerCount} servers · ${mcpDesc} · invoked in ${pct(a.mcpInvokedRate)} of sessions`),
   ];
+  // Conditional context — instructed reads that load only when Claude obeys, so they're
+  // NOT in the total above. Shown with the MEASURED read-rate where we have the sessions.
+  if (a.conditionalContext.length > 0) {
+    taxRows.push(c.dim('conditional context — instructed reads, loaded only when obeyed (not in the total above):'));
+    for (const cc of a.conditionalContext.slice(0, rows)) {
+      const where =
+        cc.source === 'skill'
+          ? `skill: ${cc.skill}`
+          : cc.source === 'global-claude-md'
+            ? 'global CLAUDE.md'
+            : 'project CLAUDE.md';
+      const evidence =
+        cc.observedReadRate === null
+          ? 'detected; too few sessions to confirm'
+          : `read in ${pct(cc.observedReadRate)} of sessions` +
+            (cc.observedMedianFirstTurn !== null ? ` (median turn ${cc.observedMedianFirstTurn})` : '');
+      taxRows.push(c.dim(`  ${pad(cc.file, 22)} ${padL(cc.tokens.toLocaleString() + ' tok', 9)}  ${evidence}  ← ${where}`));
+    }
+  }
+  // Trim advice, kept STRICTLY evidence-based: a "read X" we MEASURED firing in a minority
+  // of sessions is worth moving to a skill. We never tell anyone to delete CLAUDE.md/memory
+  // they find useful — that value call isn't ours to make.
+  const trimCandidates = a.conditionalContext.filter((cc) => cc.observedReadRate !== null && cc.observedReadRate < 0.5);
+  if (trimCandidates.length > 0) {
+    taxRows.push(c.amber('trim candidates (measured, low-value standing reads):'));
+    for (const cc of trimCandidates.slice(0, rows)) {
+      taxRows.push(c.dim(`  "${cc.file}" fires in ${pct(cc.observedReadRate!)} of sessions — move to a skill so it loads on demand`));
+    }
+  }
   blank();
-  out.push(...panel('① ALWAYS-ON CONTEXT TAX  ·  no quality tradeoff', taxRows, c.emerald));
+  out.push(...panel('① ALWAYS-ON CONTEXT TAX  ·  what your standing context costs', taxRows, c.emerald));
 
   // ── 2. Slash-command / skill leak (amber: low-tradeoff restructuring) ──────
   const leakRows = [

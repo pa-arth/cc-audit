@@ -32,6 +32,7 @@ interface Args {
   json: boolean;
   judge: boolean;
   open: boolean;
+  shareSessions: boolean;
   rows?: number;
   out?: string;
   n?: number;
@@ -48,12 +49,13 @@ function ordinal(n: number): string {
 }
 
 function parseArgs(argv: string[]): Args {
-  const args: Args = { json: false, judge: false, open: false, aggressiveness: 'balanced' };
+  const args: Args = { json: false, judge: false, open: false, shareSessions: false, aggressiveness: 'balanced' };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]!;
     if (a === '--json') args.json = true;
     else if (a === '--judge') args.judge = true;
     else if (a === '--open') args.open = true;
+    else if (a === '--share-sessions') args.shareSessions = true;
     else if (a === '--root') args.root = argv[++i];
     else if (a === '--out') args.out = argv[++i];
     else if (a === '--since-days') args.sinceDays = Number.parseInt(argv[++i] ?? '', 10);
@@ -67,12 +69,15 @@ function parseArgs(argv: string[]): Args {
       process.stdout.write(
         'Usage:\n' +
           '  cc-audit [--since-days N] [--root DIR] [--rows N] [--json] [--judge] [--open]\n' +
-          '          [--aggressiveness conservative|balanced|aggressive]\n' +
+          '          [--share-sessions] [--aggressiveness conservative|balanced|aggressive]\n' +
           '      Analyze ~/.claude transcripts locally. In a terminal, a bare run then\n' +
           '      offers right-sizing and a shareable report — each asks first.\n' +
+          '      The TOP SPENDERS leaderboard (with your prompt gists) is always LOCAL-only.\n' +
           '      --json prints the aggregate record (always local-only, no prompts).\n' +
           '      --judge calls the hosted right-sizing model (task gist + metadata, never code).\n' +
           '      --open uploads the privacy-safe aggregate and opens a shareable web report.\n' +
+          '      --share-sessions adds an ANONYMIZED leaderboard (cost share, turns, model,\n' +
+          '          plan-mode, trajectory — never gists, projects, or $) to the shared report.\n' +
           '      Passing --judge/--open skips the prompt — the flag is the consent.\n' +
           '      --aggressiveness gates which over-modeled tasks are recommended as cuts (default balanced).\n' +
           '  cc-audit label [--n 50] [--out labels.json] [--since-days N] [--root DIR]\n' +
@@ -319,7 +324,7 @@ async function main(): Promise<void> {
     ? await withSpinner('Scanning ~/.claude transcripts', () => loadSessionsOrExit(args, interactive))
     : loadSessionsOrExit(args, interactive);
 
-  const result = runAudit(sessions, new Date().toISOString());
+  const result = runAudit(sessions, new Date().toISOString(), { shareSessions: args.shareSessions });
   if (args.json) {
     process.stdout.write(`${JSON.stringify(result.aggregate, null, 2)}\n`);
     return;
