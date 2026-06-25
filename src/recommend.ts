@@ -15,6 +15,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { getAnthropicPricing } from './vendor/pricing.js';
 import { isPremiumModel } from './pricing.js';
+import { sessionRedundancy, topRedundantFiles } from './fluency.js';
 import type { AlwaysOnTax } from './alwaysOn.js';
 import type { SpendBreakdown } from './attribute.js';
 import type { Session } from './model.js';
@@ -169,6 +170,32 @@ export function buildRecommendations(
         action: `Trim the heaviest one (~${Math.round(heaviest.tokens).toLocaleString()} tok) — cut stale/duplicated guidance.`,
       });
     }
+  }
+
+  // 5) Redundant reads: re-reading files already in context re-injects the same bytes
+  //    and inflates carry. The ungameable bloat lever. Behavioral fix (/clear between
+  //    tasks; don't re-open what you have), not a file edit — and we DON'T fabricate a
+  //    precise $ saved (carry is mostly cheap cached reads; the honest number is the
+  //    rate, not a dollar figure). So monthlyUsdSaved=0 → renders as a 'restructure'.
+  let reads = 0;
+  let redundant = 0;
+  for (const s of sessions) {
+    const r = sessionRedundancy(s);
+    reads += r.reads;
+    redundant += r.redundantReads;
+  }
+  const redundantRate = reads ? redundant / reads : 0;
+  if (reads >= 50 && redundantRate >= 0.3) {
+    const top = topRedundantFiles(sessions, 2)
+      .map((f) => `${f.name} ×${f.rereads}`)
+      .join(', ');
+    recs.push({
+      kind: 'restructure',
+      title: `${Math.round(redundantRate * 100)}% of file reads re-read a file already in context`,
+      monthlyUsdSaved: 0, // honest: the lever is the rate, not a fabricated $ saved
+      file: null,
+      action: `${redundant} redundant reads${top ? ` (e.g. ${top})` : ''}. Each re-injects the file you already have — \`/clear\` between unrelated tasks and avoid re-opening files in-context.`,
+    });
   }
 
   return recs.sort((a, b) => b.monthlyUsdSaved - a.monthlyUsdSaved);

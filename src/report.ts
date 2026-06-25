@@ -7,6 +7,7 @@ import type { AuditResult } from './audit.js';
 import type { SessionFootprint } from './footprint.js';
 import type { RightSizingResult } from './judgeClient.js';
 import { BOX_WIDTH, c, card, panel, rule, wrap } from './theme.js';
+import { localBand } from './fluency.js';
 
 const usd = (n: number) => `$${n >= 100 ? Math.round(n).toLocaleString() : n.toFixed(2)}`;
 const pct = (n: number) => `${Math.round(n * 100)}%`;
@@ -191,13 +192,26 @@ export function renderReport(r: AuditResult, opts: { rows?: number } = {}): stri
 
   // ── Fluency (cyan: the habits behind the bill) ─────────────────────────────
   const f = r.fluency;
+  // No false-precise integer: a coarse self-band (calibrated cohort band is gated
+  // behind --open). The raw habits below are the user's own facts.
+  const carryPerMo = (f.carryUsd / s.windowDays) * 30.44;
   const fluencyRows = [
-    `score: ${c.bold(c.gold(`${f.score}/100`))}   ·   premium-model share: ${lever(pct(f.premiumTurnShare))}  ${c.dim('← the right-sizing lever')}`,
-    c.dim(
-      `plan-mode: ${pct(f.planModeRate)} of sessions · subagent spend: ${pct(f.subagentUsageRate)} · /compact: ${pct(f.contextBloatRate)}`,
-    ),
-    c.dim(`turns/task: median ${f.medianTurnsPerTask}, p90 ${f.p90TurnsPerTask} · models used: ${f.modelDiversity}`),
+    `self-band: ${c.bold(c.cyan(localBand(f)))}  ${c.dim('·')}  ${c.cyan('cc-audit --open')} ${c.dim('for your calibrated band + percentile')}`,
+    c.dim(`plan-mode: ${pct(f.planModeRate)} of substantive sessions · subagent: ${pct(f.subagentUsageRate)} · models: ${f.modelDiversity}`),
+    c.dim(`turns/task: median ${f.medianTurnsPerTask}, p90 ${f.p90TurnsPerTask}`),
+    // Honest carry headline (a true fact, ~80% of an agentic bill — NOT a "waste" figure).
+    `context carry: ${money(usd(carryPerMo) + '/mo')}  ${c.dim(`(${pct(f.carryShare)} of bill — re-reading transcript each turn)`)}`,
   ];
+  // The avoidable lever: redundant reads (re-injecting files already in context).
+  if (f.redundantReadRate >= 0.15) {
+    fluencyRows.push(`redundant reads: ${lever(pct(f.redundantReadRate))} ${c.dim('of reads re-open a file already in context')}`);
+    if (r.topRedundantFiles.length) {
+      const egText = `e.g. ${r.topRedundantFiles.map((t) => `${t.name} ×${t.rereads}`).join(', ')}`;
+      for (const ln of wrap(egText, BOX_WIDTH - 4)) fluencyRows.push(c.dim(`    ${ln}`));
+    }
+    fluencyRows.push(c.dim("  → /clear between tasks; don't re-read what you already have"));
+  }
+  fluencyRows.push(`premium-model share: ${lever(pct(f.premiumTurnShare))}  ${c.dim('← right-sizing lever, not a grade')}`);
   blank();
   out.push(...card('FLUENCY  ·  the habits behind the bill', fluencyRows, c.cyan));
 

@@ -37,8 +37,12 @@ interface ContentBlock {
   text?: string;
   thinking?: string;
   name?: string;
-  input?: { skill?: string; command?: string; file_path?: string };
+  input?: { skill?: string; command?: string; file_path?: string; notebook_path?: string };
 }
+
+// Tools whose input names a file we then carry in context — re-touching the same path
+// without resetting re-injects its content (the redundant-read signal).
+const FILE_TOOLS = new Set(['Read', 'Edit', 'Write', 'NotebookEdit', 'MultiEdit']);
 
 function userText(content: unknown): string {
   if (typeof content === 'string') return content;
@@ -57,6 +61,12 @@ function isGenuinePrompt(text: string): boolean {
   if (t.length < 8) return false;
   if (t.startsWith('Base directory for this skill')) return false;
   if (t.includes('"type":"tool_result"') || t.includes('[Request interrupted')) return false;
+  // Hook / slash-command / local-command / system text is logged with role=user but is
+  // NOT a human prompt. It all OPENS with a lowercase-hyphenated tag — <task-notification>,
+  // <command-message>, <command-name>, <command-args>, <local-command-caveat>,
+  // <local-command-stdout>, <system-reminder>, … — which a real prompt practically never
+  // does. One rule drops the lot (and any future hook tag).
+  if (/^<[a-z][a-z0-9-]*>/.test(t)) return false;
   return true;
 }
 
@@ -195,6 +205,10 @@ export function parseTranscript(
         model: msg.model ?? null,
         usage: parseUsage(msg.usage),
         tools: blocks.filter((b) => b.type === 'tool_use' && b.name).map((b) => b.name!),
+        fileOps: blocks
+          .filter((b) => b.type === 'tool_use' && b.name && FILE_TOOLS.has(b.name))
+          .map((b) => ({ tool: b.name!, path: b.input?.file_path ?? b.input?.notebook_path ?? '' }))
+          .filter((o) => o.path),
         thinkingChars: blocks.filter((b) => b.type === 'thinking').reduce((n, b) => n + (b.thinking?.length ?? 0), 0),
         textChars: blocks.filter((b) => b.type === 'text').reduce((n, b) => n + (b.text?.length ?? 0), 0),
         // Basename only — never the full path (privacy invariant).

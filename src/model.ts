@@ -14,6 +14,15 @@ export interface TurnUsage {
   cacheWrite1h: number;
 }
 
+/** A file-touching tool call (Read/Edit/Write/NotebookEdit) — the tool name and the
+ *  path it acted on. Used to detect redundant re-reads (the same file re-injected into
+ *  context). Paths are LOCAL-ONLY: used for redundancy stats + local display, never
+ *  uploaded (privacy invariant — only the derived rate leaves the machine). */
+export interface FileOp {
+  tool: string;
+  path: string;
+}
+
 export interface AssistantTurn {
   /** Model id this turn ran under (per-turn — a session can switch models). */
   model: string | null;
@@ -24,6 +33,9 @@ export interface AssistantTurn {
    *  confirm "read X before Y" config instructions (conditional-context tax) — we
    *  keep only basenames, never full paths, so nothing path-shaped is retained. */
   reads: string[];
+  /** File-touching tool calls this turn, with paths — for redundant-read detection.
+   *  Optional: only the Claude Code adapter populates it; treat missing as []. */
+  fileOps?: FileOp[];
   /** Length of reasoning/thinking text — a rough proxy for reasoning effort. */
   thinkingChars: number;
   /** Length of visible assistant prose. */

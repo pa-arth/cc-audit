@@ -48,10 +48,20 @@ export async function judgeFootprints(
 export interface PostReportResult {
   id: string;
   url: string;
-  // Global, anonymous fluency percentile (you-vs-population), computed server-
-  // side from the public corpus. Null until the corpus is large enough to rank
-  // against. Rides on this response so the CLI prints it with no extra egress.
+  // Legacy benchmark shape (kept for older CLIs): global anonymous percentile,
+  // null until the corpus crosses MIN_COHORT.
   benchmark?: { fluencyPercentile: number; cohortSize: number } | null;
+  // The gated, server-computed readout: a coarse BAND (always present once the
+  // signals are scoreable — cold-start uses absolute cutoffs, warm uses percentile
+  // tertiles), the relative percentile (null below MIN_COHORT), and the single
+  // highest-leverage nudge. The score/thresholds themselves stay server-side.
+  fluency?: {
+    score: number | null;
+    band: 'Developing' | 'Strong' | 'Elite' | null;
+    percentile: number | null;
+    cohortSize: number;
+    whatMovesYouUp: string | null;
+  } | null;
 }
 
 /**
