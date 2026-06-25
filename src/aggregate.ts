@@ -17,7 +17,9 @@ import type { FluencySignals } from './fluency.js';
 // v3 additions: conditionalContext — COUNTS ONLY (how many "read X" config instructions
 // were found, their total token weight, and how many were empirically confirmed). The
 // referenced filenames + skill/project names stay LOCAL; only aggregate numbers leave.
-export const AGGREGATE_SCHEMA_VERSION = 3;
+// v4: rename alwaysOn.recoverable* → alwaysOnConfig* — standing config is a COST we
+// surface, not "savings" to claim; the field name no longer asserts trimmability.
+export const AGGREGATE_SCHEMA_VERSION = 4;
 
 // Well-known public command/skill names kept verbatim; everything else is hashed
 // so a custom name like `acme-deploy` can't leak project/company info.
@@ -123,8 +125,8 @@ export const AggregateRecordSchema = z.object({
   alwaysOn: z.object({
     standingContextTokens: z.number(),
     observedMonthlyUsd: z.number(),
-    recoverableTokensPerTurn: z.number(),
-    recoverableMonthlyUsd: z.number(),
+    alwaysOnConfigTokensPerTurn: z.number(),
+    alwaysOnConfigMonthlyUsd: z.number(),
     globalClaudeMdTokens: z.number(),
     projectClaudeMdTokens: z.number(),
     skillDescriptionTokens: z.number(),
@@ -197,8 +199,8 @@ export function buildAggregateRecord(
     alwaysOn: {
       standingContextTokens: alwaysOn.standingContextTokens,
       observedMonthlyUsd: alwaysOn.observedMonthlyUsd,
-      recoverableTokensPerTurn: alwaysOn.recoverableTokensPerTurn,
-      recoverableMonthlyUsd: alwaysOn.recoverableMonthlyUsd,
+      alwaysOnConfigTokensPerTurn: alwaysOn.alwaysOnConfigTokensPerTurn,
+      alwaysOnConfigMonthlyUsd: alwaysOn.alwaysOnConfigMonthlyUsd,
       globalClaudeMdTokens: alwaysOn.globalClaudeMdTokens,
       projectClaudeMdTokens: alwaysOn.projectClaudeMdTokens,
       skillDescriptionTokens: alwaysOn.skillDescriptionTokens,

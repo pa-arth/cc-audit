@@ -1,7 +1,7 @@
 // Conditional-context tax (Bug 2): a CLAUDE.md instruction like "read ERRORS.md
 // before making changes" pulls ERRORS.md into context whenever Claude follows it.
 // That's NOT always-on the way an `@import` is — it loads only when the instruction
-// fires — so we report it SEPARATELY and never fold it into the recoverable headline
+// fires — so we report it SEPARATELY and never fold it into the always-on config total
 // (folding it would repeat the over-promise mistake the always-on module warns about).
 //
 // Detection is deterministic (regex over the config text) so it fires regardless of

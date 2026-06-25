@@ -55,9 +55,9 @@ export function renderReport(r: AuditResult, opts: { rows?: number } = {}): stri
   out.push('  FIXABLE WASTE  —  no-tradeoff cuts first');
   line();
 
-  out.push('  1. ALWAYS-ON CONTEXT TAX  (no quality tradeoff — the cleanest cut)');
+  out.push('  1. ALWAYS-ON CONTEXT TAX  (what your standing context costs every turn)');
   const a = r.alwaysOn;
-  out.push(`    recoverable config (read every turn) — what you can actually trim:`);
+  out.push(`    always-on config — context you chose, re-paid every turn (useful ≠ free):`);
   out.push(
     `      project memory     ${padL(Math.round(a.projectClaudeMdTokens).toLocaleString() + ' tok', 9)}  ${padL(usd(a.projectClaudeMdUsd) + '/mo', 9)}  ← CLAUDE.md/.local/rules + auto-memory, cwd→root`,
   );
@@ -68,7 +68,7 @@ export function renderReport(r: AuditResult, opts: { rows?: number } = {}): stri
     `      skill listings     ≥${padL(a.skillDescriptionTokens.toLocaleString() + ' tok', 8)}  ${padL(usd(a.skillDescriptionUsd) + '/mo', 9)}  ${a.skillCount} user skills load every turn`,
   );
   out.push(`      ${'─'.repeat(46)}`);
-  out.push(`      recoverable ≈ ${usd(a.recoverableMonthlyUsd)}/mo`);
+  out.push(`      your config adds ≈ ${usd(a.alwaysOnConfigMonthlyUsd)}/mo of standing context`);
   out.push(
     `    observed standing context: ${a.standingContextTokens.toLocaleString()} tok/turn (~${usd(a.observedMonthlyUsd)}/mo of spend)`,
   );
@@ -93,6 +93,18 @@ export function renderReport(r: AuditResult, opts: { rows?: number } = {}): stri
           : `read in ${pct(c.observedReadRate)} of sessions` +
             (c.observedMedianFirstTurn !== null ? ` (median turn ${c.observedMedianFirstTurn})` : '');
       out.push(`      ${pad(c.file, 22)} ${padL(c.tokens.toLocaleString() + ' tok', 9)}  ${evidence}  ← ${where}`);
+    }
+  }
+  // Trim advice, kept STRICTLY evidence-based: a "read X" instruction we MEASURED firing
+  // in a minority of sessions is genuinely worth moving to a skill. We don't tell anyone
+  // to delete CLAUDE.md/memory they find useful — that value call isn't ours to make.
+  const trimCandidates = a.conditionalContext.filter(
+    (c) => c.observedReadRate !== null && c.observedReadRate < 0.5,
+  );
+  if (trimCandidates.length > 0) {
+    out.push(`    trim candidates (measured, low-value standing reads):`);
+    for (const c of trimCandidates.slice(0, rows)) {
+      out.push(`      "${c.file}" fires in ${pct(c.observedReadRate!)} of sessions — move to a skill so it loads on demand`);
     }
   }
   line();

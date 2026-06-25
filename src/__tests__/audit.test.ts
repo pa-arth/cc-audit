@@ -279,7 +279,7 @@ describe('context-tax + system-command + model-invoked attribution', () => {
   });
 });
 
-describe('always-on tax: recoverable vs observed + MCP framing', () => {
+describe('always-on tax: config cost vs observed + MCP framing', () => {
   // Point a session's cwd at a temp project with a known CLAUDE.md so the recoverable
   // project component is deterministic regardless of the dev's home dir.
   const projDir = mkdtempSync(join(tmpdir(), 'cc-audit-proj-'));
@@ -307,14 +307,14 @@ describe('always-on tax: recoverable vs observed + MCP framing', () => {
     expect(a.projectClaudeMdTokens).toBeGreaterThan(900); // ~1000 tok
   });
 
-  it('recoverable = global + project + skill listings (additive, file-measured)', () => {
-    expect(a.recoverableTokensPerTurn).toBeCloseTo(
+  it('always-on config = global + project + skill listings (additive, file-measured)', () => {
+    expect(a.alwaysOnConfigTokensPerTurn).toBeCloseTo(
       a.globalClaudeMdTokens + a.projectClaudeMdTokens + a.skillDescriptionTokens,
       6,
     );
-    // Recoverable $ and observed $ are priced with the same per-token rate.
-    if (a.standingContextTokens > 0 && a.recoverableTokensPerTurn > 0) {
-      expect(a.recoverableMonthlyUsd / a.recoverableTokensPerTurn).toBeCloseTo(
+    // Config $ and observed $ are priced with the same per-token rate.
+    if (a.standingContextTokens > 0 && a.alwaysOnConfigTokensPerTurn > 0) {
+      expect(a.alwaysOnConfigMonthlyUsd / a.alwaysOnConfigTokensPerTurn).toBeCloseTo(
         a.observedMonthlyUsd / a.standingContextTokens,
         9,
       );

@@ -2,11 +2,12 @@
 //   1) OBSERVED standing context — the empirical turn-1 prefix. Includes the system
 //      prompt + tool schemas + your first user prompt, MOST of which is FIXED and
 //      cannot be trimmed. Kept as honest context, NOT as a "savings" headline.
-//   2) RECOVERABLE config tax — global + project CLAUDE.md + skill listings, measured
-//      from the actual files. This is the part a developer can actually cut. It's the
-//      real fixable lever, and it's much smaller than the observed number.
-// Labeling the full prefix as recoverable (the old behavior) over-promised savings —
-// the same credibility mistake as the old MCP $246 inflation.
+//   2) ALWAYS-ON CONFIG cost — global + project memory + skill listings, measured from
+//      the actual files. This is the context the developer CHOSE, re-paid every turn.
+//      We report it as a COST, not as "savings": useful CLAUDE.md / auto-memory is not
+//      waste, and telling people to delete it to save money is the same over-promise as
+//      the old MCP $246 inflation. Real trim advice is kept narrow and evidence-based
+//      (see conditionalContext read-rates) — the value call stays with the user.
 
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { homedir } from 'node:os';
@@ -24,11 +25,15 @@ export interface AlwaysOnTax {
    *  total spend, not additional). Most of this is unavoidable. */
   observedMonthlyUsd: number;
 
-  /** RECOVERABLE config tokens carried every turn (turn-weighted): global + project
-   *  CLAUDE.md + skill listings. The real fixable lever. */
-  recoverableTokensPerTurn: number;
-  /** Estimated monthly spend on the recoverable config tax — the honest "you can cut this". */
-  recoverableMonthlyUsd: number;
+  /** Standing CONFIG tokens carried every turn (turn-weighted): global + project memory
+   *  + skill listings. This is context you CHOSE — re-paid each turn. It is a COST to
+   *  surface, NOT a "savings" claim: useful config is not waste. Whether any of it is
+   *  trimmable is a value judgment we leave to the user (see conditionalContext for the
+   *  evidence-based trim candidates we can actually defend). */
+  alwaysOnConfigTokensPerTurn: number;
+  /** Estimated monthly spend re-reading that standing config — what it costs, not what
+   *  you'd "save" by deleting it. */
+  alwaysOnConfigMonthlyUsd: number;
   /** Machine-level memory: ~/.claude/CLAUDE.md (+ .local + managed policy), @imports
    *  resolved. Field name kept for aggregate compatibility; it's the global memory set. */
   globalClaudeMdTokens: number;
@@ -52,7 +57,7 @@ export interface AlwaysOnTax {
   mcpInvokedRate: number;
 
   /** CONDITIONAL context: files a CLAUDE.md instructs Claude to read ("read ERRORS.md
-   *  before…"). NOT folded into recoverable — these load only when the instruction
+   *  before…"). NOT folded into always-on config — these load only when the instruction
    *  fires, so reporting them as always-on would repeat the over-promise mistake.
    *  Reported separately, with an empirically observed read-rate when measurable. */
   conditionalContext: ConditionalContextItem[];
@@ -175,7 +180,7 @@ export function computeAlwaysOn(sessions: Session[]): AlwaysOnTax {
 
   const projectClaudeMdTokens = totalTurns ? projectTokenTurns / totalTurns : 0;
   const skillDescriptionTokens = userSkills.tokens;
-  const recoverableTokensPerTurn = globalClaudeMdTokens + projectClaudeMdTokens + skillDescriptionTokens;
+  const alwaysOnConfigTokensPerTurn = globalClaudeMdTokens + projectClaudeMdTokens + skillDescriptionTokens;
 
   // MCP tools are tool-search-deferred by default (CC v2.1.121+), so they cost ~0
   // standing — only ~120 tok of names load unless ENABLE_TOOL_SEARCH=false.
@@ -184,8 +189,8 @@ export function computeAlwaysOn(sessions: Session[]): AlwaysOnTax {
   return {
     standingContextTokens: standing,
     observedMonthlyUsd: perTurnUsd(standing),
-    recoverableTokensPerTurn,
-    recoverableMonthlyUsd: perTurnUsd(recoverableTokensPerTurn),
+    alwaysOnConfigTokensPerTurn,
+    alwaysOnConfigMonthlyUsd: perTurnUsd(alwaysOnConfigTokensPerTurn),
     globalClaudeMdTokens,
     globalClaudeMdUsd: perTurnUsd(globalClaudeMdTokens),
     projectClaudeMdTokens,
@@ -198,10 +203,10 @@ export function computeAlwaysOn(sessions: Session[]): AlwaysOnTax {
     mcpInvokedRate: sessions.length ? mcpSessions / sessions.length : 0,
     conditionalContext: detectConditionalContext(sessions),
     note:
-      'Recoverable = project memory (every CLAUDE.md + CLAUDE.local.md from cwd up to the ' +
-      'repo root) + global memory + skill listings, measured from your files and cache-read ' +
-      'into every turn — the part you can actually trim. The larger OBSERVED standing ' +
-      'context is mostly fixed system prompt + tool schemas you cannot cut. Run /context ' +
-      'in a session for the authoritative live breakdown.',
+      'Always-on config = project memory (every CLAUDE.md + CLAUDE.local.md from cwd up to ' +
+      'the repo root) + global memory + skill listings, measured from your files and cache-read ' +
+      'into every turn. This is what your chosen context COSTS, not waste to cut — useful ' +
+      'config earns its tokens. The larger OBSERVED standing context is mostly fixed system ' +
+      'prompt + tool schemas. Run /context in a session for the authoritative live breakdown.',
   };
 }
