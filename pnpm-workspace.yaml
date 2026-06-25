@@ -1,0 +1,4 @@
+# pnpm gates dependency build scripts. esbuild's postinstall fetches its platform
+# binary, so it must be allowed or `pnpm install` exits non-zero.
+allowBuilds:
+  esbuild: true
