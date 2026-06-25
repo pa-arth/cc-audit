@@ -9,3 +9,6 @@ bundles/
 /cc-audit-labels.json
 /relabeled.json
 /scored.json
+
+# Local MCP server config (personal tooling, not project-wide)
+/.mcp.json
