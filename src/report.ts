@@ -35,6 +35,21 @@ export function renderReport(r: AuditResult, opts: { rows?: number } = {}): stri
   }
   line();
 
+  if (r.topSessions.length > 0) {
+    out.push('  TOP SPENDERS  (most expensive sessions — where the money actually went)');
+    let i = 1;
+    for (const t of r.topSessions.slice(0, Math.min(rows, 5))) {
+      const traj = `${t.turns}t · ${t.prompts}p${t.trajectory ? ' ' + t.trajectory : ''} · plan ${t.planMode ? 'on' : 'off'}`;
+      out.push(
+        `    #${i}  ${padL(usd(t.costUsd), 8)}  ${pad(t.topModel.replace('claude-', ''), 14)} ${traj}  ·  ${t.topTools}`,
+      );
+      const gist = t.taskGist.replace(/\s+/g, ' ').trim();
+      out.push(`        “${gist.length > 72 ? gist.slice(0, 71) + '…' : gist}”  [${t.project}]`);
+      i += 1;
+    }
+    line();
+  }
+
   // Lead with the cuts that have NO quality tradeoff. Model right-sizing
   // (policy-dependent, often the smallest clean lever) comes last, via --judge.
   out.push('  FIXABLE WASTE  —  no-tradeoff cuts first');

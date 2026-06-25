@@ -5,6 +5,7 @@ import { attributeSpend, type SpendBreakdown } from './attribute.js';
 import { buildAggregateRecord, type AggregateRecord } from './aggregate.js';
 import { computeFluency, type FluencySignals } from './fluency.js';
 import { buildRecommendations, type Recommendation } from './recommend.js';
+import { topSessions, type TopSession } from './topSessions.js';
 import type { Session } from './model.js';
 
 export interface AuditResult {
@@ -15,6 +16,9 @@ export interface AuditResult {
    *  here never enter the aggregate. */
   recommendations: Recommendation[];
   aggregate: AggregateRecord;
+  /** N most expensive sessions with their structure. LOCAL-ONLY (raw gists/projects) —
+   *  rendered in the TUI, never placed in the aggregate. */
+  topSessions: TopSession[];
   sessionCount: number;
 }
 
@@ -24,5 +28,13 @@ export function runAudit(sessions: Session[], generatedAt: string): AuditResult 
   const alwaysOn = computeAlwaysOn(sessions);
   const recommendations = buildRecommendations(spend, alwaysOn, sessions);
   const aggregate = buildAggregateRecord(spend, fluency, alwaysOn, generatedAt);
-  return { spend, fluency, alwaysOn, recommendations, aggregate, sessionCount: sessions.length };
+  return {
+    spend,
+    fluency,
+    alwaysOn,
+    recommendations,
+    aggregate,
+    topSessions: topSessions(sessions),
+    sessionCount: sessions.length,
+  };
 }
