@@ -9,13 +9,17 @@
 // devDependency (the .mjs fallback).
 
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import path from 'node:path';
 
 const repoRoot = path.resolve(import.meta.dirname, '..');
 const outDir = path.join(repoRoot, 'bundles');
 const cli = path.join(repoRoot, 'dist/cli.js');
+// Bake the version into the bundle (src/version.ts) so a bun-compiled binary —
+// which ships no package.json — still reports and update-checks correctly.
+const version = JSON.parse(readFileSync(path.join(repoRoot, 'package.json'), 'utf8')).version;
+const defineVersion = `--define:__CC_AUDIT_VERSION__=${JSON.stringify(version)}`;
 mkdirSync(outDir, { recursive: true });
 
 function run(cmd, args, opts = {}) {
@@ -39,7 +43,7 @@ const targets = [
 ];
 for (const [target, name] of targets) {
   console.log(`\nbundle: compiling ${name} (${target})…`);
-  run(bun, ['build', cli, '--compile', `--target=${target}`, `--outfile=${path.join(outDir, name)}`]);
+  run(bun, ['build', cli, '--compile', defineVersion, `--target=${target}`, `--outfile=${path.join(outDir, name)}`]);
 }
 
 // 3. Node ESM fallback via esbuild.
@@ -47,6 +51,7 @@ console.log('\nbundle: esbuild Node fallback (cc-audit.mjs)…');
 run('npx', [
   'esbuild', 'dist/cli.js',
   '--bundle', '--platform=node', '--format=esm', '--target=node18',
+  defineVersion,
   '--outfile=bundles/cc-audit.mjs',
 ]);
 

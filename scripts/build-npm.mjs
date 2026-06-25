@@ -38,9 +38,12 @@ run('npm', ['run', 'build']);
 
 // 2. esbuild bundle → bundles/npm/cc-audit.mjs (inlines @clack/prompts + zod).
 //    esbuild passes through the #!/usr/bin/env node shebang from the entry file.
+//    --define bakes the version into the single file (src/version.ts) so the
+//    published bundle reports it without shipping or reading a package.json.
 run('npx', [
   'esbuild', 'dist/cli.js',
   '--bundle', '--platform=node', '--format=esm', '--target=node18',
+  `--define:__CC_AUDIT_VERSION__=${JSON.stringify(srcPkg.version)}`,
   '--outfile=bundles/npm/cc-audit.mjs',
 ]);
 chmodSync(path.join(outDir, 'cc-audit.mjs'), 0o755);

@@ -28,6 +28,8 @@ import { renderFix, runFix } from './fix.js';
 import { machineAnonId, openURL } from './open.js';
 import { isPremiumModel } from './pricing.js';
 import { type Aggressiveness, renderReport, renderRightSizing } from './report.js';
+import { checkForUpdate, renderUpdateNotice } from './updateCheck.js';
+import { VERSION } from './version.js';
 
 interface Args {
   root?: string;
@@ -89,7 +91,10 @@ function parseArgs(argv: string[]): Args {
           '      Score your filled sheet vs the judge: precision (gate ≥90%), recall, confusion.\n' +
           '  cc-audit fix [--since-days N] [--root DIR]\n' +
           '      Turn recommendations into REVIEWABLE patches under ./.cc-audit/ (never applied):\n' +
-          '      local model-pin edits + a hosted CLAUDE.md trim (spends credits, daily-capped).\n',
+          '      local model-pin edits + a hosted CLAUDE.md trim (spends credits, daily-capped).\n' +
+          '  cc-audit --version\n' +
+          '      Print the installed version. A bare run also warns (on stderr) when a newer\n' +
+          '      version is published — silence with CC_AUDIT_NO_UPDATE_CHECK=1.\n',
       );
       process.exit(0);
     }
@@ -348,7 +353,7 @@ async function maybeShare(
   }
 }
 
-async function main(): Promise<void> {
+async function run(): Promise<void> {
   const argv = process.argv.slice(2);
   const sub = argv[0];
   if (sub === 'label') {
@@ -401,6 +406,24 @@ async function main(): Promise<void> {
     .reduce((n, m) => n + (m.costUsd / result.spend.windowDays) * 30.44, 0);
   const judged = await maybeRightSize(args, interactive, sessions, result.spend.windowDays, premiumMonthlyUsd);
   await maybeShare(args, interactive, result.aggregate, judged?.summary);
+}
+
+async function main(): Promise<void> {
+  const sub = process.argv[2];
+  if (sub === '--version' || sub === '-v' || sub === 'version') {
+    process.stdout.write(`${VERSION}\n`);
+    return;
+  }
+  // Kick the update check off up front so its (cached, short-timeout) fetch
+  // overlaps the audit; we only await the already-running promise at the end.
+  // Routed to stderr so it never corrupts --json on stdout. Never throws.
+  const updatePromise = checkForUpdate(VERSION).catch(() => undefined);
+  try {
+    await run();
+  } finally {
+    const notice = await updatePromise;
+    if (notice) process.stderr.write(`\n${renderUpdateNotice(notice)}\n`);
+  }
 }
 
 void main();
