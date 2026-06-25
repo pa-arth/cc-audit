@@ -6,121 +6,147 @@
 import type { AuditResult } from './audit.js';
 import type { SessionFootprint } from './footprint.js';
 import type { RightSizingResult } from './judgeClient.js';
+import { BOX_WIDTH, c, card, panel, rule, wrap } from './theme.js';
 
 const usd = (n: number) => `$${n >= 100 ? Math.round(n).toLocaleString() : n.toFixed(2)}`;
 const pct = (n: number) => `${Math.round(n * 100)}%`;
 const pad = (s: string, n: number) => s.length > n ? `${s.slice(0, n - 1)}…` : s.padEnd(n);
 const padL = (s: string, n: number) => s.padStart(n);
+// Money is the number that matters — always gold; percentages read as cyan levers.
+const money = (s: string) => c.gold(s);
+const lever = (s: string) => c.cyan(s);
 
 export function renderReport(r: AuditResult, opts: { rows?: number } = {}): string {
   const rows = opts.rows ?? 8;
   const s = r.spend;
   const out: string[] = [];
-  const line = (c = '─') => out.push(c.repeat(64));
+  const blank = () => out.push('');
 
-  out.push('');
-  out.push('  CLAUDE CODE SPEND & FLUENCY AUDIT');
+  // ── Header ───────────────────────────────────────────────────────────────
+  blank();
   out.push(
-    `  ${r.sessionCount} sessions · ${Math.round(s.windowDays)}d window · ` +
-      `judge model layer: run with --judge (hosted)`,
+    ...card(
+      'CLAUDE CODE · SPEND & FLUENCY AUDIT',
+      [
+        c.dim(
+          `${r.sessionCount} sessions · ${Math.round(s.windowDays)}d window · ` +
+            `judge layer: run with ${c.cyan('--judge')}${c.dim(' (hosted)')}`,
+        ),
+      ],
+      c.orange,
+    ),
   );
-  line('═');
-  out.push(`  ESTIMATED SPEND:  ${usd(s.perMonthUsd)}/mo   (${usd(s.totalUsd)} over window)`);
-  if (s.unpricedShare > 0.02) out.push(`  ⚠ ${pct(s.unpricedShare)} of spend used a fallback price (unknown model id)`);
-  line();
 
-  out.push('  BY MODEL');
-  for (const m of s.byModel.slice(0, 6)) {
-    out.push(`    ${pad(m.model.replace('claude-', ''), 22)} ${padL(usd((m.costUsd / s.windowDays) * 30.44) + '/mo', 12)}  ${padL(pct(m.share), 5)}`);
+  // ── Estimated spend (the headline number, in gold) ─────────────────────────
+  const spendRows = [
+    `${c.dim('estimated')}  ${c.bold(money(usd(s.perMonthUsd) + '/mo'))}   ${c.dim(`(${usd(s.totalUsd)} over window)`)}`,
+  ];
+  if (s.unpricedShare > 0.02) {
+    spendRows.push(c.amber(`⚠ ${pct(s.unpricedShare)} of spend used a fallback price (unknown model id)`));
   }
-  line();
+  blank();
+  out.push(...card('ESTIMATED SPEND', spendRows, c.gold));
+
+  // ── By model ───────────────────────────────────────────────────────────────
+  const modelRows = s.byModel.slice(0, 6).map(
+    (m) =>
+      `${pad(m.model.replace('claude-', ''), 22)} ` +
+      `${money(padL(usd((m.costUsd / s.windowDays) * 30.44) + '/mo', 12))}  ${lever(padL(pct(m.share), 5))}`,
+  );
+  blank();
+  out.push(...card('BY MODEL', modelRows));
 
   if (r.topSessions.length > 0) {
-    out.push('  TOP SPENDERS  (most expensive sessions — where the money actually went)');
+    const topRows: string[] = [];
     let i = 1;
     for (const t of r.topSessions.slice(0, Math.min(rows, 5))) {
-      const traj = `${t.turns}t · ${t.prompts}p${t.trajectory ? ' ' + t.trajectory : ''} · plan ${t.planMode ? 'on' : 'off'}`;
-      out.push(
-        `    #${i}  ${padL(usd(t.costUsd), 8)}  ${pad(t.topModel.replace('claude-', ''), 14)} ${traj}  ·  ${t.topTools}`,
+      // Keep each row within BOX_WIDTH (card pads but won't truncate): fixed-width
+      // fields + a clipped sparkline so a 60-prompt session can't blow out the frame.
+      topRows.push(
+        `${c.bold(`#${i}`)} ${money(padL(usd(t.costUsd), 7))}  ${pad(t.topModel.replace('claude-', ''), 11)} ` +
+          `${pad(`${t.turns}t·${t.prompts}p`, 11)} plan:${t.planMode ? 'on ' : 'off'} ` +
+          `${c.dim(pad(t.topTools, 17))} ${c.dim(t.trajectory.slice(0, 12))}`,
       );
       const gist = t.taskGist.replace(/\s+/g, ' ').trim();
-      out.push(`        “${gist.length > 72 ? gist.slice(0, 71) + '…' : gist}”  [${t.project}]`);
+      topRows.push(c.dim(`   “${gist.length > 69 ? gist.slice(0, 68) + '…' : gist}”`));
       i += 1;
     }
-    line();
+    blank();
+    out.push(...card('TOP SPENDERS  ·  most expensive sessions', topRows, c.gold));
   }
 
   // Lead with the cuts that have NO quality tradeoff. Model right-sizing
   // (policy-dependent, often the smallest clean lever) comes last, via --judge.
-  out.push('  FIXABLE WASTE  —  no-tradeoff cuts first');
-  line();
+  blank();
+  out.push(`  ${c.bold(c.orange('FIXABLE WASTE'))}  ${c.dim('— no-tradeoff cuts first')}`);
 
-  out.push('  1. ALWAYS-ON CONTEXT TAX  (what your standing context costs every turn)');
+  // ── 1. Always-on context tax (emerald: the standing config cost) ───────────
+  // Reframed: this is what your CHOSEN context costs every turn, not "savings" to cut.
   const a = r.alwaysOn;
-  out.push(`    always-on config — context you chose, re-paid every turn (useful ≠ free):`);
-  out.push(
-    `      project memory     ${padL(Math.round(a.projectClaudeMdTokens).toLocaleString() + ' tok', 9)}  ${padL(usd(a.projectClaudeMdUsd) + '/mo', 9)}  ← CLAUDE.md/.local/rules + auto-memory, cwd→root`,
-  );
-  out.push(
-    `      global memory      ${padL(a.globalClaudeMdTokens.toLocaleString() + ' tok', 9)}  ${padL(usd(a.globalClaudeMdUsd) + '/mo', 9)}  → ~/.claude/CLAUDE.md (+ .local, managed policy)`,
-  );
-  out.push(
-    `      skill listings     ≥${padL(a.skillDescriptionTokens.toLocaleString() + ' tok', 8)}  ${padL(usd(a.skillDescriptionUsd) + '/mo', 9)}  ${a.skillCount} user skills load every turn`,
-  );
-  out.push(`      ${'─'.repeat(46)}`);
-  out.push(`      your config adds ≈ ${usd(a.alwaysOnConfigMonthlyUsd)}/mo of standing context`);
-  out.push(
-    `    observed standing context: ${a.standingContextTokens.toLocaleString()} tok/turn (~${usd(a.observedMonthlyUsd)}/mo of spend)`,
-  );
-  out.push(`      — the rest is FIXED system prompt + tool schemas you can't trim; see /context`);
   const mcpDesc = a.mcpDeferred ? 'deferred by default (~$0 standing)' : 'eagerly loaded';
-  out.push(`    MCP: ${a.mcpServerCount} servers · ${mcpDesc} · invoked in ${pct(a.mcpInvokedRate)} of sessions`);
+  const taxRows = [
+    c.dim('always-on config — context you chose, re-paid every turn (useful ≠ free):'),
+    `  project memory     ${padL(Math.round(a.projectClaudeMdTokens).toLocaleString() + ' tok', 9)}  ` +
+      `${money(padL(usd(a.projectClaudeMdUsd) + '/mo', 9))}  ${c.dim('← CLAUDE.md/.local/rules + auto-memory, cwd→root')}`,
+    `  global memory      ${padL(a.globalClaudeMdTokens.toLocaleString() + ' tok', 9)}  ` +
+      `${money(padL(usd(a.globalClaudeMdUsd) + '/mo', 9))}  ${c.dim('→ ~/.claude/CLAUDE.md (+ .local, managed policy)')}`,
+    `  skill listings     ≥${padL(a.skillDescriptionTokens.toLocaleString() + ' tok', 8)}  ` +
+      `${money(padL(usd(a.skillDescriptionUsd) + '/mo', 9))}  ${c.dim(`${a.skillCount} user skills load every turn`)}`,
+    rule(),
+    `  ${c.emerald(`your config adds ≈ ${c.bold(usd(a.alwaysOnConfigMonthlyUsd) + '/mo')} of standing context`)}`,
+    c.dim(
+      `observed standing context: ${a.standingContextTokens.toLocaleString()} tok/turn ` +
+        `(~${usd(a.observedMonthlyUsd)}/mo of spend)`,
+    ),
+    c.dim("  — the rest is FIXED system prompt + tool schemas you can't trim; see /context"),
+    c.dim(`MCP: ${a.mcpServerCount} servers · ${mcpDesc} · invoked in ${pct(a.mcpInvokedRate)} of sessions`),
+  ];
+  // Conditional context — instructed reads that load only when Claude obeys, so they're
+  // NOT in the total above. Shown with the MEASURED read-rate where we have the sessions.
   if (a.conditionalContext.length > 0) {
-    out.push(`    conditional context — a CLAUDE.md tells Claude to read these (loads only when it does,`);
-    out.push(`    so NOT in the total above):`);
-    for (const c of a.conditionalContext.slice(0, rows)) {
+    taxRows.push(c.dim('conditional context — instructed reads, loaded only when obeyed (not in the total above):'));
+    for (const cc of a.conditionalContext.slice(0, rows)) {
       const where =
-        c.source === 'skill'
-          ? `skill: ${c.skill}`
-          : c.source === 'global-claude-md'
+        cc.source === 'skill'
+          ? `skill: ${cc.skill}`
+          : cc.source === 'global-claude-md'
             ? 'global CLAUDE.md'
             : 'project CLAUDE.md';
-      // Detected deterministically; confirmed from transcripts only when the project
-      // has enough sessions to make a read-rate meaningful — otherwise say so plainly.
       const evidence =
-        c.observedReadRate === null
-          ? `detected; too few sessions to confirm`
-          : `read in ${pct(c.observedReadRate)} of sessions` +
-            (c.observedMedianFirstTurn !== null ? ` (median turn ${c.observedMedianFirstTurn})` : '');
-      out.push(`      ${pad(c.file, 22)} ${padL(c.tokens.toLocaleString() + ' tok', 9)}  ${evidence}  ← ${where}`);
+        cc.observedReadRate === null
+          ? 'detected; too few sessions to confirm'
+          : `read in ${pct(cc.observedReadRate)} of sessions` +
+            (cc.observedMedianFirstTurn !== null ? ` (median turn ${cc.observedMedianFirstTurn})` : '');
+      taxRows.push(c.dim(`  ${pad(cc.file, 22)} ${padL(cc.tokens.toLocaleString() + ' tok', 9)}  ${evidence}  ← ${where}`));
     }
   }
-  // Trim advice, kept STRICTLY evidence-based: a "read X" instruction we MEASURED firing
-  // in a minority of sessions is genuinely worth moving to a skill. We don't tell anyone
-  // to delete CLAUDE.md/memory they find useful — that value call isn't ours to make.
-  const trimCandidates = a.conditionalContext.filter(
-    (c) => c.observedReadRate !== null && c.observedReadRate < 0.5,
-  );
+  // Trim advice, kept STRICTLY evidence-based: a "read X" we MEASURED firing in a minority
+  // of sessions is worth moving to a skill. We never tell anyone to delete CLAUDE.md/memory
+  // they find useful — that value call isn't ours to make.
+  const trimCandidates = a.conditionalContext.filter((cc) => cc.observedReadRate !== null && cc.observedReadRate < 0.5);
   if (trimCandidates.length > 0) {
-    out.push(`    trim candidates (measured, low-value standing reads):`);
-    for (const c of trimCandidates.slice(0, rows)) {
-      out.push(`      "${c.file}" fires in ${pct(c.observedReadRate!)} of sessions — move to a skill so it loads on demand`);
+    taxRows.push(c.amber('trim candidates (measured, low-value standing reads):'));
+    for (const cc of trimCandidates.slice(0, rows)) {
+      taxRows.push(c.dim(`  "${cc.file}" fires in ${pct(cc.observedReadRate!)} of sessions — move to a skill so it loads on demand`));
     }
   }
-  line();
+  blank();
+  out.push(...panel('① ALWAYS-ON CONTEXT TAX  ·  what your standing context costs', taxRows, c.emerald));
 
-  out.push('  2. SLASH-COMMAND / SKILL LEAK  (low tradeoff — restructure, fork/split, or pin)');
-  out.push(`    ${pad('command', 22)} ${padL('$/mo', 9)} ${padL('inv/mo', 7)} ${padL('turns', 5)} ${padL('ctx×', 5)}  fix`);
-  for (const c of s.commandLeakBoard.slice(0, rows)) {
+  // ── 2. Slash-command / skill leak (amber: low-tradeoff restructuring) ──────
+  const leakRows = [
+    c.dim(`${pad('command', 22)} ${padL('$/mo', 9)} ${padL('inv/mo', 7)} ${padL('turns', 5)} ${padL('ctx×', 5)}  fix`),
+  ];
+  for (const cmd of s.commandLeakBoard.slice(0, rows)) {
     // Context-heavy commands cost because they RE-PASS a big context, not because of
     // the model tier — the fix is restructuring, and it overrides pin/fork advice.
-    const fix = c.contextHeavy
+    const fix = cmd.contextHeavy
       ? 'restructure: run earlier / leaner ctx'
-      : [c.forkCandidate ? 'fork/split' : '', c.modelPinCandidate ? 'model-pin' : ''].filter(Boolean).join('+') || '—';
-    out.push(
-      `    ${pad(c.command, 22)} ${padL(usd((c.costUsd / s.windowDays) * 30.44), 9)} ` +
-        `${padL(((c.invocations / s.windowDays) * 30.44).toFixed(1), 7)} ${padL(c.turnsPerInvocation.toFixed(0), 5)} ` +
-        `${padL(Math.round(c.contextTaxRatio) + '×', 5)}  ${fix}`,
+      : [cmd.forkCandidate ? 'fork/split' : '', cmd.modelPinCandidate ? 'model-pin' : ''].filter(Boolean).join('+') || '—';
+    leakRows.push(
+      `${pad(cmd.command, 22)} ${money(padL(usd((cmd.costUsd / s.windowDays) * 30.44), 9))} ` +
+        `${padL(((cmd.invocations / s.windowDays) * 30.44).toFixed(1), 7)} ${padL(cmd.turnsPerInvocation.toFixed(0), 5)} ` +
+        `${padL(Math.round(cmd.contextTaxRatio) + '×', 5)}  ${fix === '—' ? c.dim(fix) : lever(fix)}`,
     );
   }
   // Surface the leak board's blind spot: skills the model invoked by natural language
@@ -130,63 +156,76 @@ export function renderReport(r: AuditResult, opts: { rows?: number } = {}): stri
       .slice(0, 4)
       .map((m) => `${m.name} ×${m.invocations}`)
       .join(', ');
-    out.push(`    + model-invoked (natural language, not /command): ${top}`);
-    out.push(`      → counted in regular sessions, not above (cost shared with the prompt)`);
+    leakRows.push(c.dim(`+ model-invoked (natural language, not /command): ${top}`));
+    leakRows.push(c.dim('  → counted in regular sessions, not above (cost shared with the prompt)'));
   }
   const tot = s.totalUsd || 1;
   const regularShare = Math.max(0, s.nonCommandUsd / tot);
-  out.push(
-    `    (commands ${pct(s.commandTotalUsd / tot)} · subagents ${pct(s.subagentTotalUsd / tot)} · ` +
-      `regular sessions ${pct(regularShare)})`,
+  leakRows.push(
+    c.dim(
+      `(commands ${pct(s.commandTotalUsd / tot)} · subagents ${pct(s.subagentTotalUsd / tot)} · ` +
+        `regular sessions ${pct(regularShare)})`,
+    ),
   );
-  line();
+  blank();
+  out.push(...panel('② COMMAND / SKILL LEAK  ·  restructure, fork/split, or pin', leakRows, c.amber));
 
   // Subagent/delegated spend lives in sidechains with no promptId — so a skill that
   // does all its work via subagents (deep-research, ultra-reviews, Workflow) shows
   // $0 on the leak board above. This board recovers it from the transcript's own
   // attribution fields. Only printed when there's delegated spend to show.
   if (s.subagentLeakBoard.length > 0) {
-    out.push('  2b. SUBAGENT / DELEGATED SPEND  (sidechain work — invisible per-skill before)');
-    out.push(`    ${pad('skill / subagent', 24)} ${padL('$/mo', 9)} ${padL('turns', 7)}  fix`);
-    for (const c of s.subagentLeakBoard.slice(0, rows)) {
-      const fix = c.modelPinCandidate ? 'cheaper-subagent-model' : '—';
-      const tag = c.isSkill ? '' : ' ·';
-      out.push(
-        `    ${pad(c.name + tag, 24)} ${padL(usd((c.costUsd / s.windowDays) * 30.44), 9)} ` +
-          `${padL(c.turns.toFixed(0), 7)}  ${fix}`,
+    const subRows = [c.dim(`${pad('skill / subagent', 24)} ${padL('$/mo', 9)} ${padL('turns', 7)}  fix`)];
+    for (const sub of s.subagentLeakBoard.slice(0, rows)) {
+      const fix = sub.modelPinCandidate ? 'cheaper-subagent-model' : '—';
+      const tag = sub.isSkill ? '' : ' ·';
+      subRows.push(
+        `${pad(sub.name + tag, 24)} ${money(padL(usd((sub.costUsd / s.windowDays) * 30.44), 9))} ` +
+          `${padL(sub.turns.toFixed(0), 7)}  ${fix === '—' ? c.dim(fix) : lever(fix)}`,
       );
     }
-    out.push(`    (· = direct subagent type, not a named skill · right-size the subagent's model)`);
-    line();
+    subRows.push(c.dim("(· = direct subagent type, not a named skill · right-size the subagent's model)"));
+    blank();
+    out.push(...panel('②ᵇ SUBAGENT / DELEGATED SPEND  ·  sidechain work', subRows, c.amber));
   }
 
-  out.push('  FLUENCY  (the habits behind the bill)');
+  // ── Fluency (cyan: the habits behind the bill) ─────────────────────────────
   const f = r.fluency;
-  out.push(`    score: ${f.score}/100   ·   premium-model share: ${pct(f.premiumTurnShare)}  ← the right-sizing lever`);
-  out.push(`    plan-mode: ${pct(f.planModeRate)} of sessions · subagent spend: ${pct(f.subagentUsageRate)} · /compact: ${pct(f.contextBloatRate)}`);
-  out.push(`    turns/task: median ${f.medianTurnsPerTask}, p90 ${f.p90TurnsPerTask} · models used: ${f.modelDiversity}`);
-  line('═');
-  out.push(`  3. MODEL RIGHT-SIZING  (policy-dependent — often the SMALLEST clean lever)`);
-  out.push(`     ${pct(f.premiumTurnShare)} of turns run premium models. Run \`cc-audit --judge\` to see which`);
-  out.push('     tasks a cheaper model could do — frontier choice stays your policy.');
+  const fluencyRows = [
+    `score: ${c.bold(c.gold(`${f.score}/100`))}   ·   premium-model share: ${lever(pct(f.premiumTurnShare))}  ${c.dim('← the right-sizing lever')}`,
+    c.dim(
+      `plan-mode: ${pct(f.planModeRate)} of sessions · subagent spend: ${pct(f.subagentUsageRate)} · /compact: ${pct(f.contextBloatRate)}`,
+    ),
+    c.dim(`turns/task: median ${f.medianTurnsPerTask}, p90 ${f.p90TurnsPerTask} · models used: ${f.modelDiversity}`),
+  ];
+  blank();
+  out.push(...card('FLUENCY  ·  the habits behind the bill', fluencyRows, c.cyan));
+
+  // ── 3. Model right-sizing teaser (the --judge upsell) ──────────────────────
+  const rsRows = [
+    `${lever(pct(f.premiumTurnShare))} of turns run premium models. Run ${c.cyan('cc-audit --judge')} to see which`,
+    c.dim('tasks a cheaper model could do — frontier choice stays your policy.'),
+  ];
+  blank();
+  out.push(...card('③ MODEL RIGHT-SIZING  ·  policy-dependent, often the smallest clean lever', rsRows));
 
   // The treatment layer: synthesize everything above into ranked, file-anchored
   // actions. Estimates — a candidate tier is never a mandate.
   if (r.recommendations.length > 0) {
-    out.push('');
-    line('═');
-    out.push('  NEXT ACTIONS  (ranked by est. $/mo saved — set your own model policy)');
-    line();
+    const actionRows: string[] = [];
     let i = 1;
     for (const rec of r.recommendations.slice(0, rows)) {
-      const tag = rec.monthlyUsdSaved >= 0.5 ? `~${usd(rec.monthlyUsdSaved)}/mo` : 'restructure';
-      out.push(`  ${i}. [${tag}] ${rec.title}`);
-      if (rec.file) out.push(`       ${rec.file}`);
-      out.push(`       ${rec.action}`);
+      const recoups = rec.monthlyUsdSaved >= 0.5;
+      const tag = recoups ? c.gold(`~${usd(rec.monthlyUsdSaved)}/mo`) : c.amber('restructure');
+      actionRows.push(`${c.bold(`${i}.`)} [${tag}] ${c.bold(pad(rec.title, 54))}`);
+      if (rec.file) actionRows.push(c.dim(`   ${rec.file}`));
+      for (const ln of wrap(rec.action, BOX_WIDTH - 3)) actionRows.push(c.dim(`   ${ln}`));
       i += 1;
     }
+    blank();
+    out.push(...card('NEXT ACTIONS  ·  ranked by est. $/mo saved', actionRows, c.gold));
   }
-  out.push('');
+  blank();
   return out.join('\n');
 }
 
@@ -227,35 +266,34 @@ export function renderRightSizing(
   const gatedSavingsShare = totalCostUsd ? gatedSavings / totalCostUsd : 0;
   const overModeledShare = judged ? cuts.length / judged : 0;
   const estMonthlyOverModeled = premiumMonthlyUsd * gatedSavingsShare;
-  const out: string[] = [];
-  out.push('');
-  out.push(`  MODEL RIGHT-SIZING  (gpt-5.5, aggressiveness: ${aggressiveness})`);
-  out.push('═'.repeat(64));
-  out.push(
-    `  ${Math.round(overModeledShare * 100)}% of ${judged} judged sessions are over-modeled at this setting`,
-  );
-  out.push(
-    `  → ~${usd(estMonthlyOverModeled)}/mo right-sizable — policy-dependent, often < the no-tradeoff cuts`,
-  );
-  out.push('');
-  out.push('  biggest recommended cuts:');
+
+  const rows: string[] = [
+    // Kept contiguous (no color mid-string) so substring assertions still match.
+    `${c.bold(`${Math.round(overModeledShare * 100)}% of ${judged} judged sessions`)} are over-modeled at this setting`,
+    `${c.emerald('→')} ~${money(usd(estMonthlyOverModeled) + '/mo right-sizable')} ${c.dim('— policy-dependent, often < the no-tradeoff cuts')}`,
+    rule(),
+    c.dim('biggest recommended cuts:'),
+  ];
   const paired = footprints
     .map((f, i) => ({ f, v: verdicts[i] }))
     .filter((p) => isRecommendedCut(p.v, aggressiveness))
     .sort((a, b) => (b.v!.savingsUsd - a.v!.savingsUsd))
     .slice(0, 6);
   if (paired.length === 0) {
-    out.push('    (none flagged in the sample)');
+    rows.push(c.dim('  (none flagged in the sample)'));
   } else {
     for (const { f, v } of paired) {
       const perMo = (v!.savingsUsd / windowDays) * 30.44;
-      const task = f.taskGist.replace(/\s+/g, ' ').slice(0, 46);
-      out.push(`    ${f.model.replace('claude-', '')} → ${v!.minTier} (${padL(usd(perMo) + '/mo', 9)})  ${task}`);
+      const task = f.taskGist.replace(/\s+/g, ' ').slice(0, 42);
+      rows.push(
+        `  ${f.model.replace('claude-', '')} ${c.cyan('→')} ${lever(v!.minTier)} ` +
+          `(${money(padL(usd(perMo) + '/mo', 9))})  ${c.dim(task)}`,
+      );
     }
   }
-  out.push('═'.repeat(64));
-  out.push('  Note: "min tier" is a candidate, not a mandate — set your own policy');
-  out.push('  (e.g. Fable for design). A deliberate policy IS the fluency win.');
-  out.push('');
-  return out.join('\n');
+  rows.push(rule());
+  rows.push(c.dim('Note: "min tier" is a candidate, not a mandate — set your own policy'));
+  rows.push(c.dim('(e.g. Fable for design). A deliberate policy IS the fluency win.'));
+
+  return ['', ...card(`MODEL RIGHT-SIZING  ·  gpt-5.5, aggressiveness: ${aggressiveness}`, rows, c.cyan), ''].join('\n');
 }
