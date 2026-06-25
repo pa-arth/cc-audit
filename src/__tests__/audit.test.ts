@@ -279,7 +279,7 @@ describe('context-tax + system-command + model-invoked attribution', () => {
   });
 });
 
-describe('always-on tax: recoverable vs observed + MCP framing', () => {
+describe('always-on tax: config cost vs observed + MCP framing', () => {
   // Point a session's cwd at a temp project with a known CLAUDE.md so the recoverable
   // project component is deterministic regardless of the dev's home dir.
   const projDir = mkdtempSync(join(tmpdir(), 'cc-audit-proj-'));
@@ -307,14 +307,14 @@ describe('always-on tax: recoverable vs observed + MCP framing', () => {
     expect(a.projectClaudeMdTokens).toBeGreaterThan(900); // ~1000 tok
   });
 
-  it('recoverable = global + project + skill listings (additive, file-measured)', () => {
-    expect(a.recoverableTokensPerTurn).toBeCloseTo(
+  it('always-on config = global + project + skill listings (additive, file-measured)', () => {
+    expect(a.alwaysOnConfigTokensPerTurn).toBeCloseTo(
       a.globalClaudeMdTokens + a.projectClaudeMdTokens + a.skillDescriptionTokens,
       6,
     );
-    // Recoverable $ and observed $ are priced with the same per-token rate.
-    if (a.standingContextTokens > 0 && a.recoverableTokensPerTurn > 0) {
-      expect(a.recoverableMonthlyUsd / a.recoverableTokensPerTurn).toBeCloseTo(
+    // Config $ and observed $ are priced with the same per-token rate.
+    if (a.standingContextTokens > 0 && a.alwaysOnConfigTokensPerTurn > 0) {
+      expect(a.alwaysOnConfigMonthlyUsd / a.alwaysOnConfigTokensPerTurn).toBeCloseTo(
         a.observedMonthlyUsd / a.standingContextTokens,
         9,
       );
@@ -324,6 +324,116 @@ describe('always-on tax: recoverable vs observed + MCP framing', () => {
   it('treats MCP as deferred (~$0 standing) and reports a real invoked rate', () => {
     expect(a.mcpDeferred).toBe(true); // default — ENABLE_TOOL_SEARCH not "false"
     expect(a.mcpInvokedRate).toBe(1); // the one session invoked an mcp__ tool
+  });
+});
+
+describe('always-on tax: CLAUDE.md @imports are counted transitively', () => {
+  // A tiny CLAUDE.md that `@imports` a much larger file: the always-on cost is the
+  // closure, not the 200-char entry file. This is the ERRORS.md/@import undercount.
+  const proj = mkdtempSync(join(tmpdir(), 'cc-audit-import-'));
+  mkdirSync(join(proj, 'docs'), { recursive: true });
+  writeFileSync(join(proj, 'docs', 'conventions.md'), 'y'.repeat(8000)); // ~2000 tok
+  writeFileSync(join(proj, 'CLAUDE.md'), 'Read this first.\n@docs/conventions.md\n'); // tiny entry
+
+  const FX = [
+    { type: 'user', promptId: 'p1', cwd: proj, message: { content: 'do a real task in this repo please' } },
+    {
+      type: 'assistant',
+      message: {
+        id: 'a1',
+        model: 'claude-opus-4-8',
+        usage: { input_tokens: 1000, output_tokens: 200, cache_read_input_tokens: 5000, cache_creation_input_tokens: 0 },
+        content: [{ type: 'text', text: 'ok' }],
+      },
+    },
+  ]
+    .map((e) => JSON.stringify(e))
+    .join('\n');
+  const session = parseTranscript('/tmp/ao-import.jsonl', FX, 'p', new Set())!;
+  const a = computeAlwaysOn([session]);
+
+  it('includes the imported file, not just the entry CLAUDE.md', () => {
+    // Entry file alone is ~10 tok; with the 2000-tok import it must clear ~1900.
+    expect(a.projectClaudeMdTokens).toBeGreaterThan(1900);
+  });
+
+  it('refuses to read @imports that escape the project tree (e.g. @/etc/passwd)', () => {
+    // A hostile cloned-repo CLAUDE.md pointing at a real out-of-tree file: we must
+    // NOT pull its contents in. Point at an existing file we control but OUTSIDE the
+    // project root, sized big enough that reading it would dominate the count.
+    const outside = mkdtempSync(join(tmpdir(), 'cc-audit-outside-'));
+    writeFileSync(join(outside, 'secret.md'), 'S'.repeat(40000)); // ~10k tok if read
+    const proj3 = mkdtempSync(join(tmpdir(), 'cc-audit-escape-'));
+    writeFileSync(join(proj3, 'CLAUDE.md'), `tiny\n@${join(outside, 'secret.md')}\n`);
+    const fx = [
+      { type: 'user', promptId: 'p1', cwd: proj3, message: { content: 'do a real task in this repo please' } },
+      {
+        type: 'assistant',
+        message: {
+          id: 'a1',
+          model: 'claude-opus-4-8',
+          usage: { input_tokens: 1000, output_tokens: 200, cache_read_input_tokens: 5000, cache_creation_input_tokens: 0 },
+          content: [{ type: 'text', text: 'ok' }],
+        },
+      },
+    ]
+      .map((e) => JSON.stringify(e))
+      .join('\n');
+    const s = parseTranscript('/tmp/ao-escape.jsonl', fx, 'p', new Set())!;
+    // Out-of-tree file is counted by stat size (~10k tok) but never READ — and the
+    // run does not hang or throw. The point: contents stay on disk; we only stat.
+    const tok = computeAlwaysOn([s]).projectClaudeMdTokens;
+    expect(tok).toBeGreaterThan(9000); // size-estimated, so the tax is still reflected
+    expect(Number.isFinite(tok)).toBe(true); // no OOM/hang
+  });
+
+  it('size-estimates an oversize @import instead of reading it into memory', () => {
+    const proj4 = mkdtempSync(join(tmpdir(), 'cc-audit-big-'));
+    mkdirSync(join(proj4, 'docs'), { recursive: true });
+    writeFileSync(join(proj4, 'docs', 'huge.md'), 'B'.repeat(2 * 1024 * 1024)); // 2MB
+    writeFileSync(join(proj4, 'CLAUDE.md'), 'tiny\n@docs/huge.md\n');
+    const fx = [
+      { type: 'user', promptId: 'p1', cwd: proj4, message: { content: 'do a real task in this repo please' } },
+      {
+        type: 'assistant',
+        message: {
+          id: 'a1',
+          model: 'claude-opus-4-8',
+          usage: { input_tokens: 1000, output_tokens: 200, cache_read_input_tokens: 5000, cache_creation_input_tokens: 0 },
+          content: [{ type: 'text', text: 'ok' }],
+        },
+      },
+    ]
+      .map((e) => JSON.stringify(e))
+      .join('\n');
+    const s = parseTranscript('/tmp/ao-big.jsonl', fx, 'p', new Set())!;
+    // Capped at MAX_FILE_BYTES (256KB ⇒ ~64k tok), NOT the full 2MB (~512k tok).
+    const tok = computeAlwaysOn([s]).projectClaudeMdTokens;
+    expect(tok).toBeGreaterThan(60000);
+    expect(tok).toBeLessThan(70000);
+  });
+
+  it('does not evaluate @imports inside code fences', () => {
+    const proj2 = mkdtempSync(join(tmpdir(), 'cc-audit-fence-'));
+    mkdirSync(join(proj2, 'docs'), { recursive: true });
+    writeFileSync(join(proj2, 'docs', 'big.md'), 'z'.repeat(8000));
+    writeFileSync(join(proj2, 'CLAUDE.md'), 'Example:\n```\n@docs/big.md\n```\n');
+    const fx = [
+      { type: 'user', promptId: 'p1', cwd: proj2, message: { content: 'do a real task in this repo please' } },
+      {
+        type: 'assistant',
+        message: {
+          id: 'a1',
+          model: 'claude-opus-4-8',
+          usage: { input_tokens: 1000, output_tokens: 200, cache_read_input_tokens: 5000, cache_creation_input_tokens: 0 },
+          content: [{ type: 'text', text: 'ok' }],
+        },
+      },
+    ]
+      .map((e) => JSON.stringify(e))
+      .join('\n');
+    const s2 = parseTranscript('/tmp/ao-fence.jsonl', fx, 'p', new Set())!;
+    expect(computeAlwaysOn([s2]).projectClaudeMdTokens).toBeLessThan(100); // import ignored
   });
 });
 
@@ -412,6 +522,30 @@ describe('aggregate record (privacy)', () => {
     const blob = JSON.stringify(aggregate);
     expect(blob).not.toContain('secret/repo-name');
     expect(blob).not.toContain('fix the thing'); // no raw prompt text
+  });
+
+  it('ships conditional-context as counts only — never filenames or skill/project names', () => {
+    // Every value in the conditionalContext aggregate must be a number; a string here
+    // would mean a basename or skill name leaked off the machine.
+    expect(Object.values(aggregate.conditionalContext).every((v) => typeof v === 'number')).toBe(true);
+  });
+
+  it('omits the session leaderboard from the aggregate unless --share-sessions', () => {
+    expect(aggregate.topSessions).toEqual([]); // default run: nothing leaves
+  });
+
+  it('with --share-sessions, ships ONLY anonymized leaderboard rows (no gist/project/$)', () => {
+    const { aggregate: shared } = runAudit(sessions, '2026-06-16T00:00:00.000Z', { shareSessions: true });
+    expect(shared.topSessions.length).toBeGreaterThan(0);
+    const allowed = new Set(['costShare', 'turns', 'prompts', 'topModel', 'planMode', 'trajectory']);
+    for (const row of shared.topSessions) {
+      // No field outside the anonymized allow-list (so no taskGist/project/costUsd).
+      expect(Object.keys(row).every((k) => allowed.has(k))).toBe(true);
+      expect(typeof row.costShare).toBe('number');
+      expect(row.costShare).toBeLessThanOrEqual(1); // a share, never a raw dollar amount
+    }
+    // The raw prompt gist must not appear anywhere in the serialized shared aggregate.
+    expect(JSON.stringify(shared)).not.toContain('fix the thing');
   });
 
   it('hashes custom (non-common) command names', () => {

@@ -10,7 +10,7 @@
 // only a COARSE, intentionally-crude self-band (`localBand`) and point the user at
 // `--open` for the real one.
 
-import type { Session } from './model.js';
+import type { Session, TurnUsage } from './model.js';
 import { isPremiumModel, turnCostUsd } from './pricing.js';
 
 export type FluencyBand = 'Developing' | 'Strong' | 'Elite';
@@ -33,8 +33,18 @@ export interface FluencySignals {
    *  Cost-weighted, not session-count: one deep-research run can be 8% of the bill
    *  while touching few sessions, so counting sessions badly understates it. */
   subagentUsageRate: number;
-  /** Share of sessions that needed /compact (proxy for letting context balloon). */
-  contextBloatRate: number;
+  /** Share of the bill spent CARRYING context (re-reading the transcript each turn)
+   *  vs producing output. An HONEST fact, not a fabricated "waste" figure — carrying
+   *  is ~80% of a typical agentic bill and most of it is legitimate. The avoidable
+   *  lever is `redundantReadRate`, not this. */
+  carryShare: number;
+  /** Absolute carry cost over the window (USD) — the honest "$/mo carrying context"
+   *  headline. */
+  carryUsd: number;
+  /** Share of file READS that re-read a path ALREADY in context (no reset since) —
+   *  re-injecting the same content. The ungameable bloat lever: you can't pad your
+   *  way out, only stop re-reading what you already have. Lower is better. */
+  redundantReadRate: number;
   /** Crude, ADVISORY local heuristic (0–100) — NOT the calibrated score. Kept so the
    *  uploaded aggregate has a stable shape; the server recomputes authoritatively
    *  from the raw signals and ignores this. Never shown as a precise number. */
@@ -48,21 +58,107 @@ function percentile(sorted: number[], p: number): number {
 
 const PLAN_MODE_VALUES = new Set(['plan', 'plan-mode', 'planning']);
 
+/** USD this turn paid to CARRY context — everything billed except generated output.
+ *  Carrying the transcript (re-read every turn) dominates an agentic bill; we report
+ *  it as an honest share, never as a fabricated "waste" number. */
+export function turnCarryUsd(model: string | null, u: TurnUsage): number {
+  return turnCostUsd(model, { ...u, output: 0 }).usd;
+}
+
+// A Read re-injects a file's content into context; Edit/Write also put it there. A Read
+// of a path already in context (with no reset since) re-injects the same bytes — that's
+// the redundant-read signal, the ungameable bloat lever (only fix: stop re-reading).
+const READ_TOOLS = new Set(['Read']);
+const WRITE_TOOLS = new Set(['Edit', 'Write', 'NotebookEdit', 'MultiEdit']);
+// A reset (/compact, /clear) sheds carried content, so re-reading AFTER one is a
+// legitimate refresh, not redundancy — clear the seen-set on these.
+const RESET_COMMANDS = new Set(['compact', 'clear']);
+
+export interface Redundancy {
+  reads: number; // total file Reads on the own chain
+  redundantReads: number; // Reads of a path already in context (no reset since)
+  readAfterEdit: number; // Reads of a path we just wrote — the cleanest waste
+}
+
+/** Redundant-read detection for a session's own chain. Walks file ops in order,
+ *  tracking which paths are already carried; a Read of an already-seen path re-injects
+ *  its content. Resets on /compact or /clear — after a reset the content is gone, so
+ *  re-reading is legitimate (this ties the signal to reset discipline). */
+export function sessionRedundancy(session: Session): Redundancy {
+  const seen = new Set<string>();
+  const wroteLast = new Set<string>();
+  let reads = 0;
+  let redundantReads = 0;
+  let readAfterEdit = 0;
+  for (const span of session.spans) {
+    if (span.isSidechain) continue;
+    if (span.command && RESET_COMMANDS.has(span.command)) {
+      seen.clear();
+      wroteLast.clear();
+    }
+    for (const t of span.turns) {
+      for (const op of t.fileOps ?? []) {
+        if (READ_TOOLS.has(op.tool)) {
+          reads += 1;
+          if (seen.has(op.path)) {
+            redundantReads += 1;
+            if (wroteLast.has(op.path)) readAfterEdit += 1;
+          }
+          seen.add(op.path);
+          wroteLast.delete(op.path); // a fresh read supersedes our last write
+        } else if (WRITE_TOOLS.has(op.tool)) {
+          seen.add(op.path);
+          wroteLast.add(op.path);
+        }
+      }
+    }
+  }
+  return { reads, redundantReads, readAfterEdit };
+}
+
+/** Local-only: the files re-read most (basename only — never a full path, never
+ *  uploaded). Drives the report's concrete "you re-read X ×N" story. */
+export function topRedundantFiles(sessions: Session[], n = 3): { name: string; rereads: number }[] {
+  const counts = new Map<string, number>();
+  for (const session of sessions) {
+    const seen = new Set<string>();
+    for (const span of session.spans) {
+      if (span.isSidechain) continue;
+      if (span.command && RESET_COMMANDS.has(span.command)) seen.clear();
+      for (const t of span.turns) {
+        for (const op of t.fileOps ?? []) {
+          if (READ_TOOLS.has(op.tool)) {
+            if (seen.has(op.path)) counts.set(op.path, (counts.get(op.path) ?? 0) + 1);
+            seen.add(op.path);
+          } else if (WRITE_TOOLS.has(op.tool)) {
+            seen.add(op.path);
+          }
+        }
+      }
+    }
+  }
+  return [...counts.entries()]
+    .map(([path, rereads]) => ({ name: path.split('/').pop() || path, rereads }))
+    .sort((a, b) => b.rereads - a.rereads)
+    .slice(0, n);
+}
+
 // A session is "substantive" once its own (non-delegated) work crosses a few turns.
 // Below this it's a throwaway — excluded from planModeRate so plan-ceremony on
 // trivial sessions earns nothing.
 const SUBSTANTIVE_MIN_TURNS = 3;
 
 export function computeFluency(sessions: Session[]): FluencySignals {
-  const n = sessions.length || 1;
   const turnsPerTask: number[] = [];
   const models = new Set<string>();
   let premiumTurns = 0;
   let totalTurns = 0;
   let planSessions = 0;
-  let compactSessions = 0;
   let subagentCost = 0;
   let totalCost = 0;
+  let carryUsd = 0;
+  let reads = 0;
+  let redundantReads = 0;
 
   let substantiveSessions = 0;
   for (const session of sessions) {
@@ -75,7 +171,6 @@ export function computeFluency(sessions: Session[]): FluencySignals {
       substantiveSessions += 1;
       if (session.modes.some((m) => PLAN_MODE_VALUES.has(m))) planSessions += 1;
     }
-    const usedCompact = session.spans.some((s) => s.command === 'compact');
     for (const span of session.spans) {
       // Subagent (sidechain) turns are delegated work, not the operator's own
       // trajectory — they'd inflate turns/task and premium-share if mixed in. Keep
@@ -84,6 +179,7 @@ export function computeFluency(sessions: Session[]): FluencySignals {
       for (const t of span.turns) {
         const usd = turnCostUsd(t.model, t.usage).usd;
         totalCost += usd;
+        carryUsd += turnCarryUsd(t.model, t.usage); // carry = the whole bill, incl. subagents
         if (t.model) models.add(t.model);
         if (span.isSidechain) {
           subagentCost += usd;
@@ -93,7 +189,10 @@ export function computeFluency(sessions: Session[]): FluencySignals {
         }
       }
     }
-    if (usedCompact) compactSessions += 1;
+    // Redundant reads are an operator habit — own-chain only (see sessionRedundancy).
+    const r = sessionRedundancy(session);
+    reads += r.reads;
+    redundantReads += r.redundantReads;
   }
 
   turnsPerTask.sort((a, b) => a - b);
@@ -103,7 +202,8 @@ export function computeFluency(sessions: Session[]): FluencySignals {
   const premiumTurnShare = totalTurns ? premiumTurns / totalTurns : 0;
   const modelDiversity = models.size;
   const subagentUsageRate = totalCost ? subagentCost / totalCost : 0;
-  const contextBloatRate = compactSessions / n;
+  const carryShare = totalCost ? carryUsd / totalCost : 0;
+  const redundantReadRate = reads ? redundantReads / reads : 0;
   const medianTurns = percentile(turnsPerTask, 50);
   const p90Turns = percentile(turnsPerTask, 90);
 
@@ -115,7 +215,9 @@ export function computeFluency(sessions: Session[]): FluencySignals {
     premiumTurnShare,
     modelDiversity,
     subagentUsageRate,
-    contextBloatRate,
+    carryShare,
+    carryUsd,
+    redundantReadRate,
   };
   return { ...signals, score: crudeLocalScore(signals) };
 }
@@ -127,13 +229,13 @@ export function computeFluency(sessions: Session[]): FluencySignals {
 // neither leaks the real recipe nor invites gaming.
 type CrudeInputs = Pick<
   FluencySignals,
-  'planModeRate' | 'p90TurnsPerTask' | 'contextBloatRate' | 'subagentUsageRate'
+  'planModeRate' | 'p90TurnsPerTask' | 'redundantReadRate' | 'subagentUsageRate'
 >;
 function crudeLocalScore(f: CrudeInputs): number {
   const goodDirections = [
     f.planModeRate >= 0.2, // plans at least some real work
     f.p90TurnsPerTask <= 40, // hardest tasks don't sprawl into thrash
-    f.contextBloatRate <= 0.2, // not leaning on /compact
+    f.redundantReadRate <= 0.3, // mostly not re-reading files already in context
     f.subagentUsageRate > 0, // gets some delegated leverage
   ];
   return Math.round((100 * goodDirections.filter(Boolean).length) / goodDirections.length);
@@ -150,7 +252,7 @@ export interface SessionFluencySignals {
   premiumTurnShare: number;
   modelDiversity: number;
   subagentUsageRate: number;
-  contextBloatRate: number; // 0|1 — did THIS session use /compact
+  redundantReadRate: number; // share of THIS session's file reads that re-read a carried path
 }
 
 /** Own (non-delegated) turn count — a session is "substantive" past the threshold. */
@@ -168,9 +270,7 @@ export function computeSessionFluencySignals(session: Session): SessionFluencySi
   let totalTurns = 0;
   let subagentCost = 0;
   let totalCost = 0;
-  let usedCompact = false;
   for (const span of session.spans) {
-    if (span.command === 'compact') usedCompact = true;
     if (!span.isSidechain) turnsPerTask.push(span.turns.length);
     for (const t of span.turns) {
       const usd = turnCostUsd(t.model, t.usage).usd;
@@ -184,6 +284,7 @@ export function computeSessionFluencySignals(session: Session): SessionFluencySi
     }
   }
   turnsPerTask.sort((a, b) => a - b);
+  const r = sessionRedundancy(session);
   return {
     planModeRate: session.modes.some((m) => PLAN_MODE_VALUES.has(m)) ? 1 : 0,
     medianTurnsPerTask: percentile(turnsPerTask, 50),
@@ -191,7 +292,7 @@ export function computeSessionFluencySignals(session: Session): SessionFluencySi
     premiumTurnShare: totalTurns ? premiumTurns / totalTurns : 0,
     modelDiversity: models.size,
     subagentUsageRate: totalCost ? subagentCost / totalCost : 0,
-    contextBloatRate: usedCompact ? 1 : 0,
+    redundantReadRate: r.reads ? r.redundantReads / r.reads : 0,
   };
 }
 
