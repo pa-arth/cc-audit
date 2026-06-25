@@ -4,3 +4,8 @@ bundles/
 *.tsbuildinfo
 .DS_Store
 .cc-audit/
+
+# Local calibration artifacts — contain personal task gists, never commit
+/cc-audit-labels.json
+/relabeled.json
+/scored.json

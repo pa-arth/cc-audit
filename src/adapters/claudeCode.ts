@@ -57,6 +57,12 @@ function isGenuinePrompt(text: string): boolean {
   if (t.length < 8) return false;
   if (t.startsWith('Base directory for this skill')) return false;
   if (t.includes('"type":"tool_result"') || t.includes('[Request interrupted')) return false;
+  // Hook / slash-command / local-command / system text is logged with role=user but is
+  // NOT a human prompt. It all OPENS with a lowercase-hyphenated tag — <task-notification>,
+  // <command-message>, <command-name>, <command-args>, <local-command-caveat>,
+  // <local-command-stdout>, <system-reminder>, … — which a real prompt practically never
+  // does. One rule drops the lot (and any future hook tag).
+  if (/^<[a-z][a-z0-9-]*>/.test(t)) return false;
   return true;
 }
 

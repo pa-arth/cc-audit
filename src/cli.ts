@@ -23,7 +23,7 @@ import { readConsent, writeConsent } from './consent.js';
 import { buildFootprints } from './footprint.js';
 import { judgeFootprints, postReport, type RightSizingResult } from './judgeClient.js';
 import { buildLabelSheet, renderScore, scoreLabels, type LabelRow } from './label.js';
-import { buildFluencySheet, fitFluencyWeights, renderFluencyFit, type FluencyLabelRow } from './labelFluency.js';
+import { buildFluencySheet, renderBandSummary, summarizeBands, type FluencyLabelRow } from './labelFluency.js';
 import { renderFix, runFix } from './fix.js';
 import { machineAnonId, openURL } from './open.js';
 import { isPremiumModel } from './pricing.js';
@@ -214,8 +214,9 @@ async function runLabelFluency(args: Args): Promise<void> {
   writeFileSync(out, `${JSON.stringify(sheet, null, 2)}\n`);
   process.stdout.write(
     `\nWrote ${sheet.length} sessions to ${out}.\n` +
-      '  Open it and set "trueFluency" (0-100) on each row — your judgment of how\n' +
-      '  fluently AI was used in that session. (Leave a row null to skip it.)\n' +
+      '  For each row, READ "promptTrajectory" (the prompts you typed to drive the\n' +
+      '  agent) and set "trueBand" to one of: Poor | Developing | Strong | Elite —\n' +
+      '  your holistic call on how fluently you drove it. (Leave null to skip.)\n' +
       `  Then run:  cc-audit score-fluency ${out}\n`,
   );
 }
@@ -228,7 +229,7 @@ function runScoreFluency(file: string): void {
     process.stderr.write(`Could not read fluency sheet ${file}: ${err instanceof Error ? err.message : String(err)}\n`);
     process.exit(1);
   }
-  process.stdout.write(`${renderFluencyFit(fitFluencyWeights(rows))}\n`);
+  process.stdout.write(`${renderBandSummary(summarizeBands(rows))}\n`);
 }
 
 /** Tier 1 — right-sizing. Runs on an explicit --judge (flag is consent) or, in an
