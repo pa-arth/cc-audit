@@ -8,6 +8,7 @@ import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import type { AlwaysOnTax } from './alwaysOn.js';
 import type { SpendBreakdown } from './attribute.js';
+import type { ContextHygiene } from './contextHygiene.js';
 import type { FluencySignals } from './fluency.js';
 import type { AnonTopSession } from './topSessions.js';
 
@@ -23,7 +24,10 @@ import type { AnonTopSession } from './topSessions.js';
 // v5: optional topSessions leaderboard — ANONYMIZED (cost share, turns, model, plan-
 // mode, trajectory shape; never gist/project/raw $) and EMPTY unless the user passed
 // --share-sessions. The rich version stays local in the TUI.
-export const AGGREGATE_SCHEMA_VERSION = 5;
+// v6: contextHygiene — the AVOIDABLE-carry slice (missed /compact + /clear). COUNTS +
+// per-month DOLLARS only; the located per-session episodes (project label, sessionId,
+// turn ordinal) stay LOCAL in the TUI and never enter the aggregate.
+export const AGGREGATE_SCHEMA_VERSION = 6;
 
 // Well-known public command/skill names kept verbatim; everything else is hashed
 // so a custom name like `acme-deploy` can't leak project/company info.
@@ -153,6 +157,25 @@ export const AggregateRecordSchema = z.object({
       trajectory: z.string(),
     }),
   ),
+  // The avoidable-carry slice. Counts + per-month dollars only — the located episodes
+  // (project, session, turn) stay local. perMonth so it reads against the spend headline.
+  contextHygiene: z.object({
+    /** Times a session ran to the context wall (auto-compacted) — ground-truth "should
+     *  have /compact'd earlier". */
+    autoCompactions: z.number(),
+    /** Distinct sessions that hit the wall ≥ once. */
+    sessionsRunToWall: z.number(),
+    /** Located missed-/compact episodes that cleared the sustained-runway bar. */
+    overdueEpisodes: z.number(),
+    /** Carry paid above the compaction line, per month (conservative). */
+    avoidableCompactUsdPerMonth: z.number(),
+    /** Likely task switches that carried stale context (no /clear). */
+    staleCarrySwitches: z.number(),
+    /** Carry dragging finished-task context past those switches, per month (heuristic). */
+    avoidableClearUsdPerMonth: z.number(),
+    /** compact + clear, per month — the avoidable-carry headline. */
+    avoidableTotalUsdPerMonth: z.number(),
+  }),
   // Counts only — never the referenced filenames or the skill/project they came from.
   conditionalContext: z.object({
     /** Distinct "read X"-style config instructions detected (CLAUDE.md + skill bodies). */
@@ -171,11 +194,13 @@ export type AggregateRecord = z.infer<typeof AggregateRecordSchema>;
 export function buildAggregateRecord(
   spend: SpendBreakdown,
   fluency: FluencySignals,
+  contextHygiene: ContextHygiene,
   alwaysOn: AlwaysOnTax,
   generatedAt: string,
   topSessionsAnon: AnonTopSession[] = [],
 ): AggregateRecord {
   const safeTotal = spend.totalUsd || 1;
+  const perMo = (usd: number) => (usd / contextHygiene.windowDays) * 30.44;
   return AggregateRecordSchema.parse({
     schemaVersion: AGGREGATE_SCHEMA_VERSION,
     tool: 'claude_code',
@@ -228,6 +253,15 @@ export function buildAggregateRecord(
       mcpServerCount: alwaysOn.mcpServerCount,
       mcpDeferred: alwaysOn.mcpDeferred,
       mcpInvokedRate: alwaysOn.mcpInvokedRate,
+    },
+    contextHygiene: {
+      autoCompactions: contextHygiene.autoCompactions,
+      sessionsRunToWall: contextHygiene.sessionsRunToWall,
+      overdueEpisodes: contextHygiene.overdueEpisodes.length,
+      avoidableCompactUsdPerMonth: perMo(contextHygiene.avoidableCompactUsd),
+      staleCarrySwitches: contextHygiene.staleCarrySwitches.length,
+      avoidableClearUsdPerMonth: perMo(contextHygiene.avoidableClearUsd),
+      avoidableTotalUsdPerMonth: perMo(contextHygiene.avoidableTotalUsd),
     },
     conditionalContext: {
       refCount: alwaysOn.conditionalContext.length,

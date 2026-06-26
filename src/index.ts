@@ -14,6 +14,16 @@ export { attributeSpend } from './attribute.js';
 export type { SpendBreakdown, ModelSpend, CommandSpend } from './attribute.js';
 export { computeFluency } from './fluency.js';
 export type { FluencySignals } from './fluency.js';
+export { computeContextHygiene } from './contextHygiene.js';
+export type { ContextHygiene, OverdueCompactEpisode, StaleCarrySwitch } from './contextHygiene.js';
+export { buildHygieneFootprints, refineAvoidableCarry, toRefinementUpload } from './hygieneFootprint.js';
+export type {
+  HygieneJudgeItem,
+  HygieneFootprint,
+  HygieneVerdict,
+  RefinedHygiene,
+  HygieneRefinementUpload,
+} from './hygieneFootprint.js';
 export { computeAlwaysOn } from './alwaysOn.js';
 export type { AlwaysOnTax } from './alwaysOn.js';
 

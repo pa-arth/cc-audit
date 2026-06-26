@@ -29,7 +29,7 @@ const CONTINUATION_RE =
 // Harness-injected pseudo-prompts that aren't the user's task text at all.
 const HARNESS_PREFIXES = ['<command', '<task-notification', '<local-command', '<summary', '<system-reminder'];
 
-function isJudgeableTask(text: string): boolean {
+export function isJudgeableTask(text: string): boolean {
   const raw = text.trim();
   if (HARNESS_PREFIXES.some((p) => raw.startsWith(p))) return false;
   // Strip leading prompt markers / decoration (❯, >, #, -, *, quotes) so a real

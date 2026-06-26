@@ -58,6 +58,12 @@ export interface Span {
   turns: AssistantTurn[];
   /** True if this span is a subagent's sidechain trajectory, not a main-chain prompt. */
   isSidechain: boolean;
+  /** True if this span was opened by an AUTO-compaction continuation (the transcript's
+   *  `isCompactSummary` "session continued from a previous conversation that ran out of
+   *  context" marker) — i.e. context hit the wall and Claude Code force-compacted. The
+   *  context-hygiene pass treats this as a reset boundary AND counts it as a
+   *  "ran-to-the-wall" event (a proactive /compact should have happened earlier). */
+  autoCompacted: boolean;
   /** The skill that spawned this subagent (Claude Code `attributionSkill`), if any.
    *  Only set on sidechain spans. */
   attributionSkill: string | null;

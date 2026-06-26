@@ -5,6 +5,7 @@
 
 import type { AuditResult } from './audit.js';
 import type { SessionFootprint } from './footprint.js';
+import type { RefinedHygiene } from './hygieneFootprint.js';
 import type { RightSizingResult } from './judgeClient.js';
 import { BOX_WIDTH, c, card, panel, rule, wrap } from './theme.js';
 import { localBand } from './fluency.js';
@@ -16,6 +17,24 @@ const padL = (s: string, n: number) => s.padStart(n);
 // Money is the number that matters — always gold; percentages read as cyan levers.
 const money = (s: string) => c.gold(s);
 const lever = (s: string) => c.cyan(s);
+
+/**
+ * The judge's verdict on the avoidable-carry headline (printed after right-sizing when
+ * the backend scored the ride-along hygiene items). Sharpens the deterministic estimate
+ * into "of $X flagged, the judge confirms ~$Y was genuinely stale context".
+ */
+export function renderHygieneRefinement(refined: RefinedHygiene, windowDays: number): string {
+  const perMo = (x: number) => (x / windowDays) * 30.44;
+  const det = perMo(refined.deterministicUsd);
+  const ref = perMo(refined.refinedUsd);
+  const rows = [
+    `${c.bold(`${Math.round(refined.avgStaleShare * 100)}%`)} of the flagged carry was genuinely stale ` +
+      `${c.dim(`(judge scored ${refined.judgedCount} episode${refined.judgedCount === 1 ? '' : 's'})`)}`,
+    `${c.emerald('→')} avoidable carry refined: ${money(usd(det) + '/mo')} ${c.dim('→')} ${c.bold(money(usd(ref) + '/mo'))} ` +
+      `${c.dim('— the rest was context the task genuinely needed')}`,
+  ];
+  return ['', ...card('CONTEXT HYGIENE  ·  judged (stale vs. genuinely-needed context)', rows, c.gold), ''].join('\n');
+}
 
 export function renderReport(r: AuditResult, opts: { rows?: number } = {}): string {
   const rows = opts.rows ?? 8;
@@ -80,6 +99,52 @@ export function renderReport(r: AuditResult, opts: { rows?: number } = {}): stri
   // (policy-dependent, often the smallest clean lever) comes last, via --judge.
   blank();
   out.push(`  ${c.bold(c.orange('FIXABLE WASTE'))}  ${c.dim('— no-tradeoff cuts first')}`);
+
+  // ── ⓪ Context hygiene (gold: the avoidable carry — the headline lever) ──────
+  // Carrying the transcript each turn is mostly structural, but a measured slice is
+  // AVOIDABLE: context grown past the /compact point, or dragged across a task switch
+  // a /clear would have shed. We locate each one and bill ONLY the carry above a
+  // conservative line — no fabricated "all carry is waste" number.
+  const ch = r.contextHygiene;
+  const tok = (n: number) => (n >= 1000 ? `${Math.round(n / 1000)}K` : `${Math.round(n)}`);
+  const chPerMo = (x: number) => (x / s.windowDays) * 30.44;
+  if (ch.autoCompactions > 0 || ch.overdueEpisodes.length > 0 || ch.staleCarrySwitches.length > 0) {
+    const clearMo = chPerMo(ch.avoidableClearUsd);
+    const chRows: string[] = [
+      `${c.dim('avoidable carry')}  ${c.bold(money(usd(chPerMo(ch.avoidableTotalUsd)) + '/mo'))}  ` +
+        `${c.dim('— context you paid to carry that a /compact or /clear would have shed')}`,
+    ];
+    if (ch.autoCompactions > 0) {
+      chRows.push(
+        `${c.amber('⚠')} ran to the context wall ${c.bold(`${ch.autoCompactions}×`)} ` +
+          `across ${ch.sessionsRunToWall} session${ch.sessionsRunToWall === 1 ? '' : 's'} ` +
+          `${c.dim('(auto-compacted — a proactive /compact earlier was cheaper)')}`,
+      );
+    }
+    if (ch.overdueEpisodes.length > 0) {
+      chRows.push(rule());
+      chRows.push(c.dim(`missed /compact — context held past ~${tok(160000)} for a sustained run:`));
+      for (const e of ch.overdueEpisodes.slice(0, 3)) {
+        chRows.push(
+          `  ${pad(e.project, 22)} ${c.dim(`turn ${e.atTurn}, ${e.overdueTurns} turns overdue, peak ${tok(e.peakTokens)}`)}  ` +
+            `${money(padL(usd(chPerMo(e.avoidableUsd)) + '/mo', 9))}`,
+        );
+      }
+    }
+    if (ch.staleCarrySwitches.length > 0) {
+      chRows.push(rule());
+      chRows.push(
+        `likely task switch without /clear: ${lever(`${ch.staleCarrySwitches.length}×`)} ` +
+          `${money(usd(clearMo) + '/mo')}  ${c.dim('(heuristic: file working-set fully rotated, no reset)')}`,
+      );
+    }
+    chRows.push(rule());
+    chRows.push(c.dim('→ /compact when context crosses ~160K and the task continues; /clear at the end of an idea'));
+    chRows.push(c.dim('estimate based on generally-accepted context-window guidelines (~160K line);'));
+    chRows.push(`${c.dim('run')} ${c.cyan('--judge')} ${c.dim('for a result calibrated to your stale-vs-genuinely-needed context')}`);
+    blank();
+    out.push(...panel('⓪ CONTEXT HYGIENE  ·  the avoidable carry (missed /compact + /clear)', chRows, c.gold));
+  }
 
   // ── 1. Always-on context tax (emerald: the standing config cost) ───────────
   // Reframed: this is what your CHOSEN context costs every turn, not "savings" to cut.
@@ -199,8 +264,14 @@ export function renderReport(r: AuditResult, opts: { rows?: number } = {}): stri
     `self-band: ${c.bold(c.cyan(localBand(f)))}  ${c.dim('·')}  ${c.cyan('cc-audit --open')} ${c.dim('for your calibrated band + percentile')}`,
     c.dim(`plan-mode: ${pct(f.planModeRate)} of substantive sessions · subagent: ${pct(f.subagentUsageRate)} · models: ${f.modelDiversity}`),
     c.dim(`turns/task: median ${f.medianTurnsPerTask}, p90 ${f.p90TurnsPerTask}`),
-    // Honest carry headline (a true fact, ~80% of an agentic bill — NOT a "waste" figure).
+    // Honest carry headline: carry is most of an agentic bill and mostly structural —
+    // but NOT all unavoidable. We name the measured avoidable slice instead of either
+    // calling all of it waste or hand-waving it away as "legitimate".
     `context carry: ${money(usd(carryPerMo) + '/mo')}  ${c.dim(`(${pct(f.carryShare)} of bill — re-reading transcript each turn)`)}`,
+    c.dim(
+      `  of which ~${money(usd(chPerMo(ch.avoidableTotalUsd)) + '/mo')} is avoidable ` +
+        `(missed /compact + /clear — see context hygiene above)`,
+    ),
   ];
   // The avoidable lever: redundant reads (re-injecting files already in context).
   if (f.redundantReadRate >= 0.15) {

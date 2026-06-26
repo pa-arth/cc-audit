@@ -20,14 +20,21 @@ import * as p from '@clack/prompts';
 import { loadClaudeCodeSessions } from './adapters/claudeCode.js';
 import { runAudit } from './audit.js';
 import { readConsent, writeConsent } from './consent.js';
+import type { ContextHygiene } from './contextHygiene.js';
 import { buildFootprints } from './footprint.js';
+import {
+  buildHygieneFootprints,
+  refineAvoidableCarry,
+  toRefinementUpload,
+  type HygieneRefinementUpload,
+} from './hygieneFootprint.js';
 import { judgeFootprints, postReport, type RightSizingResult } from './judgeClient.js';
 import { buildLabelSheet, renderScore, scoreLabels, type LabelRow } from './label.js';
 import { buildFluencySheet, renderBandSummary, summarizeBands, type FluencyLabelRow } from './labelFluency.js';
 import { renderFix, runFix } from './fix.js';
 import { machineAnonId, openURL } from './open.js';
 import { isPremiumModel } from './pricing.js';
-import { type Aggressiveness, renderReport, renderRightSizing } from './report.js';
+import { type Aggressiveness, renderHygieneRefinement, renderReport, renderRightSizing } from './report.js';
 import { checkForUpdate, renderUpdateNotice } from './updateCheck.js';
 import { VERSION } from './version.js';
 
@@ -250,13 +257,21 @@ async function maybeRightSize(
   sessions: ReturnType<typeof loadClaudeCodeSessions>,
   windowDays: number,
   premiumMonthlyUsd: number,
-): Promise<RightSizingResult | undefined> {
+  hygiene: ContextHygiene,
+): Promise<{ result: RightSizingResult; hygieneRefinement?: HygieneRefinementUpload } | undefined> {
   const footprints = buildFootprints(sessions);
+  // Context-hygiene items ride in the SAME judge payload (one model pass) — they refine
+  // the deterministic avoidable-carry headline by separating stale carry from
+  // genuinely-needed big context.
+  const hygieneItems = buildHygieneFootprints(hygiene, sessions);
   let want = args.judge;
   if (!want && interactive && footprints.length > 0) {
     p.log.message(
       "Right-sizing sends each task's gist + metadata (model, tokens, turn shape)\n" +
-        'to our hosted model — never your code, prompts, or paths.',
+        'to our hosted model — never your code, prompts, or paths.' +
+        (hygieneItems.length > 0
+          ? `\nThe same call also refines your context-hygiene estimate from ${hygieneItems.length} episodes' task gists (no extra call).`
+          : ''),
     );
     const ok = await p.confirm({ message: `Right-size ${footprints.length} sessions?`, initialValue: true });
     want = !p.isCancel(ok) && ok === true;
@@ -269,17 +284,29 @@ async function maybeRightSize(
   // Explicit flag in a non-interactive run: print the receipt of what's being sent.
   if (args.judge && !interactive) {
     process.stderr.write(
-      `Right-sizing ${footprints.length} sessions via the hosted model (task gist + metadata, never code)…\n`,
+      `Right-sizing ${footprints.length} sessions via the hosted model (task gist + metadata, never code)` +
+        (hygieneItems.length > 0 ? ` + refining ${hygieneItems.length} context-hygiene episodes (same call)` : '') +
+        '…\n',
     );
   }
   try {
+    const api = process.env.CC_AUDIT_API ?? undefined;
+    const wire = hygieneItems.map((h) => h.item); // strip the local-only avoidableUsd before sending
     const judged = interactive
-      ? await withSpinner(`Right-sizing ${footprints.length} sessions`, () => judgeFootprints(footprints))
-      : await judgeFootprints(footprints);
+      ? await withSpinner(`Right-sizing ${footprints.length} sessions`, () => judgeFootprints(footprints, api, wire))
+      : await judgeFootprints(footprints, api, wire);
     process.stdout.write(
       `${renderRightSizing(footprints, judged, windowDays, premiumMonthlyUsd, args.aggressiveness)}\n`,
     );
-    return judged;
+    // If the backend scored the hygiene items, refine the avoidable-carry headline from
+    // the deterministic estimate to what the judge confirmed was actually stale.
+    let hygieneRefinement: HygieneRefinementUpload | undefined;
+    if (judged.hygiene && judged.hygiene.length > 0) {
+      const refined = refineAvoidableCarry(hygiene, hygieneItems, judged.hygiene);
+      process.stdout.write(`${renderHygieneRefinement(refined, windowDays)}\n`);
+      hygieneRefinement = toRefinementUpload(refined, windowDays);
+    }
+    return { result: judged, hygieneRefinement };
   } catch (err) {
     const msg = `right-sizing failed: ${err instanceof Error ? err.message : String(err)}`;
     if (interactive) p.log.error(msg);
@@ -295,6 +322,7 @@ async function maybeShare(
   interactive: boolean,
   aggregate: unknown,
   rightSizing: unknown,
+  hygieneRefinement?: HygieneRefinementUpload,
 ): Promise<void> {
   let want = args.open;
   if (!want && interactive) {
@@ -315,7 +343,7 @@ async function maybeShare(
     );
   }
   try {
-    const post = () => postReport({ aggregate, rightSizing, anonId: machineAnonId() });
+    const post = () => postReport({ aggregate, rightSizing, hygieneRefinement, anonId: machineAnonId() });
     const { url, benchmark, fluency } = interactive ? await withSpinner('Creating shareable report', post) : await post();
     // The gated readout rides on the --open response (no extra egress): a calibrated
     // BAND always, the cohort percentile once the corpus is large enough, plus the
@@ -404,8 +432,15 @@ async function run(): Promise<void> {
   const premiumMonthlyUsd = result.spend.byModel
     .filter((m) => isPremiumModel(m.model))
     .reduce((n, m) => n + (m.costUsd / result.spend.windowDays) * 30.44, 0);
-  const judged = await maybeRightSize(args, interactive, sessions, result.spend.windowDays, premiumMonthlyUsd);
-  await maybeShare(args, interactive, result.aggregate, judged?.summary);
+  const judgeOut = await maybeRightSize(
+    args,
+    interactive,
+    sessions,
+    result.spend.windowDays,
+    premiumMonthlyUsd,
+    result.contextHygiene,
+  );
+  await maybeShare(args, interactive, result.aggregate, judgeOut?.result.summary, judgeOut?.hygieneRefinement);
 }
 
 async function main(): Promise<void> {

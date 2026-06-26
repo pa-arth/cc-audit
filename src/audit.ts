@@ -3,6 +3,7 @@
 import { computeAlwaysOn, type AlwaysOnTax } from './alwaysOn.js';
 import { attributeSpend, type SpendBreakdown } from './attribute.js';
 import { buildAggregateRecord, type AggregateRecord } from './aggregate.js';
+import { computeContextHygiene, type ContextHygiene } from './contextHygiene.js';
 import { computeFluency, topRedundantFiles, type FluencySignals } from './fluency.js';
 import { buildRecommendations, type Recommendation } from './recommend.js';
 import { anonymizeTopSessions, topSessions, type TopSession } from './topSessions.js';
@@ -11,6 +12,9 @@ import type { Session } from './model.js';
 export interface AuditResult {
   spend: SpendBreakdown;
   fluency: FluencySignals;
+  /** Avoidable carry — missed /compact and /clear, located + costed. LOCAL detail
+   *  (per-session episodes with project labels) lives here; only counts + $ leave. */
+  contextHygiene: ContextHygiene;
   alwaysOn: AlwaysOnTax;
   /** Ranked, file-anchored next actions (the config-knob bridge). Local-only — paths
    *  here never enter the aggregate. */
@@ -32,16 +36,18 @@ export function runAudit(
 ): AuditResult {
   const spend = attributeSpend(sessions);
   const fluency = computeFluency(sessions);
+  const contextHygiene = computeContextHygiene(sessions);
   const alwaysOn = computeAlwaysOn(sessions);
   const recommendations = buildRecommendations(spend, alwaysOn, sessions);
   const top = topSessions(sessions);
   // The leaderboard enters the UPLOADED aggregate ONLY on explicit opt-in, and even
   // then anonymized (no gist/project/raw $). Default: stays local in the TUI.
   const anonTop = opts.shareSessions ? anonymizeTopSessions(top, spend.totalUsd) : [];
-  const aggregate = buildAggregateRecord(spend, fluency, alwaysOn, generatedAt, anonTop);
+  const aggregate = buildAggregateRecord(spend, fluency, contextHygiene, alwaysOn, generatedAt, anonTop);
   return {
     spend,
     fluency,
+    contextHygiene,
     alwaysOn,
     recommendations,
     aggregate,

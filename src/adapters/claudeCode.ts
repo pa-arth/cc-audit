@@ -105,6 +105,7 @@ export function parseTranscript(
       firstUserText: '',
       turns: [],
       isSidechain: false,
+      autoCompacted: false,
       attributionSkill: null,
       attributionAgent: null,
     };
@@ -128,6 +129,7 @@ export function parseTranscript(
         firstUserText: '',
         turns: [],
         isSidechain: true,
+        autoCompacted: false,
         attributionSkill: null,
         attributionAgent: null,
       };
@@ -170,6 +172,15 @@ export function parseTranscript(
         continue;
       }
       const promptId = (d.promptId as string | undefined) ?? null;
+      // An auto-compaction summary ("session continued from a previous conversation
+      // that ran out of context") is injected as a user row WITH a promptId — so it
+      // opens the post-wall span. Flag that span (the context-hygiene "ran-to-the-wall"
+      // signal) but DON'T treat the summary text as a task gist — it's machine-written
+      // continuation prose, not a human prompt, and shouldn't pollute firstUserText.
+      if (d.isCompactSummary) {
+        if (promptId) ensureSpan(promptId).autoCompacted = true;
+        continue;
+      }
       // A new genuine prompt with its own promptId opens a new span.
       if (promptId) {
         const span = ensureSpan(promptId);

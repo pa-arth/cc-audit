@@ -5,6 +5,7 @@
 // local API in dev).
 
 import type { SessionFootprint } from './footprint.js';
+import type { HygieneJudgeItem, HygieneVerdict } from './hygieneFootprint.js';
 
 export interface Verdict {
   minTier: 'haiku' | 'sonnet' | 'frontier';
@@ -25,6 +26,10 @@ export interface RightSizingResult {
     totalSavingsUsd: number;
     savingsShare: number;
   };
+  /** Context-hygiene refinement — POSITIONAL to the `hygiene` items sent in the request.
+   *  Optional: a backend that predates the ride-along omits it and the CLI keeps the
+   *  deterministic avoidable-carry headline. */
+  hygiene?: HygieneVerdict[];
 }
 
 const DEFAULT_API = 'https://api.promptster.ai';
@@ -32,11 +37,14 @@ const DEFAULT_API = 'https://api.promptster.ai';
 export async function judgeFootprints(
   footprints: SessionFootprint[],
   apiBase: string = process.env.CC_AUDIT_API ?? DEFAULT_API,
+  hygiene: HygieneJudgeItem[] = [],
 ): Promise<RightSizingResult> {
   const res = await fetch(`${apiBase.replace(/\/$/, '')}/v1/public/cost-audit`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ sessions: footprints }),
+    // `hygiene` rides in the SAME request — the judge scores both in one model pass; an
+    // older backend ignores the extra field and returns no `hygiene` verdicts.
+    body: JSON.stringify({ sessions: footprints, hygiene }),
   });
   if (!res.ok) {
     const body = await res.text().catch(() => '');
@@ -69,7 +77,7 @@ export interface PostReportResult {
  * per-task verdicts/gists) to the report store, returning a shareable id + url.
  */
 export async function postReport(
-  body: { aggregate: unknown; rightSizing?: unknown; anonId?: string },
+  body: { aggregate: unknown; rightSizing?: unknown; hygieneRefinement?: unknown; anonId?: string },
   apiBase: string = process.env.CC_AUDIT_API ?? DEFAULT_API,
 ): Promise<PostReportResult> {
   const res = await fetch(`${apiBase.replace(/\/$/, '')}/v1/public/cost-audit-report`, {
