@@ -1,8 +1,12 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { checkForUpdate, compareVersions, renderUpdateNotice } from '../updateCheck.js';
+
+// The check opts out under CI / NO_UPDATE_NOTIFIER / CC_AUDIT_NO_UPDATE_CHECK.
+// GitHub Actions sets CI=true, so tests that expect a notice must clear them.
+const OPT_OUT_VARS = ['CI', 'NO_UPDATE_NOTIFIER', 'CC_AUDIT_NO_UPDATE_CHECK'] as const;
 
 describe('compareVersions', () => {
   it('orders by major, then minor, then patch', () => {
@@ -26,6 +30,7 @@ describe('compareVersions', () => {
 
 describe('checkForUpdate (cached, no network)', () => {
   const home0 = process.env.HOME;
+  const optOut0 = OPT_OUT_VARS.map((k) => [k, process.env[k]] as const);
   const now = 1_700_000_000_000;
   let home: string;
 
@@ -38,14 +43,17 @@ describe('checkForUpdate (cached, no network)', () => {
     home = mkdtempSync(join(tmpdir(), 'cc-audit-update-'));
     process.env.HOME = home; // os.homedir() reads $HOME on POSIX → isolates ~/.cc-audit
   });
-  afterEach(() => {
-    delete process.env.CC_AUDIT_NO_UPDATE_CHECK;
-    delete process.env.NO_UPDATE_NOTIFIER;
-    delete process.env.CI;
+  beforeEach(() => {
+    // Start each case opted-IN (CI sets CI=true); the opt-out case sets its own.
+    for (const k of OPT_OUT_VARS) delete process.env[k];
   });
   afterAll(() => {
     if (home0 === undefined) delete process.env.HOME;
     else process.env.HOME = home0;
+    for (const [k, v] of optOut0) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
     rmSync(home, { recursive: true, force: true });
   });
 
