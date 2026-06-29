@@ -14,6 +14,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { autoMemoryTokens, countTokens, globalMemoryTokens, projectMemoryTokens } from './configFiles.js';
 import { detectConditionalContext, type ConditionalContextItem } from './conditionalContext.js';
+import { computePluginTax, type PluginInfo } from './pluginTax.js';
 import { getAnthropicPricing } from './vendor/pricing.js';
 import type { Session } from './model.js';
 
@@ -43,11 +44,29 @@ export interface AlwaysOnTax {
    *  for aggregate compatibility; handles worktree/subdir cwds correctly. */
   projectClaudeMdTokens: number;
   projectClaudeMdUsd: number;
-  /** Sum of skill name+description tokens that load every turn (a FLOOR — user skills
-   *  only; bundled/plugin skills aren't on disk to count). */
+  /** Sum of USER skill name+description tokens that load every turn (a FLOOR). Plugin-
+   *  bundled skills are counted separately in the plugin* fields below. */
   skillDescriptionTokens: number;
   skillDescriptionUsd: number;
   skillCount: number;
+
+  /** Standing cost of ENABLED plugins: their bundled skill/command/agent listings load
+   *  into every turn just like user skills. Split by asset kind; the listing total is
+   *  folded into alwaysOnConfigTokensPerTurn. A FLOOR (CC adds listing wrapper tokens). */
+  pluginSkillTokens: number;
+  pluginSkillUsd: number;
+  pluginCommandTokens: number;
+  pluginCommandUsd: number;
+  pluginAgentTokens: number;
+  pluginAgentUsd: number;
+  pluginListingTokens: number;
+  pluginListingUsd: number;
+  /** Enabled plugins counted. */
+  pluginCount: number;
+  /** Enabled but never invoked in the window — removal candidates (see recommendations). */
+  unusedPluginCount: number;
+  /** Per-plugin detail for the report. LOCAL-only — names never enter the aggregate. */
+  plugins: PluginInfo[];
 
   /** MCP servers configured (best-effort from ~/.claude.json). */
   mcpServerCount: number;
@@ -71,16 +90,19 @@ function median(nums: number[]): number {
   return s[Math.floor(s.length / 2)]!;
 }
 
-/** Sum of `name: description` tokens for every SKILL.md directly under a skills dir.
- *  These are what the per-turn skill listing is built from. */
-function skillListingTokens(skillsDir: string): { tokens: number; count: number } {
+/** Sum of `name: description` tokens for every SKILL.md directly under a skills dir,
+ *  plus each skill's declared name (for usage cross-referencing). These are what the
+ *  per-turn skill listing is built from. Exported so pluginTax can reuse it on a
+ *  plugin's bundled `skills/` dir — same on-disk shape. */
+export function skillListingTokens(skillsDir: string): { tokens: number; count: number; names: string[] } {
   let tokens = 0;
   let count = 0;
+  const names: string[] = [];
   let entries;
   try {
     entries = readdirSync(skillsDir, { withFileTypes: true });
   } catch {
-    return { tokens: 0, count: 0 };
+    return { tokens: 0, count: 0, names: [] };
   }
   for (const e of entries) {
     if (!e.isDirectory()) continue;
@@ -96,8 +118,9 @@ function skillListingTokens(skillsDir: string): { tokens: number; count: number 
     const desc = /^description:\s*(.+)$/m.exec(txt)?.[1] ?? '';
     tokens += countTokens(`${name}: ${desc}`);
     count += 1;
+    names.push(name.trim(), e.name); // declared name + dir slug, both used for usage match
   }
-  return { tokens, count };
+  return { tokens, count, names };
 }
 
 function countMcpServers(): number {
@@ -180,7 +203,11 @@ export function computeAlwaysOn(sessions: Session[]): AlwaysOnTax {
 
   const projectClaudeMdTokens = totalTurns ? projectTokenTurns / totalTurns : 0;
   const skillDescriptionTokens = userSkills.tokens;
-  const alwaysOnConfigTokensPerTurn = globalClaudeMdTokens + projectClaudeMdTokens + skillDescriptionTokens;
+  // Plugin listings load every turn too — fold them into the headline so it stops
+  // undercounting your standing config.
+  const pluginTax = computePluginTax(sessions);
+  const alwaysOnConfigTokensPerTurn =
+    globalClaudeMdTokens + projectClaudeMdTokens + skillDescriptionTokens + pluginTax.pluginListingTokens;
 
   // MCP tools are tool-search-deferred by default (CC v2.1.121+), so they cost ~0
   // standing — only ~120 tok of names load unless ENABLE_TOOL_SEARCH=false.
@@ -198,13 +225,24 @@ export function computeAlwaysOn(sessions: Session[]): AlwaysOnTax {
     skillDescriptionTokens,
     skillDescriptionUsd: perTurnUsd(skillDescriptionTokens),
     skillCount: userSkills.count,
+    pluginSkillTokens: pluginTax.pluginSkillTokens,
+    pluginSkillUsd: perTurnUsd(pluginTax.pluginSkillTokens),
+    pluginCommandTokens: pluginTax.pluginCommandTokens,
+    pluginCommandUsd: perTurnUsd(pluginTax.pluginCommandTokens),
+    pluginAgentTokens: pluginTax.pluginAgentTokens,
+    pluginAgentUsd: perTurnUsd(pluginTax.pluginAgentTokens),
+    pluginListingTokens: pluginTax.pluginListingTokens,
+    pluginListingUsd: perTurnUsd(pluginTax.pluginListingTokens),
+    pluginCount: pluginTax.pluginCount,
+    unusedPluginCount: pluginTax.unusedCount,
+    plugins: pluginTax.plugins,
     mcpServerCount: countMcpServers(),
     mcpDeferred,
     mcpInvokedRate: sessions.length ? mcpSessions / sessions.length : 0,
     conditionalContext: detectConditionalContext(sessions),
     note:
       'Always-on config = project memory (every CLAUDE.md + CLAUDE.local.md from cwd up to ' +
-      'the repo root) + global memory + skill listings, measured from your files and cache-read ' +
+      'the repo root) + global memory + skill listings + enabled-plugin listings, measured from your files and cache-read ' +
       'into every turn. This is what your chosen context COSTS, not waste to cut — useful ' +
       'config earns its tokens. The larger OBSERVED standing context is mostly fixed system ' +
       'prompt + tool schemas. Run /context in a session for the authoritative live breakdown.',

@@ -26,6 +26,8 @@ export type {
 } from './hygieneFootprint.js';
 export { computeAlwaysOn } from './alwaysOn.js';
 export type { AlwaysOnTax } from './alwaysOn.js';
+export { computePluginTax } from './pluginTax.js';
+export type { PluginTax, PluginInfo } from './pluginTax.js';
 
 export { buildAggregateRecord, AggregateRecordSchema, AGGREGATE_SCHEMA_VERSION } from './aggregate.js';
 export type { AggregateRecord } from './aggregate.js';

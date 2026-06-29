@@ -158,6 +158,24 @@ export function renderReport(r: AuditResult, opts: { rows?: number } = {}): stri
       `${money(padL(usd(a.globalClaudeMdUsd) + '/mo', 9))}  ${c.dim('→ ~/.claude/CLAUDE.md (+ .local, managed policy)')}`,
     `  skill listings     ≥${padL(a.skillDescriptionTokens.toLocaleString() + ' tok', 8)}  ` +
       `${money(padL(usd(a.skillDescriptionUsd) + '/mo', 9))}  ${c.dim(`${a.skillCount} user skills load every turn`)}`,
+    ...(a.pluginCount > 0
+      ? [
+          `  plugin skills      ≥${padL(Math.round(a.pluginSkillTokens).toLocaleString() + ' tok', 8)}  ` +
+            `${money(padL(usd(a.pluginSkillUsd) + '/mo', 9))}  ${c.dim(`${a.pluginCount} enabled plugins load every turn`)}`,
+          ...(a.pluginCommandTokens > 0
+            ? [
+                `  plugin commands    ≥${padL(Math.round(a.pluginCommandTokens).toLocaleString() + ' tok', 8)}  ` +
+                  `${money(padL(usd(a.pluginCommandUsd) + '/mo', 9))}  ${c.dim('bundled slash commands')}`,
+              ]
+            : []),
+          ...(a.pluginAgentTokens > 0
+            ? [
+                `  plugin agents      ≥${padL(Math.round(a.pluginAgentTokens).toLocaleString() + ' tok', 8)}  ` +
+                  `${money(padL(usd(a.pluginAgentUsd) + '/mo', 9))}  ${c.dim('bundled subagents')}`,
+              ]
+            : []),
+        ]
+      : []),
     rule(),
     `  ${c.emerald(`your config adds ≈ ${c.bold(usd(a.alwaysOnConfigMonthlyUsd) + '/mo')} of standing context`)}`,
     c.dim(
@@ -195,6 +213,19 @@ export function renderReport(r: AuditResult, opts: { rows?: number } = {}): stri
     for (const cc of trimCandidates.slice(0, rows)) {
       taxRows.push(c.dim(`  "${cc.file}" fires in ${pct(cc.observedReadRate!)} of sessions — move to a skill so it loads on demand`));
     }
+  }
+  // Unused plugins — enabled, listing-tax paid every turn, but invoked 0× in the window.
+  if (a.unusedPluginCount > 0) {
+    const unused = a.plugins.filter((p) => !p.invoked);
+    const unusedTokens = unused.reduce((n, p) => n + p.listingTokens, 0);
+    const reclaim = a.pluginListingTokens > 0 ? a.pluginListingUsd * (unusedTokens / a.pluginListingTokens) : 0;
+    const names = unused.map((p) => p.name).join(', ');
+    taxRows.push(
+      c.amber(
+        `plugins: ${a.pluginCount} enabled · ${a.unusedPluginCount} never invoked (${names}) — ` +
+          `review with /plugin; disabling reclaims ≈${usd(reclaim)}/mo of standing context`,
+      ),
+    );
   }
   blank();
   out.push(...panel('① ALWAYS-ON CONTEXT TAX  ·  what your standing context costs', taxRows, c.emerald));

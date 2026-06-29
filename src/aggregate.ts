@@ -27,7 +27,10 @@ import type { AnonTopSession } from './topSessions.js';
 // v6: contextHygiene — the AVOIDABLE-carry slice (missed /compact + /clear). COUNTS +
 // per-month DOLLARS only; the located per-session episodes (project label, sessionId,
 // turn ordinal) stay LOCAL in the TUI and never enter the aggregate.
-export const AGGREGATE_SCHEMA_VERSION = 6;
+// v7: alwaysOn plugin tax — enabled-plugin bundled skill/command/agent listing tokens
+// (folded into the per-turn config total), plugin count, and unused-plugin count. TOKENS
+// + COUNTS only; per-plugin names/paths stay LOCAL in the TUI.
+export const AGGREGATE_SCHEMA_VERSION = 7;
 
 // Well-known public command/skill names kept verbatim; everything else is hashed
 // so a custom name like `acme-deploy` can't leak project/company info.
@@ -141,6 +144,12 @@ export const AggregateRecordSchema = z.object({
     projectClaudeMdTokens: z.number(),
     skillDescriptionTokens: z.number(),
     skillCount: z.number(),
+    pluginSkillTokens: z.number(),
+    pluginCommandTokens: z.number(),
+    pluginAgentTokens: z.number(),
+    pluginListingTokens: z.number(),
+    pluginCount: z.number(),
+    unusedPluginCount: z.number(),
     mcpServerCount: z.number(),
     mcpDeferred: z.boolean(),
     mcpInvokedRate: z.number(),
@@ -250,6 +259,12 @@ export function buildAggregateRecord(
       projectClaudeMdTokens: alwaysOn.projectClaudeMdTokens,
       skillDescriptionTokens: alwaysOn.skillDescriptionTokens,
       skillCount: alwaysOn.skillCount,
+      pluginSkillTokens: alwaysOn.pluginSkillTokens,
+      pluginCommandTokens: alwaysOn.pluginCommandTokens,
+      pluginAgentTokens: alwaysOn.pluginAgentTokens,
+      pluginListingTokens: alwaysOn.pluginListingTokens,
+      pluginCount: alwaysOn.pluginCount,
+      unusedPluginCount: alwaysOn.unusedPluginCount,
       mcpServerCount: alwaysOn.mcpServerCount,
       mcpDeferred: alwaysOn.mcpDeferred,
       mcpInvokedRate: alwaysOn.mcpInvokedRate,

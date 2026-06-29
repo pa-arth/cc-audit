@@ -307,9 +307,9 @@ describe('always-on tax: config cost vs observed + MCP framing', () => {
     expect(a.projectClaudeMdTokens).toBeGreaterThan(900); // ~1000 tok
   });
 
-  it('always-on config = global + project + skill listings (additive, file-measured)', () => {
+  it('always-on config = global + project + skill + plugin listings (additive, file-measured)', () => {
     expect(a.alwaysOnConfigTokensPerTurn).toBeCloseTo(
-      a.globalClaudeMdTokens + a.projectClaudeMdTokens + a.skillDescriptionTokens,
+      a.globalClaudeMdTokens + a.projectClaudeMdTokens + a.skillDescriptionTokens + a.pluginListingTokens,
       6,
     );
     // Config $ and observed $ are priced with the same per-token rate.
