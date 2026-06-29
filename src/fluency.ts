@@ -45,6 +45,18 @@ export interface FluencySignals {
    *  re-injecting the same content. The ungameable bloat lever: you can't pad your
    *  way out, only stop re-reading what you already have. Lower is better. */
   redundantReadRate: number;
+  /** Builder-profile behavioral facts (Paxel-style, computed LOCALLY). RAW signals, NOT
+   *  graded — high isn't "better" (high autonomy can mean under-steering). Not fed into
+   *  the crude score; surfaced as honest facts about how you work. */
+  /** count(Glob,Grep,Read) / count(Edit,Write,MultiEdit,NotebookEdit,Bash) over own-chain
+   *  turns. >1 ⇒ reads before it writes. */
+  planningRatio: number;
+  /** 1 − AskUserQuestion-spans / own prompts. High ⇒ runs without hand-holding. */
+  autonomyScore: number;
+  /** Distinct tool names used corpus-wide — breadth of the toolbox. */
+  toolDiversity: number;
+  /** Mean edits-per-file-per-session — how many times a path is rewritten before it's right. */
+  iterationDepth: number;
   /** Crude, ADVISORY local heuristic (0–100) — NOT the calibrated score. Kept so the
    *  uploaded aggregate has a stable shape; the server recomputes authoritatively
    *  from the raw signals and ignores this. Never shown as a precise number. */
@@ -73,6 +85,29 @@ const WRITE_TOOLS = new Set(['Edit', 'Write', 'NotebookEdit', 'MultiEdit']);
 // A reset (/compact, /clear) sheds carried content, so re-reading AFTER one is a
 // legitimate refresh, not redundancy — clear the seen-set on these.
 const RESET_COMMANDS = new Set(['compact', 'clear']);
+
+// Builder-profile planning ratio: investigative tools (look before you leap) vs the
+// tools that change the world. Bash counts as an action; the WRITE_TOOLS are file edits.
+const PLAN_TOOLS = new Set(['Glob', 'Grep', 'Read']);
+const ACTION_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit', 'Bash']);
+
+/** Mean edits-per-file in one session (own chain): total writes ÷ distinct paths written.
+ *  High ⇒ the same file is rewritten repeatedly before it's right (iterative thrash). */
+export function sessionIterationDepth(session: Session): number {
+  const writesByPath = new Map<string, number>();
+  for (const span of session.spans) {
+    if (span.isSidechain) continue;
+    for (const t of span.turns) {
+      for (const op of t.fileOps ?? []) {
+        if (WRITE_TOOLS.has(op.tool)) writesByPath.set(op.path, (writesByPath.get(op.path) ?? 0) + 1);
+      }
+    }
+  }
+  if (writesByPath.size === 0) return 0;
+  let total = 0;
+  for (const n of writesByPath.values()) total += n;
+  return total / writesByPath.size;
+}
 
 export interface Redundancy {
   reads: number; // total file Reads on the own chain
@@ -159,6 +194,14 @@ export function computeFluency(sessions: Session[]): FluencySignals {
   let carryUsd = 0;
   let reads = 0;
   let redundantReads = 0;
+  // Builder-profile accumulators (own-chain only).
+  const allToolNames = new Set<string>();
+  let planTools = 0;
+  let actionTools = 0;
+  let ownPrompts = 0;
+  let askPrompts = 0;
+  let iterationDepthSum = 0;
+  let iterationDepthSessions = 0;
 
   let substantiveSessions = 0;
   for (const session of sessions) {
@@ -176,6 +219,8 @@ export function computeFluency(sessions: Session[]): FluencySignals {
       // trajectory — they'd inflate turns/task and premium-share if mixed in. Keep
       // the trajectory-shape metrics to the main chain; track subagent cost apart.
       if (!span.isSidechain) turnsPerTask.push(span.turns.length);
+      // Builder-profile signals are operator habits — own chain only.
+      let spanAsked = false;
       for (const t of span.turns) {
         const usd = turnCostUsd(t.model, t.usage).usd;
         totalCost += usd;
@@ -186,13 +231,29 @@ export function computeFluency(sessions: Session[]): FluencySignals {
         } else {
           totalTurns += 1;
           if (isPremiumModel(t.model)) premiumTurns += 1;
+          for (const tool of t.tools) {
+            allToolNames.add(tool);
+            if (PLAN_TOOLS.has(tool)) planTools += 1;
+            else if (ACTION_TOOLS.has(tool)) actionTools += 1;
+            if (tool === 'AskUserQuestion') spanAsked = true;
+          }
         }
+      }
+      // Count per-span: a span that asks twice is still one hand-holding event.
+      if (!span.isSidechain) {
+        ownPrompts += 1;
+        if (spanAsked) askPrompts += 1;
       }
     }
     // Redundant reads are an operator habit — own-chain only (see sessionRedundancy).
     const r = sessionRedundancy(session);
     reads += r.reads;
     redundantReads += r.redundantReads;
+    const depth = sessionIterationDepth(session);
+    if (depth > 0) {
+      iterationDepthSum += depth;
+      iterationDepthSessions += 1;
+    }
   }
 
   turnsPerTask.sort((a, b) => a - b);
@@ -206,6 +267,9 @@ export function computeFluency(sessions: Session[]): FluencySignals {
   const redundantReadRate = reads ? redundantReads / reads : 0;
   const medianTurns = percentile(turnsPerTask, 50);
   const p90Turns = percentile(turnsPerTask, 90);
+  const planningRatio = planTools / Math.max(1, actionTools);
+  const autonomyScore = 1 - askPrompts / Math.max(1, ownPrompts);
+  const iterationDepth = iterationDepthSessions ? iterationDepthSum / iterationDepthSessions : 0;
 
   const signals = {
     sessions: sessions.length,
@@ -218,6 +282,10 @@ export function computeFluency(sessions: Session[]): FluencySignals {
     carryShare,
     carryUsd,
     redundantReadRate,
+    planningRatio,
+    autonomyScore,
+    toolDiversity: allToolNames.size,
+    iterationDepth,
   };
   return { ...signals, score: crudeLocalScore(signals) };
 }
@@ -253,6 +321,11 @@ export interface SessionFluencySignals {
   modelDiversity: number;
   subagentUsageRate: number;
   redundantReadRate: number; // share of THIS session's file reads that re-read a carried path
+  // Builder-profile facts, per-session (see FluencySignals for definitions).
+  planningRatio: number;
+  autonomyScore: number;
+  toolDiversity: number;
+  iterationDepth: number;
 }
 
 /** Own (non-delegated) turn count — a session is "substantive" past the threshold. */
@@ -270,8 +343,14 @@ export function computeSessionFluencySignals(session: Session): SessionFluencySi
   let totalTurns = 0;
   let subagentCost = 0;
   let totalCost = 0;
+  const tools = new Set<string>();
+  let planTools = 0;
+  let actionTools = 0;
+  let ownPrompts = 0;
+  let askPrompts = 0;
   for (const span of session.spans) {
     if (!span.isSidechain) turnsPerTask.push(span.turns.length);
+    let spanAsked = false;
     for (const t of span.turns) {
       const usd = turnCostUsd(t.model, t.usage).usd;
       totalCost += usd;
@@ -280,7 +359,17 @@ export function computeSessionFluencySignals(session: Session): SessionFluencySi
       else {
         totalTurns += 1;
         if (isPremiumModel(t.model)) premiumTurns += 1;
+        for (const tool of t.tools) {
+          tools.add(tool);
+          if (PLAN_TOOLS.has(tool)) planTools += 1;
+          else if (ACTION_TOOLS.has(tool)) actionTools += 1;
+          if (tool === 'AskUserQuestion') spanAsked = true;
+        }
       }
+    }
+    if (!span.isSidechain) {
+      ownPrompts += 1;
+      if (spanAsked) askPrompts += 1;
     }
   }
   turnsPerTask.sort((a, b) => a - b);
@@ -293,6 +382,10 @@ export function computeSessionFluencySignals(session: Session): SessionFluencySi
     modelDiversity: models.size,
     subagentUsageRate: totalCost ? subagentCost / totalCost : 0,
     redundantReadRate: r.reads ? r.redundantReads / r.reads : 0,
+    planningRatio: planTools / Math.max(1, actionTools),
+    autonomyScore: 1 - askPrompts / Math.max(1, ownPrompts),
+    toolDiversity: tools.size,
+    iterationDepth: sessionIterationDepth(session),
   };
 }
 

@@ -7,9 +7,26 @@
 import type { Session, Span } from './model.js';
 import { turnCostUsd } from './pricing.js';
 
+/** One unit of work inside a session, with what it actually cost. A "session" file is
+ *  routinely split by compaction into several unrelated contexts, so per-prompt cost is
+ *  what tells you where the money went — the file's first prompt does not. RAW gist →
+ *  LOCAL ONLY, never uploaded. */
+export interface PromptCost {
+  /** Meaningful label: this prompt's own task text, or the nearest preceding task prompt
+   *  in the SAME context segment (never inherited across a compaction reset). */
+  gist: string;
+  costUsd: number;
+  /** Assistant turns rolled into this task (spans sharing the label are merged). */
+  turns: number;
+}
+
 export interface TopSession {
-  /** RAW first user prompt of the priciest span — LOCAL ONLY, never uploaded. */
+  /** RAW label of the priciest TASK in the session (not the file's first prompt) — names
+   *  the work that actually drove the cost. LOCAL ONLY, never uploaded. */
   taskGist: string;
+  /** The session's costliest tasks, each labeled + priced — the per-prompt drill-down.
+   *  RAW gists, LOCAL ONLY. Ordered by cost, descending. */
+  topPrompts: PromptCost[];
   /** Most-used model across the session's turns. */
   topModel: string;
   turns: number;
@@ -62,21 +79,49 @@ function isTaskPrompt(text: string): boolean {
   return t.length >= 15 && !CONTINUATION.test(t);
 }
 
-/** Pick the gist that best NAMES the session: the first substantive task prompt (the
- *  one that kicked off the work), falling back to the priciest span's text, its
- *  slash-command, then anything non-empty. */
-function pickGist(mainSpans: Span[]): string {
-  for (const s of mainSpans) {
-    const t = s.firstUserText?.trim();
-    if (t && isTaskPrompt(t)) return t;
+/** Label a span by the task it belongs to: its own text if substantive, else the nearest
+ *  preceding task prompt in the SAME context segment. `lastTask` is reset by the caller at
+ *  every compaction boundary so a continuation never inherits a label from before a reset. */
+function spanLabel(span: Span, lastTask: string | null): string {
+  const own = span.firstUserText?.trim();
+  if (own && isTaskPrompt(own)) return own;
+  if (lastTask) return lastTask;
+  if (span.command) return `/${span.command}`;
+  if (own && !own.startsWith('<')) return own;
+  return '(continuation)';
+}
+
+/** Break a session into its costly TASKS. We walk the main chain in order, label each span
+ *  by its task (carrying the last task forward but RESETTING at every compaction boundary —
+ *  past that point the work is unrelated), then merge spans that share a label so one task
+ *  spread over many prompts shows as a single priced line. Returns tasks sorted by cost. */
+function taskBreakdown(mainSpans: Span[]): PromptCost[] {
+  const byLabel = new Map<string, PromptCost>();
+  const order: string[] = [];
+  let lastTask: string | null = null;
+  for (const span of mainSpans) {
+    // A compacted span opens a fresh context — drop the carried task so nothing leaks across.
+    if (span.autoCompacted) lastTask = null;
+    const label = spanLabel(span, lastTask);
+    if (span.firstUserText?.trim() && isTaskPrompt(span.firstUserText.trim())) lastTask = label;
+    const cost = spanCost(span);
+    let row = byLabel.get(label);
+    if (!row) {
+      row = { gist: label, costUsd: 0, turns: 0 };
+      byLabel.set(label, row);
+      order.push(label);
+    }
+    row.costUsd += cost;
+    row.turns += span.turns.length;
+    // A manual `/compact` is a context reset too (auto-compaction is caught above via
+    // `autoCompacted`). After it, the carried task is gone — don't bleed it forward.
+    if (span.command === 'compact' || span.command === 'clear') lastTask = null;
   }
-  const ranked = [...mainSpans].sort((a, b) => spanCost(b) - spanCost(a));
-  for (const s of ranked) {
-    const t = s.firstUserText?.trim();
-    if (t && !t.startsWith('<')) return t;
-    if (s.command) return `/${s.command}`;
-  }
-  return ranked[0]?.firstUserText?.trim() || '(no prompt text)';
+  // Stable sort: cost desc, ties keep first-seen order (so a single-task session keeps its
+  // opening prompt as the headline rather than an arbitrary equal-cost later prompt).
+  return order
+    .map((l) => byLabel.get(l)!)
+    .sort((a, b) => b.costUsd - a.costUsd || order.indexOf(a.gist) - order.indexOf(b.gist));
 }
 
 export function topSessions(sessions: Session[], n = 5): TopSession[] {
@@ -105,8 +150,12 @@ export function topSessions(sessions: Session[], n = 5): TopSession[] {
         .slice(0, 3)
         .map(([t]) => t)
         .join('·') || '—';
+    const tasks = taskBreakdown(mainSpans.length ? mainSpans : s.spans);
     rows.push({
-      taskGist: pickGist(mainSpans.length ? mainSpans : s.spans),
+      // Headline names the priciest TASK, not the file's first prompt (which, after a
+      // compaction or two, may be unrelated to where the money actually went).
+      taskGist: tasks[0]?.gist || '(no prompt text)',
+      topPrompts: tasks.filter((t) => t.costUsd > 0).slice(0, 3),
       topModel,
       turns,
       costUsd,

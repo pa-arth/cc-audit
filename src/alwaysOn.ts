@@ -17,6 +17,16 @@ import { detectConditionalContext, type ConditionalContextItem } from './conditi
 import { getAnthropicPricing } from './vendor/pricing.js';
 import type { Session } from './model.js';
 
+/** One skill's standing-carry signature, taken from its SKILL.md frontmatter. */
+export interface SkillCarry {
+  /** Directory name under skills/ — the SLUG, what /command and most invocations key on. */
+  slug: string;
+  /** `name:` frontmatter value, falling back to slug. May differ from slug (collision risk). */
+  declaredName: string;
+  /** countTokens(`${name}: ${desc}`) — the per-turn listing cost of THIS skill. */
+  descTokens: number;
+}
+
 export interface AlwaysOnTax {
   /** OBSERVED: median standing-context size carried into every turn (turn-1 prefix).
    *  Mostly fixed system + tool schemas — NOT all recoverable. */
@@ -48,9 +58,14 @@ export interface AlwaysOnTax {
   skillDescriptionTokens: number;
   skillDescriptionUsd: number;
   skillCount: number;
+  /** Per-skill standing-carry breakdown (LOCAL-ONLY — declaredName/slug are custom names,
+   *  never uploaded). Each row's monthlyUsd is its slice of skillDescriptionUsd. */
+  skillCarry: Array<SkillCarry & { monthlyUsd: number }>;
 
   /** MCP servers configured (best-effort from ~/.claude.json). */
   mcpServerCount: number;
+  /** Configured MCP server names (LOCAL-ONLY). Joined against realized invocations. */
+  mcpServerNames: string[];
   /** True ⇒ MCP tools are tool-search-deferred (CC default) ⇒ ~0 standing cost. */
   mcpDeferred: boolean;
   /** Share of sessions that actually invoked an MCP tool (mcp__ prefix). */
@@ -71,16 +86,15 @@ function median(nums: number[]): number {
   return s[Math.floor(s.length / 2)]!;
 }
 
-/** Sum of `name: description` tokens for every SKILL.md directly under a skills dir.
- *  These are what the per-turn skill listing is built from. */
-function skillListingTokens(skillsDir: string): { tokens: number; count: number } {
-  let tokens = 0;
-  let count = 0;
+/** One row per SKILL.md directly under a skills dir — the per-turn skill listing is
+ *  built from these. FLOOR: user skills only; bundled/plugin skills aren't on disk. */
+function skillListings(skillsDir: string): SkillCarry[] {
+  const out: SkillCarry[] = [];
   let entries;
   try {
     entries = readdirSync(skillsDir, { withFileTypes: true });
   } catch {
-    return { tokens: 0, count: 0 };
+    return out;
   }
   for (const e of entries) {
     if (!e.isDirectory()) continue;
@@ -94,13 +108,13 @@ function skillListingTokens(skillsDir: string): { tokens: number; count: number 
     }
     const name = /^name:\s*(.+)$/m.exec(txt)?.[1] ?? e.name;
     const desc = /^description:\s*(.+)$/m.exec(txt)?.[1] ?? '';
-    tokens += countTokens(`${name}: ${desc}`);
-    count += 1;
+    out.push({ slug: e.name, declaredName: name, descTokens: countTokens(`${name}: ${desc}`) });
   }
-  return { tokens, count };
+  return out;
 }
 
-function countMcpServers(): number {
+/** Distinct MCP server names from ~/.claude.json (root + per-project). Best-effort. */
+function listMcpServers(): string[] {
   try {
     const cfg = JSON.parse(readFileSync(join(homedir(), '.claude.json'), 'utf8')) as {
       mcpServers?: Record<string, unknown>;
@@ -110,9 +124,9 @@ function countMcpServers(): number {
     for (const p of Object.values(cfg.projects ?? {})) {
       for (const k of Object.keys(p.mcpServers ?? {})) names.add(k);
     }
-    return names.size;
+    return [...names];
   } catch {
-    return 0;
+    return [];
   }
 }
 
@@ -130,7 +144,8 @@ export function computeAlwaysOn(sessions: Session[]): AlwaysOnTax {
   const claudeDir = join(homedir(), '.claude');
   const projectsRoot = join(claudeDir, 'projects');
   const globalClaudeMdTokens = globalMemoryTokens(claudeDir);
-  const userSkills = skillListingTokens(join(homedir(), '.claude', 'skills'));
+  const userSkills = skillListings(join(homedir(), '.claude', 'skills'));
+  const mcpServerNames = listMcpServers();
 
   // Project memory, turn-weighted by cwd. CC walks cwd→root loading every CLAUDE.md +
   // CLAUDE.local.md, so we do too (projectMemoryTokens) — counting only the file at
@@ -179,7 +194,7 @@ export function computeAlwaysOn(sessions: Session[]): AlwaysOnTax {
   const perTurnUsd = (tok: number) => (tok * turnsPerMonth * rate) / 1_000_000;
 
   const projectClaudeMdTokens = totalTurns ? projectTokenTurns / totalTurns : 0;
-  const skillDescriptionTokens = userSkills.tokens;
+  const skillDescriptionTokens = userSkills.reduce((n, s) => n + s.descTokens, 0);
   const alwaysOnConfigTokensPerTurn = globalClaudeMdTokens + projectClaudeMdTokens + skillDescriptionTokens;
 
   // MCP tools are tool-search-deferred by default (CC v2.1.121+), so they cost ~0
@@ -197,8 +212,10 @@ export function computeAlwaysOn(sessions: Session[]): AlwaysOnTax {
     projectClaudeMdUsd: perTurnUsd(projectClaudeMdTokens),
     skillDescriptionTokens,
     skillDescriptionUsd: perTurnUsd(skillDescriptionTokens),
-    skillCount: userSkills.count,
-    mcpServerCount: countMcpServers(),
+    skillCount: userSkills.length,
+    skillCarry: userSkills.map((s) => ({ ...s, monthlyUsd: perTurnUsd(s.descTokens) })),
+    mcpServerCount: mcpServerNames.length,
+    mcpServerNames,
     mcpDeferred,
     mcpInvokedRate: sessions.length ? mcpSessions / sessions.length : 0,
     conditionalContext: detectConditionalContext(sessions),

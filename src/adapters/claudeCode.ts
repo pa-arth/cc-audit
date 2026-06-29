@@ -11,6 +11,13 @@ import type { AssistantTurn, Session, Span, TurnUsage } from '../model.js';
 
 const COMMAND_RE = /<command-(?:message|name)>([^<\n]+)<\/command-(?:message|name)>/;
 
+/** ISO timestamp → epoch ms, or null if absent/unparseable. */
+const parseTs = (v: unknown): number | null => {
+  if (typeof v !== 'string') return null;
+  const n = Date.parse(v);
+  return Number.isFinite(n) ? n : null;
+};
+
 interface RawUsage {
   input_tokens?: number;
   output_tokens?: number;
@@ -38,6 +45,12 @@ interface ContentBlock {
   thinking?: string;
   name?: string;
   input?: { skill?: string; command?: string; file_path?: string; notebook_path?: string };
+  /** tool_use id (on `tool_use` blocks) — lets a later tool_result match back to its turn. */
+  id?: string;
+  /** back-reference to the tool_use id (on `tool_result` blocks). */
+  tool_use_id?: string;
+  /** error flag on `tool_result` blocks. */
+  is_error?: boolean;
 }
 
 // Tools whose input names a file we then carry in context — re-touching the same path
@@ -96,6 +109,12 @@ export function parseTranscript(
   const modes = new Set<string>();
   let cwd: string | null = null;
   let cur: Span | null = null;
+  // Active permission/agent mode, tracked across `type:"mode"` events and stamped on each
+  // turn so plan-mode is turn-resolved, not just session-level.
+  let curMode: string | null = null;
+  // tool_use id → the turn that issued it, so a later tool_result row (in a user message)
+  // can fold its is_error flag + timestamp back onto the right turn. Global across spans.
+  const turnByToolId = new Map<string, AssistantTurn>();
   const ensureSpan = (promptId: string | null): Span => {
     if (cur && cur.promptId === promptId) return cur;
     cur = {
@@ -108,6 +127,7 @@ export function parseTranscript(
       autoCompacted: false,
       attributionSkill: null,
       attributionAgent: null,
+      userTs: null,
     };
     spans.push(cur);
     return cur;
@@ -132,6 +152,7 @@ export function parseTranscript(
         autoCompacted: false,
         attributionSkill: null,
         attributionAgent: null,
+        userTs: null,
       };
       spans.push(s);
       subSpans.set(agentId, s);
@@ -155,12 +176,31 @@ export function parseTranscript(
 
     if (type === 'mode' || type === 'permission-mode') {
       const v = (d.mode ?? d.permissionMode ?? d.value) as string | undefined;
-      if (typeof v === 'string') modes.add(v);
+      if (typeof v === 'string') {
+        modes.add(v);
+        curMode = v;
+      }
       continue;
     }
 
     if (type === 'user') {
       const msg = (d.message ?? {}) as { content?: unknown };
+      // tool_result blocks (carried on user rows) answer an earlier turn's tool calls.
+      // Fold their is_error flag (count only — NEVER the payload) and timestamp back onto
+      // the issuing turn. Runs for BOTH main + sidechain (map is keyed globally), and
+      // before the early `continue`s below so it isn't skipped.
+      if (Array.isArray(msg.content)) {
+        const rts = parseTs(d.timestamp);
+        for (const b of msg.content as ContentBlock[]) {
+          if (b.type === 'tool_result' && b.tool_use_id) {
+            const t = turnByToolId.get(b.tool_use_id);
+            if (t) {
+              if (b.is_error) t.toolErrorCount += 1;
+              if (rts != null && (t.toolResultTs == null || rts > t.toolResultTs)) t.toolResultTs = rts;
+            }
+          }
+        }
+      }
       const text = userText(msg.content);
       // A sidechain user row is the subagent's task instruction — route it to that
       // agent's span (not the main chain) and record what spawned it.
@@ -168,6 +208,7 @@ export function parseTranscript(
         const span = ensureSubSpan((d.agentId as string | undefined) ?? 'sidechain');
         span.attributionSkill ??= (d.attributionSkill as string | undefined) ?? null;
         span.attributionAgent ??= (d.attributionAgent as string | undefined) ?? null;
+        span.userTs ??= parseTs(d.timestamp);
         if (!span.firstUserText && isGenuinePrompt(text)) span.firstUserText = text.trim().slice(0, 700);
         continue;
       }
@@ -184,6 +225,9 @@ export function parseTranscript(
       // A new genuine prompt with its own promptId opens a new span.
       if (promptId) {
         const span = ensureSpan(promptId);
+        // ??= so the genuine prompt row (which precedes its tool_result echoes sharing the
+        // same promptId) wins — later rows don't clobber the prompt's timestamp.
+        span.userTs ??= parseTs(d.timestamp);
         const cmd = COMMAND_RE.exec(text);
         // Normalize: built-in commands appear as "/compact", skills as "commit-push-pr".
         if (cmd) span.command = span.command ?? cmd[1]!.trim().replace(/^\//, '');
@@ -226,7 +270,15 @@ export function parseTranscript(
         reads: blocks
           .filter((b) => b.type === 'tool_use' && b.name === 'Read' && b.input?.file_path)
           .map((b) => basename(b.input!.file_path!)),
+        ts: parseTs(d.timestamp),
+        mode: curMode,
+        toolResultTs: null,
+        toolErrorCount: 0,
       };
+      // Register this turn's tool_use ids so their results can match back to it.
+      for (const b of blocks) if (b.type === 'tool_use' && b.id) turnByToolId.set(b.id, turn);
+      // ExitPlanMode means the user accepted the plan — subsequent turns run in normal mode.
+      if (turn.tools.includes('ExitPlanMode')) curMode = 'normal';
       if (d.isSidechain) {
         const span = ensureSubSpan((d.agentId as string | undefined) ?? 'sidechain');
         span.attributionSkill ??= (d.attributionSkill as string | undefined) ?? null;
