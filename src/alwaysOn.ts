@@ -90,19 +90,17 @@ function median(nums: number[]): number {
   return s[Math.floor(s.length / 2)]!;
 }
 
-/** Sum of `name: description` tokens for every SKILL.md directly under a skills dir,
- *  plus each skill's declared name (for usage cross-referencing). These are what the
- *  per-turn skill listing is built from. Exported so pluginTax can reuse it on a
- *  plugin's bundled `skills/` dir — same on-disk shape. */
-export function skillListingTokens(skillsDir: string): { tokens: number; count: number; names: string[] } {
+/** Sum of `name: description` tokens for every SKILL.md directly under a skills dir.
+ *  These are what the per-turn skill listing is built from. Exported so pluginTax can
+ *  reuse it on a plugin's bundled `skills/` dir — same on-disk shape. */
+export function skillListingTokens(skillsDir: string): { tokens: number; count: number } {
   let tokens = 0;
   let count = 0;
-  const names: string[] = [];
   let entries;
   try {
     entries = readdirSync(skillsDir, { withFileTypes: true });
   } catch {
-    return { tokens: 0, count: 0, names: [] };
+    return { tokens: 0, count: 0 };
   }
   for (const e of entries) {
     if (!e.isDirectory()) continue;
@@ -118,9 +116,8 @@ export function skillListingTokens(skillsDir: string): { tokens: number; count: 
     const desc = /^description:\s*(.+)$/m.exec(txt)?.[1] ?? '';
     tokens += countTokens(`${name}: ${desc}`);
     count += 1;
-    names.push(name.trim(), e.name); // declared name + dir slug, both used for usage match
   }
-  return { tokens, count, names };
+  return { tokens, count };
 }
 
 function countMcpServers(): number {

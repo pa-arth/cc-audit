@@ -61,17 +61,16 @@ interface InstallEntry {
   lastUpdated?: string;
 }
 
-/** `name: description` tokens for every flat `*.md` (commands, agents) directly under a
- *  dir. Commands have no `name:` key (name = filename); agents may declare one. Mirrors
- *  skillListingTokens but for the flat-file shape. Returns the listing names too. */
-function flatListingTokens(dir: string): { tokens: number; names: string[] } {
+/** Sum of `name: description` listing tokens for every flat `*.md` (commands, agents)
+ *  directly under a dir. Commands have no `name:` key (name = filename); agents may
+ *  declare one. Mirrors skillListingTokens but for the flat-file shape. */
+function flatListingTokens(dir: string): number {
   let tokens = 0;
-  const names: string[] = [];
   let entries;
   try {
     entries = readdirSync(dir, { withFileTypes: true });
   } catch {
-    return { tokens: 0, names: [] };
+    return 0;
   }
   for (const e of entries) {
     if (!e.isFile() || !e.name.endsWith('.md')) continue;
@@ -85,27 +84,21 @@ function flatListingTokens(dir: string): { tokens: number; names: string[] } {
     const name = /^name:\s*(.+)$/m.exec(txt)?.[1]?.trim() ?? slug;
     const desc = /^description:\s*(.+)$/m.exec(txt)?.[1] ?? '';
     tokens += countTokens(`${name}: ${desc}`);
-    names.push(name, slug);
   }
-  return { tokens, names };
+  return tokens;
 }
 
-/** The set of identifiers we saw invoked across the window — normalized to bare names so
- *  a `plugin:skill` namespaced invocation matches a plugin's bare asset name. Skills,
- *  slash commands, and tool names (incl. `mcp__server__tool`) all land here. */
+/** The identifiers we saw invoked across the window — slash-command names (the adapter
+ *  already strips the leading `/`), invoked-skill names (bare or `plugin:skill`
+ *  namespaced), and MCP tool names (`mcp__server__tool`). Stored verbatim; the
+ *  plugin-match logic decides what counts as that plugin's usage. */
 function usageIndex(sessions: Session[]): { ids: Set<string>; mcpTools: string[] } {
   const ids = new Set<string>();
   const mcpTools: string[] = [];
-  const add = (raw: string | null | undefined) => {
-    if (!raw) return;
-    ids.add(raw);
-    const bare = raw.includes(':') ? raw.split(':').pop()! : raw;
-    if (bare) ids.add(bare);
-  };
   for (const s of sessions) {
     for (const span of s.spans) {
-      add(span.command);
-      for (const sk of span.invokedSkills) add(sk);
+      if (span.command) ids.add(span.command);
+      for (const sk of span.invokedSkills) ids.add(sk);
       for (const t of span.turns) {
         for (const tool of t.tools) {
           if (tool.startsWith('mcp__')) mcpTools.push(tool);
@@ -155,14 +148,19 @@ export function computePluginTax(sessions: Session[]): PluginTax {
     const marketplace = at >= 0 ? key.slice(at + 1) : '';
 
     const skills = skillListingTokens(join(installPath, 'skills'));
-    const commands = flatListingTokens(join(installPath, 'commands'));
-    const agents = flatListingTokens(join(installPath, 'agents'));
+    const commandTokens = flatListingTokens(join(installPath, 'commands'));
+    const agentTokens = flatListingTokens(join(installPath, 'agents'));
 
-    // Identifiers that count as "this plugin was used": every bundled asset name plus the
-    // plugin's own name (a single-skill plugin is invoked under its plugin name).
-    const assetNames = [name, ...skills.names, ...commands.names, ...agents.names];
+    // "This plugin was used" must key off the plugin's IDENTITY, not a bundled asset's
+    // bare slug. CC namespaces plugin invocations as `<plugin>:<asset>` (e.g. `claude-hud:
+    // setup`), and a single-asset plugin surfaces under its bare plugin name. We do NOT
+    // match bare asset slugs against the usage set: generic slugs like `review`/`setup`
+    // collide with unrelated built-in commands/skills and would mask a genuinely unused
+    // plugin — the very thing this tax exists to surface.
+    const nsPrefix = `${name}:`;
     const invoked =
-      assetNames.some((n) => ids.has(n)) ||
+      ids.has(name) ||
+      [...ids].some((id) => id.startsWith(nsPrefix)) ||
       // Best-effort MCP match: a bundled MCP server's tools carry the plugin name. Loose
       // by design — current plugins ship no MCP, so this is a forward-looking guard.
       mcpTools.some((t) => t.toLowerCase().includes(name.toLowerCase()));
@@ -171,9 +169,9 @@ export function computePluginTax(sessions: Session[]): PluginTax {
       name,
       marketplace,
       skillTokens: skills.tokens,
-      commandTokens: commands.tokens,
-      agentTokens: agents.tokens,
-      listingTokens: skills.tokens + commands.tokens + agents.tokens,
+      commandTokens,
+      agentTokens,
+      listingTokens: skills.tokens + commandTokens + agentTokens,
       invoked,
     });
   }

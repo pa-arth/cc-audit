@@ -116,6 +116,17 @@ describe('computePluginTax', () => {
     expect(tax.plugins[0]!.invoked).toBe(true);
   });
 
+  it('does NOT mark a plugin invoked when an unrelated bare command shares a bundled asset slug', () => {
+    // Plugin `tools` bundles a generically-named `review` skill the user never ran. The
+    // user did run the built-in `/review` (logged bare as `review`). A bare asset-slug
+    // match would wrongly flag the plugin as used and hide it from the unused list.
+    const path = installPlugin('tools', { skills: ['review'] });
+    writeConfig({ 'tools@mk': true }, { 'tools@mk': [{ installPath: path }] });
+    const tax = computePluginTax([session({ command: 'review' })]);
+    expect(tax.plugins[0]!.invoked).toBe(false);
+    expect(tax.unusedCount).toBe(1);
+  });
+
   it('skips a stale install whose installPath no longer exists, without throwing', () => {
     writeConfig({ 'ghost@mk': true }, { 'ghost@mk': [{ installPath: join(home, 'does', 'not', 'exist') }] });
     expect(() => computePluginTax([])).not.toThrow();
