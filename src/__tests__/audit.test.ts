@@ -7,6 +7,7 @@ import { attributeSpend } from '../attribute.js';
 import { computeAlwaysOn } from '../alwaysOn.js';
 import { computeFluency } from '../fluency.js';
 import { buildRecommendations } from '../recommend.js';
+import { buildRoiLedger } from '../roiLedger.js';
 import { runAudit } from '../audit.js';
 import { AggregateRecordSchema } from '../aggregate.js';
 
@@ -325,6 +326,16 @@ describe('always-on tax: config cost vs observed + MCP framing', () => {
     expect(a.mcpDeferred).toBe(true); // default — ENABLE_TOOL_SEARCH not "false"
     expect(a.mcpInvokedRate).toBe(1); // the one session invoked an mcp__ tool
   });
+
+  it('per-skill carry sums to the total skill-description tokens (refactor regression-lock)', () => {
+    // skillCarry is the per-skill breakdown skillListingTokens used to collapse; the
+    // sum must still equal skillDescriptionTokens exactly.
+    const sum = a.skillCarry.reduce((n, s) => n + s.descTokens, 0);
+    expect(sum).toBe(a.skillDescriptionTokens);
+    expect(a.skillCarry.length).toBe(a.skillCount);
+    // mcpServerNames is the deduped list behind mcpServerCount.
+    expect(a.mcpServerNames.length).toBe(a.mcpServerCount);
+  });
 });
 
 describe('always-on tax: CLAUDE.md @imports are counted transitively', () => {
@@ -461,7 +472,9 @@ describe('recommendations: the config-knob bridge', () => {
     .map((e) => JSON.stringify(e))
     .join('\n');
   const session = parseTranscript('/tmp/rec.jsonl', FX, 'p', new Set())!;
-  const recs = buildRecommendations(attributeSpend([session]), computeAlwaysOn([session]), [session]);
+  const recSpend = attributeSpend([session]);
+  const recAlwaysOn = computeAlwaysOn([session]);
+  const recs = buildRecommendations(recSpend, recAlwaysOn, [session], buildRoiLedger(recSpend, recAlwaysOn, [session]));
 
   it('points an unpinned premium skill at its exact SKILL.md with a model-pin action', () => {
     const r = recs.find((x) => x.kind === 'model-pin' && x.title.includes('myskill'))!;
@@ -493,7 +506,9 @@ describe('recommendations: the config-knob bridge', () => {
       .map((e) => JSON.stringify(e))
       .join('\n');
     const sess = parseTranscript('/tmp/rec2.jsonl', fx, 'p', new Set())!;
-    const out = buildRecommendations(attributeSpend([sess]), computeAlwaysOn([sess]), [sess]);
+    const sSpend = attributeSpend([sess]);
+    const sAlwaysOn = computeAlwaysOn([sess]);
+    const out = buildRecommendations(sSpend, sAlwaysOn, [sess], buildRoiLedger(sSpend, sAlwaysOn, [sess]));
     expect(out.some((x) => x.kind === 'model-pin' && x.title.includes('pinnedskill'))).toBe(false);
   });
 });
@@ -546,6 +561,40 @@ describe('aggregate record (privacy)', () => {
     }
     // The raw prompt gist must not appear anywhere in the serialized shared aggregate.
     expect(JSON.stringify(shared)).not.toContain('fix the thing');
+  });
+
+  it('is schema v7 with roiLedger/temporal/friction blocks present', () => {
+    expect(aggregate.schemaVersion).toBe(7);
+    expect(aggregate.roiLedger).toBeTruthy();
+    expect(aggregate.temporal.hourHistogram).toHaveLength(24);
+    expect(Array.isArray(aggregate.friction.bySkill)).toBe(true);
+  });
+
+  it('ships roiLedger as COUNTS ONLY — every value numeric/boolean, no skill/server names', () => {
+    for (const v of Object.values(aggregate.roiLedger)) {
+      expect(['number', 'boolean']).toContain(typeof v);
+    }
+  });
+
+  it('hashes friction skill names — no custom name leaks', () => {
+    const custom = [
+      { type: 'user', promptId: 'z1', message: { content: '<command-name>acme-secret-skill</command-name>' } },
+      {
+        type: 'assistant',
+        message: {
+          id: 'fz1',
+          model: 'claude-opus-4-8',
+          usage: { input_tokens: 10, output_tokens: 10, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
+          content: [{ type: 'tool_use', name: 'Bash', id: 'fb1' }],
+        },
+      },
+      { type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'fb1', is_error: true }] } },
+    ]
+      .map((e) => JSON.stringify(e))
+      .join('\n');
+    const { aggregate: agg } = runAudit([parseTranscript('/tmp/fz.jsonl', custom, 'p', new Set())!], '2026-06-16T00:00:00.000Z');
+    expect(JSON.stringify(agg.friction)).not.toContain('acme-secret-skill');
+    expect(agg.friction.bySkill.some((f) => f.name.startsWith('custom-'))).toBe(true);
   });
 
   it('hashes custom (non-common) command names', () => {

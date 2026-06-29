@@ -78,3 +78,61 @@ describe('perverse terms removed from the local score', () => {
     expect(allOpusTwoModels.score).toBe(allHaikuOneModel.score);
   });
 });
+
+describe('builder-profile metrics', () => {
+  // Enriched turn builder: tools + fileOps for planning/autonomy/iteration signals.
+  function bturn(tools: string[], fileOps: Array<{ tool: string; path: string }> = []): AssistantTurn {
+    return {
+      model: 'claude-sonnet-4-6',
+      usage: { input: 100, output: 50, cacheRead: 0, cacheWrite5m: 0, cacheWrite1h: 0 },
+      tools,
+      fileOps,
+      reads: [],
+      thinkingChars: 0,
+      textChars: 0,
+      ts: null,
+      mode: null,
+      toolResultTs: null,
+      toolErrorCount: 0,
+    };
+  }
+
+  it('computes planningRatio as reads:writes, guarded against divide-by-zero', () => {
+    const reads = session([span([bturn(['Read', 'Grep', 'Read'])])]); // 3 plan, 0 action
+    expect(computeFluency([reads]).planningRatio).toBe(3); // 3 / max(1,0)
+    const mixed = session([span([bturn(['Read', 'Read', 'Edit'])])]); // 2 plan, 1 action
+    expect(computeFluency([mixed]).planningRatio).toBe(2);
+  });
+
+  it('computes autonomyScore per-span, not per-turn', () => {
+    // 4 spans, one asks (twice in its span — still one hand-holding event).
+    const asks = span([bturn(['AskUserQuestion']), bturn(['AskUserQuestion'])]);
+    const quiet = () => span([bturn(['Edit'])]);
+    const f = computeFluency([session([asks, quiet(), quiet(), quiet()])]);
+    expect(f.autonomyScore).toBeCloseTo(0.75); // 1 − 1/4
+  });
+
+  it('autonomyScore is 1 with no AskUserQuestion (no NaN on zero asks)', () => {
+    expect(computeFluency([session([span([bturn(['Edit'])])])]).autonomyScore).toBe(1);
+  });
+
+  it('computes iterationDepth as mean writes-per-file', () => {
+    // a.ts written 3×, b.ts written 1× → mean 2.0
+    const s = session([
+      span([
+        bturn(['Edit'], [{ tool: 'Edit', path: 'a.ts' }]),
+        bturn(['Edit'], [{ tool: 'Edit', path: 'a.ts' }]),
+        bturn(['Edit'], [{ tool: 'Edit', path: 'a.ts' }]),
+        bturn(['Write'], [{ tool: 'Write', path: 'b.ts' }]),
+      ]),
+    ]);
+    expect(computeFluency([s]).iterationDepth).toBe(2);
+  });
+
+  it('excludes sidechain turns from builder signals', () => {
+    const own = span([bturn(['Read', 'Read'])]); // 2 plan tools
+    const side = span([bturn(['Edit', 'Edit', 'Edit', 'Edit'])], { isSidechain: true }); // would skew action up
+    const f = computeFluency([session([own, side])]);
+    expect(f.planningRatio).toBe(2); // sidechain Edits ignored → 2 / max(1,0)
+  });
+});

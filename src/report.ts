@@ -89,6 +89,22 @@ export function renderReport(r: AuditResult, opts: { rows?: number } = {}): stri
       );
       const gist = t.taskGist.replace(/\s+/g, ' ').trim();
       topRows.push(c.dim(`   “${gist.length > 69 ? gist.slice(0, 68) + '…' : gist}”`));
+      // Per-prompt drill-down — shown only when the session is genuinely FRAGMENTED: a
+      // second task worth ≥10% of the spend. A session that's ~one task just keeps its
+      // headline; the breakdown surfaces exactly when the first-prompt label would mislead.
+      const fragmented =
+        t.topPrompts.length >= 2 && t.costUsd > 0 && t.topPrompts[1]!.costUsd / t.costUsd >= 0.1;
+      if (fragmented) {
+        for (const p of t.topPrompts) {
+          const g = p.gist.replace(/\s+/g, ' ').trim();
+          const share = t.costUsd > 0 ? Math.round((p.costUsd / t.costUsd) * 100) : 0;
+          topRows.push(
+            c.dim('   ├ ') +
+              money(padL(usd(p.costUsd), 7)) +
+              c.dim(`  ${pad(g, 50)} ${padL(`${share}%`, 4)}`),
+          );
+        }
+      }
       i += 1;
     }
     blank();
@@ -287,6 +303,38 @@ export function renderReport(r: AuditResult, opts: { rows?: number } = {}): stri
     out.push(...panel('②ᵇ SUBAGENT / DELEGATED SPEND  ·  sidechain work', subRows, c.amber));
   }
 
+  // ── Skill / MCP ROI (carry vs. realized value, with dead-weight verdicts) ───
+  const L = r.roiLedger;
+  if (L.skills.length > 0 || L.mcp.length > 0) {
+    const roiPerMo = (x: number) => (x / s.windowDays) * 30.44;
+    const roiRows = [c.dim(`${pad('skill', 22)} ${padL('carry/mo', 9)} ${padL('inv', 5)} ${padL('used/mo', 8)}  verdict`)];
+    for (const sk of L.skills.slice(0, rows)) {
+      const tag =
+        sk.verdict === 'dead-weight'
+          ? c.red('dead-weight')
+          : sk.verdict === 'heavy-but-earning'
+            ? c.emerald('earning')
+            : c.dim('fine');
+      const name = sk.lowConfidence ? c.dim(pad(sk.name, 22)) : pad(sk.name, 22);
+      roiRows.push(
+        `${name} ${money(padL(usd(sk.carryUsdPerMonth) + '/mo', 9))} ` +
+          `${padL(String(sk.invocations), 5)} ${money(padL(usd(roiPerMo(sk.realizedUsd)), 8))}  ${tag}` +
+          (sk.lowConfidence ? c.dim(' (n<5)') : ''),
+      );
+    }
+    // Dead-weight gets the two-sided lever — we can't tell delete-vs-rewrite locally.
+    for (const sk of L.skills.filter((x) => x.verdict === 'dead-weight').slice(0, 3)) {
+      const egText = `${sk.name}: never invoked — DELETE it, or its trigger description isn't matching (rewrite the \`description:\` keywords). Can't tell which from transcripts.`;
+      for (const ln of wrap(egText, BOX_WIDTH - 4)) roiRows.push(c.dim(`  ${ln}`));
+    }
+    for (const m of L.mcp.filter((x) => x.deadWeight)) {
+      const cost = m.deferred ? c.dim('~$0 standing (deferred)') : c.amber('+ standing token cost');
+      roiRows.push(c.dim(`MCP ${pad(m.server, 18)} configured, never invoked — `) + cost + c.dim('; drop from ~/.claude.json'));
+    }
+    blank();
+    out.push(...panel('②ᶜ SKILL / MCP ROI  ·  carry vs. realized value', roiRows, c.amber));
+  }
+
   // ── Fluency (cyan: the habits behind the bill) ─────────────────────────────
   const f = r.fluency;
   // No false-precise integer: a coarse self-band (calibrated cohort band is gated
@@ -315,6 +363,33 @@ export function renderReport(r: AuditResult, opts: { rows?: number } = {}): stri
     fluencyRows.push(c.dim("  → /clear between tasks; don't re-read what you already have"));
   }
   fluencyRows.push(`premium-model share: ${lever(pct(f.premiumTurnShare))}  ${c.dim('← right-sizing lever, not a grade')}`);
+  // Builder-profile facts (computed locally — the anti-Paxel: same profile, zero egress).
+  fluencyRows.push(
+    c.dim(
+      `builder profile: planning ${f.planningRatio.toFixed(1)}× (reads:writes) · ` +
+        `autonomy ${pct(f.autonomyScore)} · tools ${f.toolDiversity} · iteration ${f.iterationDepth.toFixed(1)} edits/file`,
+    ),
+  );
+  fluencyRows.push(c.dim("  ← behavioral facts, not a score; high autonomy isn't always better"));
+  // Where the wall-clock went + how much friction.
+  const fr = r.friction;
+  const totalFriction = fr.totalToolErrors + fr.totalSelfCorrections + fr.totalRetryLoops;
+  if (totalFriction > 0) {
+    fluencyRows.push(
+      c.dim(
+        `friction: ${fr.totalToolErrors} tool-errors · ${fr.totalSelfCorrections} self-corrections · ` +
+          `${fr.totalRetryLoops} retry-loops ${c.dim('(self-corrections are a lower bound)')}`,
+      ),
+    );
+  }
+  const st = r.temporal.stratified;
+  const totalMs = st.thinkMs + st.execMs + st.userWaitMs;
+  if (totalMs > 0) {
+    const hr = (ms: number) => `${(ms / 3_600_000).toFixed(1)}h`;
+    fluencyRows.push(
+      c.dim(`time split: think ${hr(st.thinkMs)} · tool-exec ${hr(st.execMs)} · your-wait ${hr(st.userWaitMs)}`),
+    );
+  }
   blank();
   out.push(...card('FLUENCY  ·  the habits behind the bill', fluencyRows, c.cyan));
 

@@ -18,6 +18,7 @@ import { isPremiumModel } from './pricing.js';
 import { sessionRedundancy, topRedundantFiles } from './fluency.js';
 import type { AlwaysOnTax } from './alwaysOn.js';
 import type { SpendBreakdown } from './attribute.js';
+import type { RoiLedger } from './roiLedger.js';
 import type { Session } from './model.js';
 
 export interface Recommendation {
@@ -72,6 +73,7 @@ export function buildRecommendations(
   spend: SpendBreakdown,
   alwaysOn: AlwaysOnTax,
   sessions: Session[],
+  roi: RoiLedger,
 ): Recommendation[] {
   const recs: Recommendation[] = [];
   const perMo = (windowUsd: number) => (windowUsd / spend.windowDays) * 30.44;
@@ -214,6 +216,36 @@ export function buildRecommendations(
       monthlyUsdSaved: saved,
       file: null,
       action: `0 invocations across ${sessionN} sessions; ~${Math.round(p.listingTokens).toLocaleString()} tok/turn of listings load regardless. Disable via \`/plugin\` (candidate — keep it if you use it occasionally).`,
+    });
+  }
+
+  // 7) Dead-weight skills: enumerated on disk, ~0 invocations corpus-wide → standing
+  //    carry for nothing. The verdict is two-sided — either genuinely unused (delete) OR
+  //    its `description:` trigger keywords don't match your prompts so it never fires
+  //    (rewrite). We can't tell which from transcripts; surface both and point at the file.
+  for (const sk of roi.skills) {
+    if (sk.verdict !== 'dead-weight') continue;
+    recs.push({
+      kind: 'trim-config',
+      title: `\`${sk.name}\` loads every turn but was never invoked (~${sk.carryUsdPerMonth.toFixed(2)}/mo)`,
+      monthlyUsdSaved: sk.carryUsdPerMonth, // full standing carry — ranks by $/mo
+      file: locateSkillFile(sk.slug, cwds),
+      action:
+        `Delete it, or its \`description:\` trigger keywords aren't matching your prompts — ` +
+        `rewrite them so it actually fires. Transcripts can't tell which; open the file and decide.`,
+    });
+  }
+
+  // 8) Dead-weight MCP servers that ALSO cost standing tokens (only when !deferred —
+  //    deferred servers cost ~0, so a rec there is noise).
+  for (const m of roi.mcp) {
+    if (!m.deadWeight || m.deferred) continue;
+    recs.push({
+      kind: 'trim-config',
+      title: `MCP server \`${m.server}\` is configured but never invoked`,
+      monthlyUsdSaved: 0, // standing token $ not separately costed here — honest 0
+      file: null, // a ~/.claude.json edit is multi-server; treat as behavioral
+      action: `Remove it from ~/.claude.json — its tool schemas load standing (ENABLE_TOOL_SEARCH=false) for tools you never call.`,
     });
   }
 

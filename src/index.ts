@@ -25,9 +25,15 @@ export type {
   HygieneRefinementUpload,
 } from './hygieneFootprint.js';
 export { computeAlwaysOn } from './alwaysOn.js';
-export type { AlwaysOnTax } from './alwaysOn.js';
+export type { AlwaysOnTax, SkillCarry } from './alwaysOn.js';
 export { computePluginTax } from './pluginTax.js';
 export type { PluginTax, PluginInfo } from './pluginTax.js';
+export { buildRoiLedger } from './roiLedger.js';
+export type { RoiLedger, SkillRoiRow, McpRoiRow, SkillVerdict } from './roiLedger.js';
+export { computeTemporal } from './temporal.js';
+export type { TemporalProfile, HourBucket, StratifiedTime } from './temporal.js';
+export { computeFriction, spanSkillKey } from './friction.js';
+export type { FrictionTaxonomy, SkillFriction, FrictionKind } from './friction.js';
 
 export { buildAggregateRecord, AggregateRecordSchema, AGGREGATE_SCHEMA_VERSION } from './aggregate.js';
 export type { AggregateRecord } from './aggregate.js';

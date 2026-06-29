@@ -6,6 +6,9 @@ import { buildAggregateRecord, type AggregateRecord } from './aggregate.js';
 import { computeContextHygiene, type ContextHygiene } from './contextHygiene.js';
 import { computeFluency, topRedundantFiles, type FluencySignals } from './fluency.js';
 import { buildRecommendations, type Recommendation } from './recommend.js';
+import { buildRoiLedger, type RoiLedger } from './roiLedger.js';
+import { computeTemporal, type TemporalProfile } from './temporal.js';
+import { computeFriction, type FrictionTaxonomy } from './friction.js';
 import { anonymizeTopSessions, topSessions, type TopSession } from './topSessions.js';
 import type { Session } from './model.js';
 
@@ -16,6 +19,13 @@ export interface AuditResult {
    *  (per-session episodes with project labels) lives here; only counts + $ leave. */
   contextHygiene: ContextHygiene;
   alwaysOn: AlwaysOnTax;
+  /** Skill/MCP ROI ledger — carry vs realized value, with dead-weight verdicts.
+   *  LOCAL-ONLY (skill/server names are custom); only the counts-only summary aggregates. */
+  roiLedger: RoiLedger;
+  /** Wall-clock stratification + work-hour histogram. */
+  temporal: TemporalProfile;
+  /** Per-skill friction (tool-error / self-correction / retry-loop). */
+  friction: FrictionTaxonomy;
   /** Ranked, file-anchored next actions (the config-knob bridge). Local-only — paths
    *  here never enter the aggregate. */
   recommendations: Recommendation[];
@@ -38,17 +48,24 @@ export function runAudit(
   const fluency = computeFluency(sessions);
   const contextHygiene = computeContextHygiene(sessions);
   const alwaysOn = computeAlwaysOn(sessions);
-  const recommendations = buildRecommendations(spend, alwaysOn, sessions);
+  // ROI ledger must be built BEFORE recommendations — dead-weight skills/servers feed recs.
+  const roiLedger = buildRoiLedger(spend, alwaysOn, sessions);
+  const temporal = computeTemporal(sessions);
+  const friction = computeFriction(sessions);
+  const recommendations = buildRecommendations(spend, alwaysOn, sessions, roiLedger);
   const top = topSessions(sessions);
   // The leaderboard enters the UPLOADED aggregate ONLY on explicit opt-in, and even
   // then anonymized (no gist/project/raw $). Default: stays local in the TUI.
   const anonTop = opts.shareSessions ? anonymizeTopSessions(top, spend.totalUsd) : [];
-  const aggregate = buildAggregateRecord(spend, fluency, contextHygiene, alwaysOn, generatedAt, anonTop);
+  const aggregate = buildAggregateRecord(spend, fluency, contextHygiene, alwaysOn, generatedAt, anonTop, roiLedger, temporal, friction);
   return {
     spend,
     fluency,
     contextHygiene,
     alwaysOn,
+    roiLedger,
+    temporal,
+    friction,
     recommendations,
     aggregate,
     topSessions: top,
