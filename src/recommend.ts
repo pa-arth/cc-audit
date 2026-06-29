@@ -200,7 +200,26 @@ export function buildRecommendations(
     });
   }
 
-  // 6) Dead-weight skills: enumerated on disk, ~0 invocations corpus-wide → standing
+  // 6) Enabled plugins whose bundled skills/commands loaded every turn but were never
+  //    invoked in the window. Unlike CLAUDE.md (a value judgment we don't make), an
+  //    unused plugin's per-turn listing cost is genuinely recoverable by disabling it —
+  //    so we quote a real $/mo. Still a CANDIDATE, not a mandate: unused-in-window isn't
+  //    never-useful, and a near-zero-token plugin isn't worth flagging.
+  const sessionN = sessions.length;
+  for (const p of alwaysOn.plugins) {
+    if (p.invoked || p.listingTokens < 50) continue;
+    // pluginListingUsd is already a monthly figure; take this plugin's token share of it.
+    const saved = alwaysOn.pluginListingUsd * (p.listingTokens / Math.max(1, alwaysOn.pluginListingTokens));
+    recs.push({
+      kind: 'trim-config',
+      title: `\`${p.name}\` plugin loads every turn but was never invoked`,
+      monthlyUsdSaved: saved,
+      file: null,
+      action: `0 invocations across ${sessionN} sessions; ~${Math.round(p.listingTokens).toLocaleString()} tok/turn of listings load regardless. Disable via \`/plugin\` (candidate — keep it if you use it occasionally).`,
+    });
+  }
+
+  // 7) Dead-weight skills: enumerated on disk, ~0 invocations corpus-wide → standing
   //    carry for nothing. The verdict is two-sided — either genuinely unused (delete) OR
   //    its `description:` trigger keywords don't match your prompts so it never fires
   //    (rewrite). We can't tell which from transcripts; surface both and point at the file.
@@ -217,7 +236,7 @@ export function buildRecommendations(
     });
   }
 
-  // 7) Dead-weight MCP servers that ALSO cost standing tokens (only when !deferred —
+  // 8) Dead-weight MCP servers that ALSO cost standing tokens (only when !deferred —
   //    deferred servers cost ~0, so a rec there is noise).
   for (const m of roi.mcp) {
     if (!m.deadWeight || m.deferred) continue;

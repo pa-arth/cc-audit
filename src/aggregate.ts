@@ -34,7 +34,10 @@ import type { AnonTopSession } from './topSessions.js';
 // and stay local), temporal (work-hour histogram counts + think/exec/userWait ms +
 // unattributed share), and friction.bySkill (per-skill counts; skill names hashed via
 // safeName(), like commands). The builder-profile metrics on fluency stay LOCAL (Zod
-// strips them) — surfaced in the report, not yet uploaded.
+// strips them) — surfaced in the report, not yet uploaded. Plus the alwaysOn plugin tax —
+// enabled-plugin bundled skill/command/agent listing tokens (folded into the per-turn
+// config total), plugin count, and unused-plugin count. TOKENS + COUNTS only; per-plugin
+// names/paths stay LOCAL in the TUI.
 export const AGGREGATE_SCHEMA_VERSION = 7;
 
 // Well-known public command/skill names kept verbatim; everything else is hashed
@@ -149,6 +152,12 @@ export const AggregateRecordSchema = z.object({
     projectClaudeMdTokens: z.number(),
     skillDescriptionTokens: z.number(),
     skillCount: z.number(),
+    pluginSkillTokens: z.number(),
+    pluginCommandTokens: z.number(),
+    pluginAgentTokens: z.number(),
+    pluginListingTokens: z.number(),
+    pluginCount: z.number(),
+    unusedPluginCount: z.number(),
     mcpServerCount: z.number(),
     mcpDeferred: z.boolean(),
     mcpInvokedRate: z.number(),
@@ -298,6 +307,12 @@ export function buildAggregateRecord(
       projectClaudeMdTokens: alwaysOn.projectClaudeMdTokens,
       skillDescriptionTokens: alwaysOn.skillDescriptionTokens,
       skillCount: alwaysOn.skillCount,
+      pluginSkillTokens: alwaysOn.pluginSkillTokens,
+      pluginCommandTokens: alwaysOn.pluginCommandTokens,
+      pluginAgentTokens: alwaysOn.pluginAgentTokens,
+      pluginListingTokens: alwaysOn.pluginListingTokens,
+      pluginCount: alwaysOn.pluginCount,
+      unusedPluginCount: alwaysOn.unusedPluginCount,
       mcpServerCount: alwaysOn.mcpServerCount,
       mcpDeferred: alwaysOn.mcpDeferred,
       mcpInvokedRate: alwaysOn.mcpInvokedRate,

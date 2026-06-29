@@ -26,6 +26,8 @@ export type {
 } from './hygieneFootprint.js';
 export { computeAlwaysOn } from './alwaysOn.js';
 export type { AlwaysOnTax, SkillCarry } from './alwaysOn.js';
+export { computePluginTax } from './pluginTax.js';
+export type { PluginTax, PluginInfo } from './pluginTax.js';
 export { buildRoiLedger } from './roiLedger.js';
 export type { RoiLedger, SkillRoiRow, McpRoiRow, SkillVerdict } from './roiLedger.js';
 export { computeTemporal } from './temporal.js';

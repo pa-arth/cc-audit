@@ -166,6 +166,24 @@ export function renderReport(r: AuditResult, opts: { rows?: number } = {}): stri
   // Reframed: this is what your CHOSEN context costs every turn, not "savings" to cut.
   const a = r.alwaysOn;
   const mcpDesc = a.mcpDeferred ? 'deferred by default (~$0 standing)' : 'eagerly loaded';
+  // One row per asset kind that actually contributes tokens — a commands-only plugin set
+  // shouldn't print an empty "plugin skills ≥0 tok" line. The enabled-plugin count rides
+  // on whichever row renders first.
+  const pluginRows: string[] = [];
+  if (a.pluginCount > 0) {
+    const kinds: { label: string; tokens: number; usd: number; desc: string }[] = [
+      { label: 'plugin skills  ', tokens: a.pluginSkillTokens, usd: a.pluginSkillUsd, desc: 'bundled skills' },
+      { label: 'plugin commands', tokens: a.pluginCommandTokens, usd: a.pluginCommandUsd, desc: 'bundled slash commands' },
+      { label: 'plugin agents  ', tokens: a.pluginAgentTokens, usd: a.pluginAgentUsd, desc: 'bundled subagents' },
+    ];
+    for (const k of kinds.filter((k) => k.tokens > 0)) {
+      const note = pluginRows.length === 0 ? `${a.pluginCount} enabled plugins load every turn` : k.desc;
+      pluginRows.push(
+        `  ${k.label}    ≥${padL(Math.round(k.tokens).toLocaleString() + ' tok', 8)}  ` +
+          `${money(padL(usd(k.usd) + '/mo', 9))}  ${c.dim(note)}`,
+      );
+    }
+  }
   const taxRows = [
     c.dim('always-on config — context you chose, re-paid every turn (useful ≠ free):'),
     `  project memory     ${padL(Math.round(a.projectClaudeMdTokens).toLocaleString() + ' tok', 9)}  ` +
@@ -174,6 +192,7 @@ export function renderReport(r: AuditResult, opts: { rows?: number } = {}): stri
       `${money(padL(usd(a.globalClaudeMdUsd) + '/mo', 9))}  ${c.dim('→ ~/.claude/CLAUDE.md (+ .local, managed policy)')}`,
     `  skill listings     ≥${padL(a.skillDescriptionTokens.toLocaleString() + ' tok', 8)}  ` +
       `${money(padL(usd(a.skillDescriptionUsd) + '/mo', 9))}  ${c.dim(`${a.skillCount} user skills load every turn`)}`,
+    ...pluginRows,
     rule(),
     `  ${c.emerald(`your config adds ≈ ${c.bold(usd(a.alwaysOnConfigMonthlyUsd) + '/mo')} of standing context`)}`,
     c.dim(
@@ -211,6 +230,19 @@ export function renderReport(r: AuditResult, opts: { rows?: number } = {}): stri
     for (const cc of trimCandidates.slice(0, rows)) {
       taxRows.push(c.dim(`  "${cc.file}" fires in ${pct(cc.observedReadRate!)} of sessions — move to a skill so it loads on demand`));
     }
+  }
+  // Unused plugins — enabled, listing-tax paid every turn, but invoked 0× in the window.
+  if (a.unusedPluginCount > 0) {
+    const unused = a.plugins.filter((p) => !p.invoked);
+    const unusedTokens = unused.reduce((n, p) => n + p.listingTokens, 0);
+    const reclaim = a.pluginListingTokens > 0 ? a.pluginListingUsd * (unusedTokens / a.pluginListingTokens) : 0;
+    const names = unused.map((p) => p.name).join(', ');
+    taxRows.push(
+      c.amber(
+        `plugins: ${a.pluginCount} enabled · ${a.unusedPluginCount} never invoked (${names}) — ` +
+          `review with /plugin; disabling reclaims ≈${usd(reclaim)}/mo of standing context`,
+      ),
+    );
   }
   blank();
   out.push(...panel('① ALWAYS-ON CONTEXT TAX  ·  what your standing context costs', taxRows, c.emerald));
