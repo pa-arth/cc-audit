@@ -40,6 +40,20 @@ export interface AssistantTurn {
   thinkingChars: number;
   /** Length of visible assistant prose. */
   textChars: number;
+  /** Epoch ms when this assistant row was logged (parsed from the JSONL `timestamp`).
+   *  null on legacy rows / summary continuations that carry no timestamp. */
+  ts: number | null;
+  /** Active permission/agent mode when this turn ran ('plan' | 'normal' | ...), tracked
+   *  as the parser walks `type:"mode"` events. Per-turn so plan-mode is turn-resolved,
+   *  not just session-level (session.modes stays the de-duped set). null if unknown. */
+  mode: string | null;
+  /** Epoch ms of the tool_result that answered THIS turn's tool calls (max across blocks
+   *  when several / parallel). null if the turn issued no tools or no result was logged.
+   *  Bounds tool-exec time; with `ts` it splits think vs exec. */
+  toolResultTs: number | null;
+  /** # of this turn's tool calls whose tool_result carried `is_error:true`. Counts/flags
+   *  only — NO payloads, NO error text (privacy invariant). Default 0. */
+  toolErrorCount: number;
 }
 
 /** A promptId span: one user prompt and the assistant turns it triggered.
@@ -70,6 +84,9 @@ export interface Span {
   /** The subagent type that ran it (Claude Code `attributionAgent`) — e.g. 'Explore',
    *  'general-purpose', 'workflow-subagent'. Only set on sidechain spans. */
   attributionAgent: string | null;
+  /** Epoch ms of the opening user prompt for this span — anchors user-wait time (gap from
+   *  the prior turn's end to this prompt) and the session timeline. null if unknown. */
+  userTs: number | null;
 }
 
 export interface Session {

@@ -71,4 +71,44 @@ describe('topSessions — most expensive sessions leaderboard', () => {
     expect(typeof row.taskGist).toBe('string');
     expect(row.taskGist.length).toBeGreaterThan(0); // never empty/undefined
   });
+
+  it('names the session by its priciest TASK, not the file-first prompt', () => {
+    // Cheap opener, then a far more expensive unrelated task later in the same file.
+    const s = makeSession('multi', [
+      { prompt: 'tiny cleanup of the readme file', promptId: 'p1', turns: [{ out: 100 }] },
+      { prompt: 'build the entire billing pipeline now', promptId: 'p2', turns: [{ out: 60000 }, { out: 60000 }] },
+    ]);
+    const row = topSessions([s])[0]!;
+    expect(row.taskGist).toContain('billing pipeline'); // priciest task wins the headline
+    expect(row.topPrompts).toHaveLength(2); // two distinct tasks priced
+    expect(row.topPrompts[0]!.gist).toContain('billing pipeline');
+    expect(row.topPrompts[0]!.costUsd).toBeGreaterThan(row.topPrompts[1]!.costUsd);
+  });
+
+  it('does not inherit a task label across a compaction boundary', () => {
+    // A genuine prompt, then an auto-compaction continuation that opens a fresh context.
+    // The post-compaction span must NOT borrow the pre-compaction task as its label.
+    const s = parseTranscript(
+      '/tmp/ts-compact.jsonl',
+      [
+        { type: 'user', promptId: 'p1', cwd: '/r', message: { content: 'set up the auth service from scratch' } },
+        { type: 'assistant', message: { id: 'x1', model: 'claude-opus-4-8', usage: { input_tokens: 100, output_tokens: 200, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }, content: [] } },
+        { type: 'user', promptId: 'p2', isCompactSummary: true, message: { content: 'This session is being continued…' } },
+        { type: 'user', promptId: 'p2', cwd: '/r', message: { content: 'ok continue' } },
+        { type: 'assistant', message: { id: 'x2', model: 'claude-opus-4-8', usage: { input_tokens: 100, output_tokens: 50000, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }, content: [] } },
+      ].map((e) => JSON.stringify(e)).join('\n'),
+      'r',
+      new Set(),
+    )!;
+    const row = topSessions([s])[0]!;
+    // Both tasks must remain SEPARATE priced lines — the expensive post-compaction work
+    // ("ok continue", 50k out) must not be folded into the pre-compaction "auth service"
+    // task. If the label inherited across the boundary they'd merge into one line.
+    const byGist = new Map(row.topPrompts.map((p) => [p.gist, p]));
+    expect(byGist.has('ok continue')).toBe(true);
+    expect(byGist.has('set up the auth service from scratch')).toBe(true);
+    // The priciest line is the post-compaction span, on its own — proof of no merge.
+    expect(row.topPrompts[0]!.gist).toBe('ok continue');
+    expect(row.topPrompts[0]!.turns).toBe(1);
+  });
 });

@@ -10,6 +10,9 @@ import type { AlwaysOnTax } from './alwaysOn.js';
 import type { SpendBreakdown } from './attribute.js';
 import type { ContextHygiene } from './contextHygiene.js';
 import type { FluencySignals } from './fluency.js';
+import type { RoiLedger } from './roiLedger.js';
+import type { TemporalProfile } from './temporal.js';
+import type { FrictionTaxonomy } from './friction.js';
 import type { AnonTopSession } from './topSessions.js';
 
 // v2 additions: subagent (delegated-spend) leak board + spend.subagentShare;
@@ -27,7 +30,12 @@ import type { AnonTopSession } from './topSessions.js';
 // v6: contextHygiene — the AVOIDABLE-carry slice (missed /compact + /clear). COUNTS +
 // per-month DOLLARS only; the located per-session episodes (project label, sessionId,
 // turn ordinal) stay LOCAL in the TUI and never enter the aggregate.
-export const AGGREGATE_SCHEMA_VERSION = 6;
+// v7: roiLedger (COUNTS-ONLY summary — never the per-skill/server NAMES, which are custom
+// and stay local), temporal (work-hour histogram counts + think/exec/userWait ms +
+// unattributed share), and friction.bySkill (per-skill counts; skill names hashed via
+// safeName(), like commands). The builder-profile metrics on fluency stay LOCAL (Zod
+// strips them) — surfaced in the report, not yet uploaded.
+export const AGGREGATE_SCHEMA_VERSION = 7;
 
 // Well-known public command/skill names kept verbatim; everything else is hashed
 // so a custom name like `acme-deploy` can't leak project/company info.
@@ -187,6 +195,42 @@ export const AggregateRecordSchema = z.object({
     /** Of the confirmed, how many were actually read in ≥50% of relevant sessions. */
     followedCount: z.number(),
   }),
+  // Skill/MCP ROI — COUNTS ONLY. The per-skill/server names (custom, repo/org-shaped)
+  // stay LOCAL; the ledger's actionable value (which specific skill is dead) is local advice.
+  roiLedger: z.object({
+    deadWeightSkillCount: z.number(),
+    deadWeightSkillCarryUsdPerMonth: z.number(),
+    earningSkillCount: z.number(),
+    cheapSkillCount: z.number(),
+    deadWeightMcpCount: z.number(),
+    deadWeightMcpStandingCost: z.boolean(),
+  }),
+  // Where the wall-clock went. De-identified: hour-of-day counts + ms aggregates only;
+  // the per-session durations (which carry project labels) stay LOCAL.
+  temporal: z.object({
+    hourHistogram: z.array(z.object({ hour: z.number(), turns: z.number() })),
+    thinkMs: z.number(),
+    execMs: z.number(),
+    userWaitMs: z.number(),
+    /** Share of turns with no usable timestamp (data-quality signal). */
+    unattributedShare: z.number(),
+  }),
+  // Per-skill friction — skill names HASHED via safeName(). Counts + rate only.
+  friction: z.object({
+    totalToolErrors: z.number(),
+    totalSelfCorrections: z.number(),
+    totalRetryLoops: z.number(),
+    bySkill: z.array(
+      z.object({
+        name: z.string(),
+        turns: z.number(),
+        toolErrors: z.number(),
+        selfCorrections: z.number(),
+        retryLoops: z.number(),
+        frictionRate: z.number(),
+      }),
+    ),
+  }),
   dataQuality: z.object({ unpricedShare: z.number() }),
 });
 export type AggregateRecord = z.infer<typeof AggregateRecordSchema>;
@@ -198,9 +242,13 @@ export function buildAggregateRecord(
   alwaysOn: AlwaysOnTax,
   generatedAt: string,
   topSessionsAnon: AnonTopSession[] = [],
+  roiLedger: RoiLedger,
+  temporal: TemporalProfile,
+  friction: FrictionTaxonomy,
 ): AggregateRecord {
   const safeTotal = spend.totalUsd || 1;
   const perMo = (usd: number) => (usd / contextHygiene.windowDays) * 30.44;
+  const turnsTotal = temporal.stratified.attributedTurns + temporal.stratified.unattributedTurns;
   return AggregateRecordSchema.parse({
     schemaVersion: AGGREGATE_SCHEMA_VERSION,
     tool: 'claude_code',
@@ -268,6 +316,27 @@ export function buildAggregateRecord(
       totalTokens: alwaysOn.conditionalContext.reduce((n, c) => n + c.tokens, 0),
       confirmedCount: alwaysOn.conditionalContext.filter((c) => c.observedReadRate !== null).length,
       followedCount: alwaysOn.conditionalContext.filter((c) => (c.observedReadRate ?? 0) >= 0.5).length,
+    },
+    roiLedger: roiLedger.summary,
+    temporal: {
+      hourHistogram: temporal.hourHistogram.map((b) => ({ hour: b.hour, turns: b.turns })),
+      thinkMs: temporal.stratified.thinkMs,
+      execMs: temporal.stratified.execMs,
+      userWaitMs: temporal.stratified.userWaitMs,
+      unattributedShare: turnsTotal ? temporal.stratified.unattributedTurns / turnsTotal : 0,
+    },
+    friction: {
+      totalToolErrors: friction.totalToolErrors,
+      totalSelfCorrections: friction.totalSelfCorrections,
+      totalRetryLoops: friction.totalRetryLoops,
+      bySkill: friction.bySkill.map((f) => ({
+        name: safeName(f.skill),
+        turns: f.turns,
+        toolErrors: f.toolErrors,
+        selfCorrections: f.selfCorrections,
+        retryLoops: f.retryLoops,
+        frictionRate: f.frictionRate,
+      })),
     },
     dataQuality: { unpricedShare: spend.unpricedShare },
   });
