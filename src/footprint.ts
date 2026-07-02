@@ -65,7 +65,7 @@ export function buildFootprints(sessions: Session[], maxN = 25): SessionFootprin
       for (const t of span.turns) {
         const m = t.model ?? 'unknown';
         modelCounts.set(m, (modelCounts.get(m) ?? 0) + 1);
-        costUsd += turnCostUsd(t.model, t.usage).usd;
+        costUsd += turnCostUsd(t.model, t.usage, t.ts).usd;
         for (const tool of t.tools) {
           tools[tool] = (tools[tool] ?? 0) + 1;
           if (EDIT_TOOLS.has(tool)) fileCount += 1;
