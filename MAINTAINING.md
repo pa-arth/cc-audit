@@ -101,10 +101,22 @@ npm run build:npm
 npm publish ./bundles/npm --access public   # the leading ./ matters
 ```
 
-### Standalone binaries (`pa-arth/cc-audit-releases`)
+### Standalone binaries (GitHub Release)
 
 `scripts/bundle.mjs` builds `bun --compile` single-file binaries
-(darwin-arm64/x64, linux-x64) plus a Node `.mjs` fallback into `bundles/`. These are
-uploaded as release assets to the public `pa-arth/cc-audit-releases` repo. Requires `bun`
-on PATH. (CI automation for the binary release is a follow-up; the npm path is the one
-that matters for `npx`.)
+(darwin-arm64/x64, linux-x64) plus a Node `.mjs` fallback into `bundles/`. Requires `bun`
+on PATH locally.
+
+**Automated:** the `Publish to npm` workflow (on a `v*` tag push) builds these on the runner
+and attaches them — plus a `SHA256SUMS.txt` — to the GitHub Release for that tag, right after
+the npm publish. The npm path stays the critical one for `npx`; the release steps run after it
+so a bun/release hiccup can't block publish. Release creation uses the automatic `GITHUB_TOKEN`
+(hence `permissions: contents: write`), so no extra secret is needed.
+
+Cutting a release manually (needs `gh` + `bun`):
+
+```bash
+npm run bundle
+( cd bundles && sha256sum cc-audit-* cc-audit.mjs > SHA256SUMS.txt )
+gh release create vX.Y.Z --generate-notes bundles/cc-audit-* bundles/cc-audit.mjs bundles/SHA256SUMS.txt
+```
