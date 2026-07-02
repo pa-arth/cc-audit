@@ -111,8 +111,9 @@ export function renderReport(r: AuditResult, opts: { rows?: number } = {}): stri
     out.push(...card('TOP SPENDERS  ·  most expensive sessions', topRows, c.gold));
   }
 
-  // Lead with the cuts that have NO quality tradeoff. Model right-sizing
-  // (policy-dependent, often the smallest clean lever) comes last, via --judge.
+  // Lead with the cuts that have NO quality tradeoff. Config change suggestions
+  // (exact edits, local) are the first interactive offer; model right-sizing
+  // (policy-dependent, often the smallest clean lever) comes after, via --judge.
   blank();
   out.push(`  ${c.bold(c.orange('FIXABLE WASTE'))}  ${c.dim('— no-tradeoff cuts first')}`);
 
@@ -393,13 +394,34 @@ export function renderReport(r: AuditResult, opts: { rows?: number } = {}): stri
   blank();
   out.push(...card('FLUENCY  ·  the habits behind the bill', fluencyRows, c.cyan));
 
-  // ── 3. Model right-sizing teaser (the --judge upsell) ──────────────────────
+  // ── 3. Config change suggestions teaser (the headline lever, offered first) ─
+  if (r.configSuggestions.length > 0) {
+    const cs = r.configSuggestions;
+    const csSaved = cs.reduce((n, s) => n + s.monthlyUsdSaved, 0);
+    const kinds = new Set(cs.map((s) => s.kind));
+    const what = [
+      kinds.has('delete-skill') ? 'dead-weight skills' : null,
+      kinds.has('cut-instruction') ? 'never-followed "read X" rules' : null,
+      kinds.has('model-pin') ? 'missing model pins' : null,
+      kinds.has('disable-plugin') || kinds.has('remove-mcp') ? 'unused plugins/servers' : null,
+    ].filter(Boolean).join(', ');
+    const csRows = [
+      `${lever(`${cs.length} exact edit${cs.length === 1 ? '' : 's'}`)} found` +
+        (csSaved >= 0.5 ? ` (${c.gold(`~${usd(csSaved)}/mo`)})` : '') +
+        `${c.dim(` — ${what}`)}`,
+      c.dim('offered right after this report, or run ') + c.cyan('cc-audit fix'),
+    ];
+    blank();
+    out.push(...card('③ CONFIG CHANGE SUGGESTIONS  ·  exact edits, computed locally', csRows, c.gold));
+  }
+
+  // ── 4. Model right-sizing teaser (the --judge upsell — demoted below config) ─
   const rsRows = [
     `${lever(pct(f.premiumTurnShare))} of turns run premium models. Run ${c.cyan('cc-audit --judge')} to see which`,
     c.dim('tasks a cheaper model could do — frontier choice stays your policy.'),
   ];
   blank();
-  out.push(...card('③ MODEL RIGHT-SIZING  ·  policy-dependent, often the smallest clean lever', rsRows));
+  out.push(...card('④ MODEL RIGHT-SIZING  ·  policy-dependent, often the smallest clean lever', rsRows));
 
   // The treatment layer: synthesize everything above into ranked, file-anchored
   // actions. Estimates — a candidate tier is never a mandate.
@@ -414,6 +436,9 @@ export function renderReport(r: AuditResult, opts: { rows?: number } = {}): stri
       for (const ln of wrap(rec.action, BOX_WIDTH - 3)) actionRows.push(c.dim(`   ${ln}`));
       i += 1;
     }
+    actionRows.push(
+      c.dim('→ exact edits for these: say yes at the next prompt, or run ') + c.cyan('cc-audit fix'),
+    );
     blank();
     out.push(...card('NEXT ACTIONS  ·  ranked by est. $/mo saved', actionRows, c.gold));
   }

@@ -64,6 +64,10 @@ describe('conditional-context detector (Bug 2: "read X before Y")', () => {
     expect(errors).toBeDefined();
     expect(errors!.source).toBe('project-claude-md');
     expect(errors!.tokens).toBeGreaterThan(900);
+    // The item carries what a cut suggestion needs: the instruction text itself and
+    // the absolute path of the config file it lives in (LOCAL-ONLY fields).
+    expect(errors!.instruction).toBe('Read ERRORS.md');
+    expect(errors!.sourcePath).toBe(join(proj, 'CLAUDE.md'));
     // Single session ⇒ below the confirm threshold ⇒ detected but unverified.
     expect(errors!.observedReadRate).toBeNull();
     expect(errors!.sessionsConsidered).toBe(1);
@@ -125,6 +129,7 @@ describe('conditional-context detector (Bug 2: "read X before Y")', () => {
     expect(item).toBeDefined();
     expect(item!.skill).toBe('myskill');
     expect(item!.tokens).toBeGreaterThan(900);
+    expect(item!.sourcePath).toBe(join(skillDir, 'SKILL.md'));
     // Denominator is the 5 invoking sessions, not all 6 — and 3 of them read it.
     expect(item!.sessionsConsidered).toBe(5);
     expect(item!.observedReadRate).toBeCloseTo(3 / 5, 6);
