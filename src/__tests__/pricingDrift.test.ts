@@ -34,6 +34,13 @@ async function fetchLiteLLM(): Promise<Record<string, LLEntry> | null> {
   }
 }
 
+// One fetch shared by both drift tests (lazy so merely importing the module
+// doesn't hit the network). A failed fetch resolves to null — both tests then
+// degrade to pass identically, exactly as before.
+let litellmShared: Promise<Record<string, LLEntry> | null> | undefined;
+const litellm = (): Promise<Record<string, LLEntry> | null> =>
+  (litellmShared ??= fetchLiteLLM());
+
 // LiteLLM rates are per-token; ours per-million. Agree within 0.1% (or exact).
 const agree = (ours: number, theirsPerToken: number | undefined): boolean => {
   if (theirsPerToken == null) return true; // field absent upstream — can't cross-check
@@ -45,7 +52,7 @@ const agree = (ours: number, theirsPerToken: number | undefined): boolean => {
 
 describe('pricing drift vs LiteLLM (network; degrades to pass offline)', () => {
   it('Anthropic rates agree with LiteLLM; flags models we are missing', async () => {
-    const ll = await fetchLiteLLM();
+    const ll = await litellm();
     if (!ll) {
       console.warn('[litellm-drift] could not fetch LiteLLM — skipping (offline)');
       return;
@@ -69,6 +76,10 @@ describe('pricing drift vs LiteLLM (network; degrades to pass offline)', () => {
         mismatches.push(
           `${model}.cacheRead: ours=${p.cacheRead} ll=${(e.cache_read_input_token_cost ?? 0) * PER_M}`,
         );
+      // COVERAGE GAP: LiteLLM has a single cache-creation rate, which maps to our
+      // 5-minute cache-write rate. Our cacheWrite1hr rate has NO external
+      // reference here and goes unverified — check Anthropic's published pricing
+      // by hand when touching it.
       if (!agree(p.cacheWrite5min, e.cache_creation_input_token_cost))
         mismatches.push(
           `${model}.cacheWrite5min: ours=${p.cacheWrite5min} ll=${(e.cache_creation_input_token_cost ?? 0) * PER_M}`,
@@ -90,7 +101,7 @@ describe('pricing drift vs LiteLLM (network; degrades to pass offline)', () => {
   }, 20_000);
 
   it('OpenAI rates agree with LiteLLM', async () => {
-    const ll = await fetchLiteLLM();
+    const ll = await litellm();
     if (!ll) {
       console.warn('[litellm-drift] could not fetch LiteLLM — skipping (offline)');
       return;

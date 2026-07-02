@@ -205,8 +205,9 @@ export function getAnthropicPricing(model: string, at?: Date): AnthropicModelPri
     base = ANTHROPIC_PRICING[stripped]!;
     matchedKey = stripped;
   } else {
-    // Prefix match — handle dated variants (e.g. "claude-opus-4-6-20260301")
-    for (const key of Object.keys(ANTHROPIC_PRICING)) {
+    // Prefix match — handle dated variants (e.g. "claude-opus-4-6-20260301").
+    // Longest key first so the most specific prefix wins (mirrors getOpenAIPricing).
+    for (const key of Object.keys(ANTHROPIC_PRICING).sort((a, b) => b.length - a.length)) {
       if (stripped.startsWith(key)) {
         base = ANTHROPIC_PRICING[key] ?? null;
         matchedKey = key;
