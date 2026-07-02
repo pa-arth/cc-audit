@@ -1,9 +1,23 @@
 import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, it, expect } from 'vitest';
+import { afterAll, beforeAll, describe, it, expect } from 'vitest';
 import { parseTranscript } from '../adapters/claudeCode.js';
 import { detectConditionalContext } from '../conditionalContext.js';
+
+// detectConditionalContext() reads the real global ~/.claude/CLAUDE.md (+ skills). Point
+// HOME at an empty tmpdir so a developer's actual global "read X" instructions can't leak
+// into the fresh-tmpdir cases that assert zero detections. (CI runs with a clean HOME, so
+// this only bites locally — but the suite should be hermetic either way.)
+let originalHome: string | undefined;
+beforeAll(() => {
+  originalHome = process.env.HOME;
+  process.env.HOME = mkdtempSync(join(tmpdir(), 'cc-cond-home-'));
+});
+afterAll(() => {
+  if (originalHome === undefined) delete process.env.HOME;
+  else process.env.HOME = originalHome;
+});
 
 // Build a session in `cwd` that optionally invokes a skill (turn 1) and/or Reads a
 // file at a given turn. `readFileAbs` lets a test point the Read at a path outside cwd.

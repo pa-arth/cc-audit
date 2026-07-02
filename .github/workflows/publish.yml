@@ -25,7 +25,7 @@ jobs:
   publish:
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      contents: write # create the GitHub Release + upload binary assets
     steps:
       - uses: actions/checkout@v4
 
@@ -71,3 +71,41 @@ jobs:
         run: npm publish ./bundles/npm --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      # ── Standalone binaries → GitHub Release (real tag pushes only) ──────────
+      # npm above is the critical path; these run after it so a bun/release hiccup
+      # can never block the npm publish. Bun cross-compiles all three targets from
+      # this Linux runner. Uploaded to THIS repo's release for the pushed tag.
+      - name: Set up Bun
+        if: github.event_name == 'push'
+        uses: oven-sh/setup-bun@v2
+
+      - name: Build standalone binaries
+        if: github.event_name == 'push'
+        run: npm run bundle
+
+      - name: Checksums
+        if: github.event_name == 'push'
+        working-directory: bundles
+        run: |
+          sha256sum cc-audit-darwin-arm64 cc-audit-darwin-x64 cc-audit-linux-x64 cc-audit.mjs > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - name: Create GitHub Release + upload binaries
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Create the release if it doesn't exist yet (idempotent on re-runs),
+          # then (re)upload every asset with --clobber.
+          gh release create "$GITHUB_REF_NAME" \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "$GITHUB_REF_NAME" \
+            --generate-notes \
+            || echo "Release $GITHUB_REF_NAME already exists — updating assets."
+          gh release upload "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --clobber \
+            bundles/cc-audit-darwin-arm64 \
+            bundles/cc-audit-darwin-x64 \
+            bundles/cc-audit-linux-x64 \
+            bundles/cc-audit.mjs \
+            bundles/SHA256SUMS.txt

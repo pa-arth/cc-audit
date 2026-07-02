@@ -1,0 +1,99 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 860 500" width="860" height="500" font-family="ui-monospace, 'SF Mono', 'JetBrains Mono', 'Fira Code', Menlo, Consolas, monospace" role="img" aria-label="cc-audit terminal demo: local Claude Code spend and fluency audit">
+  <title>cc-audit — local Claude Code spend &amp; fluency audit</title>
+  <defs>
+    <style>
+      /* Reveal timeline — one 13s loop, per-line keyframes so the stagger
+         survives every iteration (animation-delay only offsets the first). */
+      .l { animation-duration: 13s; animation-iteration-count: infinite; animation-timing-function: cubic-bezier(.2,.7,.2,1); }
+      .l1  { animation-name: k1  } .l2  { animation-name: k2  }
+      .l3  { animation-name: k3  } .l4  { animation-name: k4  }
+      .l5  { animation-name: k5  } .l6  { animation-name: k6  }
+      .l7  { animation-name: k7  } .l8  { animation-name: k8  }
+      .l9  { animation-name: k9  } .l10 { animation-name: k10 }
+      .l11 { animation-name: k11 } .l12 { animation-name: k12 }
+
+      @keyframes k1  { 0%,9.8%{opacity:0;transform:translateY(6px)}  12%{opacity:1;transform:translateY(0)}  94%{opacity:1}100%{opacity:0} }
+      @keyframes k2  { 0%,15.2%{opacity:0;transform:translateY(6px)} 17.4%{opacity:1;transform:translateY(0)} 94%{opacity:1}100%{opacity:0} }
+      @keyframes k3  { 0%,22.1%{opacity:0;transform:translateY(6px)} 24.3%{opacity:1;transform:translateY(0)} 94%{opacity:1}100%{opacity:0} }
+      @keyframes k4  { 0%,25.9%{opacity:0} 28%{opacity:1} 94%{opacity:1}100%{opacity:0} }
+      @keyframes k5  { 0%,29%{opacity:0;transform:translateY(6px)}   31.2%{opacity:1;transform:translateY(0)} 94%{opacity:1}100%{opacity:0} }
+      @keyframes k6  { 0%,34.4%{opacity:0;transform:translateY(6px)} 36.6%{opacity:1;transform:translateY(0)} 94%{opacity:1}100%{opacity:0} }
+      @keyframes k7  { 0%,37.5%{opacity:0;transform:translateY(6px)} 39.7%{opacity:1;transform:translateY(0)} 94%{opacity:1}100%{opacity:0} }
+      @keyframes k8  { 0%,42.8%{opacity:0;transform:translateY(6px)} 45%{opacity:1;transform:translateY(0)}   94%{opacity:1}100%{opacity:0} }
+      @keyframes k9  { 0%,48.2%{opacity:0;transform:translateY(6px)} 50.4%{opacity:1;transform:translateY(0)} 94%{opacity:1}100%{opacity:0} }
+      @keyframes k10 { 0%,52.8%{opacity:0} 55%{opacity:1} 94%{opacity:1}100%{opacity:0} }
+      @keyframes k11 { 0%,56.7%{opacity:0;transform:translateY(6px)} 58.9%{opacity:1;transform:translateY(0)} 94%{opacity:1}100%{opacity:0} }
+      @keyframes k12 { 0%,59.8%{opacity:0} 63%{opacity:1} 94%{opacity:1}100%{opacity:0} }
+
+      /* Command types in like a real terminal. */
+      .cmd { animation: type 13s steps(24, end) infinite; }
+      @keyframes type { 0%{clip-path:inset(0 100% 0 0)} 9%{clip-path:inset(0 0 0 0)} 94%{clip-path:inset(0 0 0 0)} 100%{clip-path:inset(0 100% 0 0)} }
+      .caret { animation: blink 1.06s steps(1) infinite; }
+      @keyframes blink { 0%,50%{opacity:1} 50.01%,100%{opacity:0} }
+
+      text { font-size: 15px; }
+      .dim   { fill:#7d8694 } .fg  { fill:#c9d1d9 }
+      .org   { fill:#f28c28 } .gold{ fill:#ffcb6b } .em { fill:#10b981 }
+      .cyan  { fill:#22d3ee } .amb { fill:#f59e0b } .red{ fill:#ef4444 }
+      .b     { font-weight:700 }
+    </style>
+  </defs>
+
+  <!-- window -->
+  <rect x="1" y="1" width="858" height="498" rx="13" fill="#0d1017" stroke="#232833" stroke-width="1.5"/>
+  <!-- title bar -->
+  <circle cx="26" cy="27" r="6" fill="#ff5f56"/>
+  <circle cx="47" cy="27" r="6" fill="#ffbd2e"/>
+  <circle cx="68" cy="27" r="6" fill="#27c93f"/>
+  <text x="430" y="32" text-anchor="middle" class="dim" font-size="13">cc-audit — spend &amp; fluency audit</text>
+  <line x1="0" y1="52" x2="860" y2="52" stroke="#1a1f29"/>
+
+  <!-- command -->
+  <text x="30" y="86">
+    <tspan class="cyan b">$</tspan><tspan class="fg" xml:space="preserve"> </tspan><tspan class="fg cmd">npx @promptster/cc-audit</tspan>
+  </text>
+  <rect class="caret" x="304" y="74" width="9" height="16" fill="#c9d1d9"/>
+
+  <!-- scanning -->
+  <g class="l l1"><text x="30" y="118"><tspan class="em">✓</tspan><tspan class="dim" xml:space="preserve">  Scanning ~/.claude transcripts — 944 sessions · 30d window</tspan></text></g>
+
+  <!-- estimated spend -->
+  <g class="l l2">
+    <text x="30" y="156" class="org b" font-size="12" letter-spacing="1.5">ESTIMATED SPEND</text>
+    <text x="30" y="188"><tspan class="gold b" font-size="27">$284</tspan><tspan class="gold" font-size="17">/mo</tspan><tspan class="dim" xml:space="preserve" font-size="13">     $199 over window · est. from local pricing tables</tspan></text>
+  </g>
+
+  <!-- by model -->
+  <g class="l l3">
+    <text x="30" y="222"><tspan class="dim" font-size="12" letter-spacing="1.5">BY MODEL   </tspan><tspan class="fg">opus-4-8 </tspan><tspan class="cyan b">68%</tspan><tspan class="dim">  ·  </tspan><tspan class="fg">sonnet-4-6 </tspan><tspan class="cyan b">27%</tspan><tspan class="dim">  ·  </tspan><tspan class="fg">haiku </tspan><tspan class="cyan b">5%</tspan></text>
+  </g>
+
+  <!-- divider -->
+  <g class="l l4"><line x1="30" y1="244" x2="830" y2="244" stroke="#1c212b"/></g>
+
+  <!-- fixable waste header -->
+  <g class="l l5"><text x="30" y="276"><tspan class="org b">▸ FIXABLE WASTE</tspan><tspan class="dim">   — no-tradeoff cuts first</tspan></text></g>
+
+  <!-- context hygiene -->
+  <g class="l l6"><text x="30" y="306"><tspan class="gold">⓪</tspan><tspan class="fg" xml:space="preserve">  avoidable carry</tspan><tspan class="gold b" x="230">$63/mo</tspan><tspan class="dim" xml:space="preserve">   context a /compact or /clear would have shed</tspan></text></g>
+  <g class="l l7"><text x="54" y="328" class="dim">→ /compact when context crosses ~160K · /clear at the end of an idea</text></g>
+
+  <!-- always-on tax -->
+  <g class="l l8"><text x="30" y="358"><tspan class="em">①</tspan><tspan class="fg" xml:space="preserve">  always-on tax</tspan><tspan class="fg" x="230">your config adds </tspan><tspan class="em b">≈ $41/mo</tspan><tspan class="dim" xml:space="preserve"> of standing context</tspan></text></g>
+
+  <!-- fluency -->
+  <g class="l l9"><text x="30" y="386"><tspan class="cyan">②</tspan><tspan class="fg" xml:space="preserve">  fluency</tspan><tspan class="fg" x="230">plan-mode on </tspan><tspan class="cyan b">74%</tspan><tspan class="fg" xml:space="preserve"> of sessions · avg </tspan><tspan class="cyan b">6</tspan><tspan class="fg" xml:space="preserve"> prompts/session</tspan></text></g>
+
+  <!-- divider -->
+  <g class="l l10"><line x1="30" y1="410" x2="830" y2="410" stroke="#1c212b"/></g>
+
+  <!-- percentile payoff -->
+  <g class="l l11"><text x="30" y="444"><tspan class="fg">You're in the </tspan><tspan class="em b">82nd percentile</tspan><tspan class="fg"> of AI fluency</tspan><tspan class="dim"> — 1,240 engineers measured</tspan></text></g>
+  <g class="l l12">
+    <rect x="30"  y="460" width="150" height="11" rx="3" fill="#10b981"/>
+    <rect x="188" y="460" width="150" height="11" rx="3" fill="#10b981"/>
+    <rect x="346" y="460" width="150" height="11" rx="3" fill="#10b981"/>
+    <rect x="504" y="460" width="150" height="11" rx="3" fill="#10b981"/>
+    <rect x="662" y="460" width="150" height="11" rx="3" fill="#232833"/>
+  </g>
+</svg>
