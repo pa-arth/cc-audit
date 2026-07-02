@@ -14,21 +14,32 @@
 
 import type { AssistantTurn, Session } from './model.js';
 import { turnCarryUsd } from './fluency.js';
+import { cacheRatesUsdPerToken } from './pricing.js';
 
-// "Compaction territory": once context sits above this and the session keeps going, a
-// proactive /compact reliably beats the cost of carrying it. ~160K is where a classic
-// 200K-window session auto-compacts — we reuse it as a model-agnostic "this is large
-// enough to compact" line and stay conservative by only ever billing tokens ABOVE it.
-const OVERDUE_TOKENS = 160_000;
+// "Overdue" is no longer a fixed token ceiling — it's the per-turn COMPACT COUNTERFACTUAL.
+// A /compact pays off at turn t when the cache-read it sheds over the remaining runway
+// beats the one-off cost of re-caching the summary:
+//   savings(t)  = tokensShed(t) × cacheReadRate × remainingTurns
+//   compactCost = ctx(t) × cacheReadRate           (summarize reads the live context)
+//               + postCompact × cacheWriteRate      (re-cache the compacted context, 1.25×)
+//   tokensShed  = ctx(t) − ctx(t)×compressionRatio
+// A turn is "overdue" when net = savings − compactCost > 0. This replaces the old flat
+// ~160K line: whether a big context is worth compacting depends on how many turns are
+// left and the model's cache rates, not an absolute size (a 200K context with two turns
+// to go is NOT worth compacting; a 90K context with fifty turns to go is).
+const DEFAULT_COMPRESSION_RATIO = 0.35;
 // A compaction only pays off with real runway left — a brief spike at a segment's tail
-// isn't worth it. Require a sustained run before calling an episode "overdue".
+// isn't worth it. Require a sustained run of net-positive turns before calling it overdue.
 const MIN_OVERDUE_TURNS = 6;
 
 // Clear detector (heuristic): a task switch only stranded avoidable carry if there was
 // meaningful context to shed AND the file working set genuinely rotated.
 const STALE_FLOOR_TOKENS = 40_000; // below this, carrying it forward is cheap noise
-const WS_WINDOW = 4; // turns each side of a candidate task-switch boundary
-const MIN_FILES_EACH_SIDE = 2; // both sides must touch real, distinct files
+/** Turns each side of a candidate task-switch boundary that characterize the before/after
+ *  working set. Exported so the live-guardrail statusline shares one rotation definition. */
+export const WS_WINDOW = 4;
+/** Both sides of a boundary must touch this many real, distinct files for a rotation. */
+export const MIN_FILES_EACH_SIDE = 2;
 const STALE_ATTRIB_TURNS = 12; // cap how far past a switch we attribute stale carry
 
 const RESET_COMMANDS = new Set(['compact', 'clear']);
@@ -36,8 +47,9 @@ const READ_TOOLS = new Set(['Read']);
 const WRITE_TOOLS = new Set(['Edit', 'Write', 'NotebookEdit', 'MultiEdit']);
 
 /** Total context tokens billed to a turn (everything on the input side — what a reset
- *  would shed). Output is what you generate, not what you carry. */
-function contextTokens(t: AssistantTurn): number {
+ *  would shed). Output is what you generate, not what you carry. Exported: the context-
+ *  knee buckets and the live statusline bucket every turn by exactly this size. */
+export function contextTokens(t: AssistantTurn): number {
   const u = t.usage;
   return u.input + u.cacheRead + u.cacheWrite5m + u.cacheWrite1h;
 }
@@ -53,8 +65,9 @@ export interface OverdueCompactEpisode {
   /** How many consecutive turns ran overdue before a reset (or the session ended). */
   overdueTurns: number;
   peakTokens: number;
-  /** Carry actually paid on tokens above the line during the episode (conservative —
-   *  values the compaction as merely bringing context back to the line, not below it). */
+  /** Carry paid on the sheddable fraction (1 − compressionRatio) of context during the
+   *  episode — what a timely /compact, sized by the user's own compression ratio, would
+   *  have removed. */
   avoidableUsd: number;
 }
 
@@ -108,24 +121,46 @@ function segments(session: Session): AssistantTurn[][] {
   return segs;
 }
 
-/** Maximal runs of consecutive overdue turns within one segment that cleared the
- *  sustained-runway bar. `offset` is the segment's first turn's session-wide ordinal. */
-function overdueRuns(seg: AssistantTurn[], offset: number): Omit<OverdueCompactEpisode, 'project' | 'sessionId'>[] {
+/** Net USD a /compact landing at turn `t` of the segment would save (see the counterfactual
+ *  note at the top of the file). Positive ⇒ compacting here pays for itself. −∞ when there's
+ *  no runway left or no context to shed. `ratio` is the user's own compression ratio. */
+function compactNetUsd(seg: AssistantTurn[], t: number, ratio: number): number {
+  const remainingTurns = seg.length - 1 - t; // turns AFTER a compact landing at t
+  if (remainingTurns <= 0) return Number.NEGATIVE_INFINITY;
+  const ctxT = contextTokens(seg[t]!);
+  if (ctxT <= 0) return Number.NEGATIVE_INFINITY;
+  const { cacheRead, cacheWrite } = cacheRatesUsdPerToken(seg[t]!.model);
+  const postCompact = ctxT * ratio;
+  const tokensShed = ctxT - postCompact;
+  const savings = tokensShed * cacheRead * remainingTurns;
+  const compactCost = ctxT * cacheRead + postCompact * cacheWrite;
+  return savings - compactCost;
+}
+
+/** Maximal runs of consecutive turns where the compact counterfactual nets positive and
+ *  the run clears the sustained-runway bar. `offset` is the segment's first turn's session-
+ *  wide ordinal; `ratio` the user's own compression ratio. Avoidable carry is the carry
+ *  paid on the sheddable fraction (1 − ratio) of each overdue turn — the part a timely
+ *  /compact would have removed. */
+function overdueRuns(
+  seg: AssistantTurn[],
+  offset: number,
+  ratio: number,
+): Omit<OverdueCompactEpisode, 'project' | 'sessionId'>[] {
   const out: Omit<OverdueCompactEpisode, 'project' | 'sessionId'>[] = [];
   let i = 0;
   while (i < seg.length) {
-    if (contextTokens(seg[i]!) <= OVERDUE_TOKENS) {
+    if (compactNetUsd(seg, i, ratio) <= 0) {
       i += 1;
       continue;
     }
     let j = i;
     let peak = 0;
     let avoid = 0;
-    while (j < seg.length && contextTokens(seg[j]!) > OVERDUE_TOKENS) {
-      const ctx = contextTokens(seg[j]!);
-      peak = Math.max(peak, ctx);
-      // Carry attributable to the tokens above the line (the part a compaction sheds).
-      avoid += turnCarryUsd(seg[j]!.model, seg[j]!.usage) * ((ctx - OVERDUE_TOKENS) / ctx);
+    while (j < seg.length && compactNetUsd(seg, j, ratio) > 0) {
+      peak = Math.max(peak, contextTokens(seg[j]!));
+      // Carry on the sheddable fraction — what a timely compaction would have removed.
+      avoid += turnCarryUsd(seg[j]!.model, seg[j]!.usage) * (1 - ratio);
       j += 1;
     }
     const len = j - i;
@@ -137,8 +172,40 @@ function overdueRuns(seg: AssistantTurn[], offset: number): Omit<OverdueCompactE
   return out;
 }
 
-/** Distinct file paths touched (Read/Edit/Write) over a slice of turns. */
-function filesTouched(seg: AssistantTurn[], from: number, to: number): Set<string> {
+/** The user's OWN compression ratio (post-compact ÷ pre-compact context size), measured by
+ *  bracketing each compact reset with the last turn before it and the first turn after it,
+ *  averaged over the session's compacts. A /clear sheds everything (not a compression), so
+ *  it's excluded. Falls back to DEFAULT_COMPRESSION_RATIO when the session never compacted
+ *  or the brackets are unusable. */
+export function observedCompressionRatio(session: Session): number {
+  const ratios: number[] = [];
+  let prevCtx: number | null = null; // last turn's context so far on the main chain
+  let pendingCompact = false; // the next main-chain turn is the first post-compact turn
+  for (const span of session.spans) {
+    if (span.isSidechain) continue;
+    const isCompact = span.autoCompacted || span.command === 'compact';
+    if (span.command === 'clear') {
+      prevCtx = null; // clear resets the chain; nothing to bracket
+      pendingCompact = false;
+    } else if (isCompact && prevCtx != null) {
+      pendingCompact = true;
+    }
+    for (const t of span.turns) {
+      const ctx = contextTokens(t);
+      if (pendingCompact) {
+        if (prevCtx != null && ctx > 0 && ctx < prevCtx) ratios.push(ctx / prevCtx);
+        pendingCompact = false; // only the FIRST post-compact turn is the "after"
+      }
+      prevCtx = ctx;
+    }
+  }
+  if (ratios.length > 0) return ratios.reduce((a, b) => a + b, 0) / ratios.length;
+  return DEFAULT_COMPRESSION_RATIO;
+}
+
+/** Distinct file paths touched (Read/Edit/Write) over a slice of turns. Exported so the
+ *  live-guardrail statusline computes the file working set exactly the same way. */
+export function filesTouched(seg: AssistantTurn[], from: number, to: number): Set<string> {
   const s = new Set<string>();
   for (let k = Math.max(0, from); k < Math.min(seg.length, to); k += 1) {
     for (const op of seg[k]!.fileOps ?? []) {
@@ -148,18 +215,27 @@ function filesTouched(seg: AssistantTurn[], from: number, to: number): Set<strin
   return s;
 }
 
+/** Does the file working set fully ROTATE across `boundary` (the first turn of the "after"
+ *  side): ≥ MIN_FILES_EACH_SIDE distinct files each side within WS_WINDOW turns, zero
+ *  overlap. The file-rotation half of a compact boundary — shared by staleSwitches (the
+ *  "new idea, didn't /clear" detector) and the live-guardrail statusline. */
+export function workingSetRotated(seg: AssistantTurn[], boundary: number): boolean {
+  const prev = filesTouched(seg, boundary - WS_WINDOW, boundary);
+  const next = filesTouched(seg, boundary, boundary + WS_WINDOW);
+  return (
+    prev.size >= MIN_FILES_EACH_SIDE &&
+    next.size >= MIN_FILES_EACH_SIDE &&
+    ![...next].some((p) => prev.has(p)) // zero overlap
+  );
+}
+
 /** Likely "new idea, didn't /clear" boundaries in one segment: the file working set
  *  fully rotates (zero overlap, real files each side) while context was non-trivial. */
 function staleSwitches(seg: AssistantTurn[], offset: number): Omit<StaleCarrySwitch, 'project' | 'sessionId'>[] {
   const out: Omit<StaleCarrySwitch, 'project' | 'sessionId'>[] = [];
   let k = WS_WINDOW;
   while (k < seg.length - WS_WINDOW) {
-    const prev = filesTouched(seg, k - WS_WINDOW, k);
-    const next = filesTouched(seg, k, k + WS_WINDOW);
-    const rotated =
-      prev.size >= MIN_FILES_EACH_SIDE &&
-      next.size >= MIN_FILES_EACH_SIDE &&
-      ![...next].some((p) => prev.has(p)); // zero overlap
+    const rotated = workingSetRotated(seg, k);
     const stale = contextTokens(seg[k - 1]!); // context a /clear would have shed here
     if (rotated && stale >= STALE_FLOOR_TOKENS) {
       // Carry spent dragging the stale context through the next task, decaying as the new
@@ -196,9 +272,10 @@ export function computeContextHygiene(sessions: Session[]): ContextHygiene {
     autoCompactions += walls;
     if (walls > 0) sessionsRunToWall += 1;
 
+    const ratio = observedCompressionRatio(session);
     let offset = 0;
     for (const seg of segments(session)) {
-      for (const e of overdueRuns(seg, offset)) {
+      for (const e of overdueRuns(seg, offset, ratio)) {
         overdueEpisodes.push({ project: session.project, sessionId: session.sessionId, ...e });
       }
       for (const sw of staleSwitches(seg, offset)) {

@@ -29,37 +29,43 @@ const wall = (promptId: string) => ({
 });
 const raw = (events: unknown[]) => events.map((e) => JSON.stringify(e)).join('\n');
 
-describe('contextHygiene — missed /compact (overdue context)', () => {
-  it('flags a sustained run above the line, located by turn ordinal, with conservative $', () => {
-    // One span, 6 assistant turns all at 200K context (>160K line). Carry per turn for
-    // opus cacheRead is 200000·$0.5/1e6 = $0.10; billable above-line fraction = 40/200.
+describe('contextHygiene — missed /compact (overdue via the compact counterfactual)', () => {
+  it('flags a sustained run where compacting nets positive, located by turn ordinal, with conservative $', () => {
+    // One span, 20 assistant turns all at 200K context. With the default 0.35 compression
+    // ratio and opus cache rates, a /compact pays off only while enough runway remains:
+    //   net(t) = tokensShed·cacheRead·remaining − (ctx·cacheRead + postCompact·cacheWrite)
+    // For 200K opus that's net(t) > 0 ⇔ remaining ≥ 9 ⇔ t ≤ 10 (0-indexed), so turns 1..11
+    // are overdue and 12..20 are not (the tail can no longer justify re-caching the summary).
     const events: unknown[] = [user('p1', 'do the big migration across the codebase')];
-    for (let i = 0; i < 6; i += 1) events.push(asst({ ctx: 200_000 }));
+    for (let i = 0; i < 20; i += 1) events.push(asst({ ctx: 200_000 }));
     const s = parseTranscript('/tmp/ov.jsonl', raw(events), 'demo/proj')!;
     const h = computeContextHygiene([s]);
 
     expect(h.overdueEpisodes).toHaveLength(1);
     const e = h.overdueEpisodes[0]!;
-    expect(e.atTurn).toBe(1); // crossed the line at the first turn
-    expect(e.overdueTurns).toBe(6);
+    expect(e.atTurn).toBe(1); // compacting pays off from the very first turn (most runway)
+    expect(e.overdueTurns).toBe(11);
     expect(e.peakTokens).toBe(200_000);
     expect(e.project).toBe('demo/proj');
-    // Conservative: only the carry on tokens ABOVE the line. 6 × $0.10 × (40k/200k) = $0.12.
-    expect(e.avoidableUsd).toBeCloseTo(6 * turnCarryUsd('claude-opus-4-8', {
+    // Conservative: carry on the sheddable fraction (1 − 0.35). 11 turns × $0.10 × 0.65.
+    const carry = turnCarryUsd('claude-opus-4-8', {
       input: 0, output: 0, cacheRead: 200_000, cacheWrite5m: 0, cacheWrite1h: 0,
-    }) * (40_000 / 200_000), 6);
+    });
+    expect(e.avoidableUsd).toBeCloseTo(11 * carry * (1 - 0.35), 6);
     expect(h.avoidableCompactUsd).toBeCloseTo(e.avoidableUsd, 9);
   });
 
-  it('does NOT flag a short overdue spike (no runway for /compact to pay off)', () => {
+  it('does NOT flag a short run — no runway for a /compact to pay for its re-cache cost', () => {
+    // 6 turns at 200K: the OLD fixed-160K line would have flagged this; the counterfactual
+    // does not, because compacting a 6-turn tail never recovers its summarization cost.
     const events: unknown[] = [user('p1', 'quick thing')];
-    for (let i = 0; i < 5; i += 1) events.push(asst({ ctx: 200_000 })); // 5 < MIN_OVERDUE_TURNS
+    for (let i = 0; i < 6; i += 1) events.push(asst({ ctx: 200_000 }));
     const h = computeContextHygiene([parseTranscript('/tmp/sp.jsonl', raw(events), 'p')!]);
     expect(h.overdueEpisodes).toHaveLength(0);
     expect(h.avoidableCompactUsd).toBe(0);
   });
 
-  it('does NOT flag context that stays under the line', () => {
+  it('does NOT flag a modest-length session at moderate context', () => {
     const events: unknown[] = [user('p1', 'normal task')];
     for (let i = 0; i < 10; i += 1) events.push(asst({ ctx: 100_000 }));
     const h = computeContextHygiene([parseTranscript('/tmp/lo.jsonl', raw(events), 'p')!]);
@@ -67,12 +73,12 @@ describe('contextHygiene — missed /compact (overdue context)', () => {
   });
 
   it('a /compact resets the segment so a run does not span across the reset', () => {
-    // 4 overdue turns, then /compact, then 4 more overdue turns: two runs of 4, neither
-    // clears the 6-turn bar — so the reset discipline is correctly credited.
+    // Two 10-turn segments at 200K split by /compact: each segment alone is too short for
+    // the counterfactual to net positive across, so the reset discipline is credited.
     const events: unknown[] = [user('p1', 'big task')];
-    for (let i = 0; i < 4; i += 1) events.push(asst({ ctx: 200_000 }));
+    for (let i = 0; i < 10; i += 1) events.push(asst({ ctx: 200_000 }));
     events.push(user('p2', '<command-name>compact</command-name>'));
-    for (let i = 0; i < 4; i += 1) events.push(asst({ ctx: 200_000 }));
+    for (let i = 0; i < 10; i += 1) events.push(asst({ ctx: 200_000 }));
     const h = computeContextHygiene([parseTranscript('/tmp/rs.jsonl', raw(events), 'p')!]);
     expect(h.overdueEpisodes).toHaveLength(0);
   });

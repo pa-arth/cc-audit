@@ -14,8 +14,25 @@ export { attributeSpend } from './attribute.js';
 export type { SpendBreakdown, ModelSpend, CommandSpend } from './attribute.js';
 export { computeFluency } from './fluency.js';
 export type { FluencySignals } from './fluency.js';
-export { computeContextHygiene } from './contextHygiene.js';
+export { computeContextHygiene, contextTokens, observedCompressionRatio, workingSetRotated } from './contextHygiene.js';
 export type { ContextHygiene, OverdueCompactEpisode, StaleCarrySwitch } from './contextHygiene.js';
+export { computeContextKnee, deriveContextKnee, mergeContextBuckets, sessionContextBuckets } from './contextKnee.js';
+export type { ContextKnee, ContextBucket } from './contextKnee.js';
+export { detectLiveBoundary } from './liveBoundary.js';
+export { renderStatuslineLabel, resolveStatuslineState } from './statusline.js';
+export type { StatuslineState } from './statusline.js';
+export {
+  injectExtraCmd,
+  removeExtraCmd,
+  isOurStatuslineValue,
+  findExtraCmdValue,
+  installStatusline,
+  uninstallStatusline,
+  isOfferable,
+  resolveExtraCmdValue,
+  manualSnippet,
+} from './statuslineInstall.js';
+export type { InstallOutcome, PatchResult, PatchStatus, InstallOptions } from './statuslineInstall.js';
 export { buildHygieneFootprints, refineAvoidableCarry, toRefinementUpload } from './hygieneFootprint.js';
 export type {
   HygieneJudgeItem,
@@ -32,8 +49,8 @@ export { buildRoiLedger } from './roiLedger.js';
 export type { RoiLedger, SkillRoiRow, McpRoiRow, SkillVerdict } from './roiLedger.js';
 export { computeTemporal } from './temporal.js';
 export type { TemporalProfile, HourBucket, StratifiedTime } from './temporal.js';
-export { computeFriction, spanSkillKey } from './friction.js';
-export type { FrictionTaxonomy, SkillFriction, FrictionKind } from './friction.js';
+export { computeFriction, spanSkillKey, spanFrictionEvents, sessionFrictionEvents } from './friction.js';
+export type { FrictionTaxonomy, SkillFriction, FrictionKind, LocatedFriction } from './friction.js';
 
 export { buildAggregateRecord, AggregateRecordSchema, AGGREGATE_SCHEMA_VERSION } from './aggregate.js';
 export type { AggregateRecord } from './aggregate.js';

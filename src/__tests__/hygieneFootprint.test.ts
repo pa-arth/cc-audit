@@ -27,7 +27,10 @@ describe('buildHygieneFootprints', () => {
   const events: unknown[] = [
     { type: 'user', promptId: 'p1', message: { content: 'implement the auth refactor across all services' } },
   ];
-  for (let i = 0; i < 6; i += 1) events.push(asst(200_000));
+  // 20 turns at 200K: a sustained run with enough remaining runway that the compact
+  // counterfactual nets positive (a short spike wouldn't — compacting has to pay for
+  // re-caching the summary).
+  for (let i = 0; i < 20; i += 1) events.push(asst(200_000));
   const session = parseTranscript('/tmp/hf.jsonl', raw(events), 'secret/repo')!;
   const hygiene = computeContextHygiene([session]);
   const footprints = buildHygieneFootprints(hygiene, [session]);
@@ -55,7 +58,7 @@ describe('buildHygieneFootprints', () => {
   it('drops episodes whose window has no judgeable gist (nothing for the judge to score)', () => {
     // Same shape but the only prompt is a continuation fragment — not judgeable.
     const ev: unknown[] = [{ type: 'user', promptId: 'p1', message: { content: 'ok continue' } }];
-    for (let i = 0; i < 6; i += 1) ev.push(asst(200_000));
+    for (let i = 0; i < 20; i += 1) ev.push(asst(200_000));
     const s = parseTranscript('/tmp/hf2.jsonl', raw(ev), 'p')!;
     const h = computeContextHygiene([s]);
     expect(h.overdueEpisodes).toHaveLength(1); // still detected deterministically

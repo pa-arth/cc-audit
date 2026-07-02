@@ -371,6 +371,40 @@ export function loadClaudeCodeSessions(opts: LoadOptions = {}): Session[] {
   return sessions;
 }
 
+/** Claude Code's project-directory slug for a working directory: every non-alphanumeric
+ *  character becomes '-' (so `/Users/x/repo/.claude/wt` → `-Users-x-repo--claude-wt`). */
+export function projectDirSlug(cwd: string): string {
+  return cwd.replace(/[^a-zA-Z0-9]/g, '-');
+}
+
+/**
+ * The LIVE session transcript for a working directory — the newest-mtime `*.jsonl` under
+ * `<root>/<slug(cwd)>/` (transcripts nest, so we walk it). This is how the live-guardrail
+ * statusline self-discovers the active session without any input from claude-hud: it
+ * inherits the project cwd and maps it to Claude Code's project dir. null when the project
+ * has no transcripts (or the dir doesn't exist). LOCAL-ONLY, reads no file contents.
+ */
+export function findLiveTranscript(cwd: string, root?: string): string | null {
+  const projectsRoot = root ?? join(homedir(), '.claude', 'projects');
+  const dir = join(projectsRoot, projectDirSlug(cwd));
+  const files: string[] = [];
+  collectJsonl(dir, files);
+  let newest: string | null = null;
+  let newestMtime = -Infinity;
+  for (const fp of files) {
+    try {
+      const m = statSync(fp).mtimeMs;
+      if (m > newestMtime) {
+        newestMtime = m;
+        newest = fp;
+      }
+    } catch {
+      /* file vanished mid-scan — skip */
+    }
+  }
+  return newest;
+}
+
 function collectJsonl(dir: string, acc: string[]): void {
   let entries: Dirent[];
   try {
