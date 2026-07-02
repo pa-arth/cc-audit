@@ -20,9 +20,21 @@ import { contextTokens } from './contextHygiene.js';
 import { sessionFrictionEvents } from './friction.js';
 
 // Fixed bands (NOT per-session quantiles) keep buckets interpretable and mergeable across
-// sessions — index i always means the same token range everywhere. Bands: [0,50k),
-// [50k,100k), [100k,200k), [200k,∞). Ported from the backend's CONTEXT_BANDS.
-const CONTEXT_BANDS = [50_000, 100_000, 200_000] as const;
+// sessions — index i always means the same token range everywhere. Uniform 20k steps to
+// 200k, then an open top band: [0,40k), [40k,60k), … [180k,200k), [200k,∞). Ported from the
+// backend's CONTEXT_BANDS — keep the two in lockstep.
+//
+// Why 20k steps and a NARROW <40k baseline (was 3 coarse bands [50k,100k,200k]): friction +
+// re-reads rise ~monotonically with context (measured: 0.066 at <40k → ~0.20 at 180–200k, a
+// ~3× climb, knee ≈ 80k). The old bands hid that two ways — (1) a wide <50k baseline already
+// bakes in elevated 40–50k friction, raising the baseline until nothing clears 2×; (2) the
+// unbounded top band averaged the 180–200k PEAK together with well-behaved 250k–400k
+// marathons (post-compact / survivorship), dragging it back under the line. Narrow low
+// baseline + fine steps through the danger zone fixes both; the onset rule still returns the
+// FIRST band that clears, so the diluted top band never decides the knee.
+const CONTEXT_BANDS = [
+  40_000, 60_000, 80_000, 100_000, 120_000, 140_000, 160_000, 180_000, 200_000,
+] as const;
 // Min turns in a band before its rate means anything (guards tiny-sample noise).
 const BAND_TURN_FLOOR = 3;
 // Min elevated rate to call an onset when the baseline is ~0 (≥1 symptom / 3 turns). This
@@ -111,7 +123,7 @@ export function deriveContextKnee(
       rate(b) >= 2 * baseline &&
       symptoms(b) >= minSymptoms
     ) {
-      return CONTEXT_BANDS[i - 1]!; // lower edge of the elevated band
+      return buckets[i - 1]!.maxTokens; // lower edge of the elevated band = prev band's upper edge
     }
   }
   return null;

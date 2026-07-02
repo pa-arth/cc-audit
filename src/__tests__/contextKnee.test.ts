@@ -34,8 +34,8 @@ const raw = (e: unknown[]) => e.map((x) => JSON.stringify(x)).join('\n');
 const REREAD_FILES = 12;
 function reReadSession(id: string) {
   const events: unknown[] = [user('p1', 'work across many files then revisit them as the context grows')];
-  for (let i = 0; i < REREAD_FILES; i++) events.push(asst({ ctx: 30_000, tools: [{ name: 'Read', path: `/x/f${i}.ts` }] })); // band0, seed resident
-  for (let i = 0; i < REREAD_FILES; i++) events.push(asst({ ctx: 70_000, tools: [{ name: 'Read', path: `/x/f${i}.ts` }] })); // band1, REDUNDANT
+  for (let i = 0; i < REREAD_FILES; i++) events.push(asst({ ctx: 30_000, tools: [{ name: 'Read', path: `/x/f${i}.ts` }] })); // band0 (<40k), seed resident
+  for (let i = 0; i < REREAD_FILES; i++) events.push(asst({ ctx: 50_000, tools: [{ name: 'Read', path: `/x/f${i}.ts` }] })); // band1 (40–60k), REDUNDANT
   return parseTranscript(`/tmp/${id}.jsonl`, raw(events), 'p')!;
 }
 
@@ -45,16 +45,16 @@ describe('sessionContextBuckets', () => {
     expect(buckets[0]!.turns).toBe(REREAD_FILES);
     expect(buckets[0]!.redundantReReads).toBe(0); // first reads seed residency, not redundant
     expect(buckets[1]!.turns).toBe(REREAD_FILES);
-    expect(buckets[1]!.redundantReReads).toBe(REREAD_FILES); // every re-read lands in the 50k–100k band
+    expect(buckets[1]!.redundantReReads).toBe(REREAD_FILES); // every re-read lands in the 40k–60k band
   });
 
   it('a write to a path makes a later read of it legitimate (not redundant)', () => {
     const events: unknown[] = [
       user('p1', 'read a file, rewrite it, then read it again after the change'),
       asst({ ctx: 30_000, tools: [{ name: 'Read', path: '/x/a.ts' }] }),
-      asst({ ctx: 70_000, tools: [{ name: 'Edit', path: '/x/a.ts' }] }), // stales the resident copy
-      asst({ ctx: 70_000, tools: [{ name: 'Read', path: '/x/a.ts' }] }), // legitimate refresh
-      asst({ ctx: 70_000, tools: [{ name: 'Read', path: '/x/a.ts' }] }), // NOW redundant (resident again)
+      asst({ ctx: 50_000, tools: [{ name: 'Edit', path: '/x/a.ts' }] }), // stales the resident copy
+      asst({ ctx: 50_000, tools: [{ name: 'Read', path: '/x/a.ts' }] }), // legitimate refresh
+      asst({ ctx: 50_000, tools: [{ name: 'Read', path: '/x/a.ts' }] }), // NOW redundant (resident again)
     ];
     const buckets = sessionContextBuckets(parseTranscript('/tmp/w.jsonl', raw(events), 'p')!)!;
     expect(buckets[1]!.redundantReReads).toBe(1);
@@ -112,11 +112,12 @@ describe('computeContextKnee (merge across sessions, then the rule)', () => {
     expect(one.buckets[1]!.redundantReReads).toBe(12); // the band IS elevated within one session…
     expect(one.onsetTokens).toBeNull(); // …but 12 < 20 symptoms and only 1 session → not trusted
 
-    // Two sessions merged: band0 rate 0 baseline, band1 has 24 ≥ 20 re-reads → knee at 50k.
+    // Two sessions merged: band0 rate 0 baseline, band1 has 24 ≥ 20 re-reads → knee at 40k
+    // (the lower edge of the elevated 40–60k band = band0's upper edge).
     const knee = computeContextKnee([reReadSession('b'), reReadSession('c')]);
     expect(knee.sessionsWithSignal).toBe(2);
     expect(knee.buckets[1]!.redundantReReads).toBe(24);
-    expect(knee.onsetTokens).toBe(50_000);
+    expect(knee.onsetTokens).toBe(40_000);
   });
 
   it('single session → no knee even if it alone would clear the band-turn floor', () => {
@@ -124,11 +125,11 @@ describe('computeContextKnee (merge across sessions, then the rule)', () => {
     // one session is single-session noise (MIN_SESSIONS_WITH_SIGNAL = 2).
     const events: unknown[] = [user('p1', 'a long single session revisiting files as context grows')];
     for (let i = 0; i < 3; i++) events.push(asst({ ctx: 30_000, tools: [{ name: 'Read', path: `/x/f${i}.ts` }] }));
-    for (let i = 0; i < 3; i++) events.push(asst({ ctx: 70_000, tools: [{ name: 'Read', path: `/x/f${i}.ts` }] }));
+    for (let i = 0; i < 3; i++) events.push(asst({ ctx: 50_000, tools: [{ name: 'Read', path: `/x/f${i}.ts` }] }));
     const s = parseTranscript('/tmp/solo.jsonl', raw(events), 'p')!;
     const buckets = sessionContextBuckets(s)!;
     expect(buckets[1]!.redundantReReads).toBe(3); // band1 IS elevated within this session
-    expect(deriveContextKnee(buckets)).toBe(50_000); // the rule alone would fire…
+    expect(deriveContextKnee(buckets)).toBe(40_000); // the rule alone would fire…
     expect(computeContextKnee([s]).onsetTokens).toBeNull(); // …but one session isn't trusted
   });
 
@@ -136,11 +137,11 @@ describe('computeContextKnee (merge across sessions, then the rule)', () => {
     // Two consecutive edits of the same path at high context = a self-correction friction
     // event, landing in band 1.
     const events: unknown[] = [
-      user('p1', 'rewrite the same module twice in a row while the context is already large'),
-      asst({ ctx: 70_000, tools: [{ name: 'Read', path: '/x/a.ts' }] }),
-      asst({ ctx: 70_000, tools: [{ name: 'Read', path: '/x/b.ts' }] }),
-      asst({ ctx: 70_000, tools: [{ name: 'Edit', path: '/x/c.ts', id: 'e1' }] }),
-      asst({ ctx: 70_000, tools: [{ name: 'Edit', path: '/x/c.ts', id: 'e2' }] }), // immediate re-edit
+      user('p1', 'rewrite the same module twice in a row while the context is already elevated'),
+      asst({ ctx: 50_000, tools: [{ name: 'Read', path: '/x/a.ts' }] }),
+      asst({ ctx: 50_000, tools: [{ name: 'Read', path: '/x/b.ts' }] }),
+      asst({ ctx: 50_000, tools: [{ name: 'Edit', path: '/x/c.ts', id: 'e1' }] }),
+      asst({ ctx: 50_000, tools: [{ name: 'Edit', path: '/x/c.ts', id: 'e2' }] }), // immediate re-edit
     ];
     const buckets = sessionContextBuckets(parseTranscript('/tmp/fr.jsonl', raw(events), 'p')!)!;
     expect(buckets[1]!.frictionEvents).toBe(1);
