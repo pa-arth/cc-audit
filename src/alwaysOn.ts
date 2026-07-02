@@ -15,6 +15,7 @@ import { join } from 'node:path';
 import { autoMemoryTokens, countTokens, globalMemoryTokens, projectMemoryTokens } from './configFiles.js';
 import { detectConditionalContext, type ConditionalContextItem } from './conditionalContext.js';
 import { computePluginTax, type PluginInfo } from './pluginTax.js';
+import { collectSpawnStats, median } from './spawnStats.js';
 import { getAnthropicPricing } from './vendor/pricing.js';
 import type { Session } from './model.js';
 
@@ -96,13 +97,26 @@ export interface AlwaysOnTax {
    *  Reported separately, with an empirically observed read-rate when measurable. */
   conditionalContext: ConditionalContextItem[];
 
-  note: string;
-}
+  /** Subagent spawns per month (sidechain spans with ≥1 counted turn — both the
+   *  legacy inlined format and the separate agent-*.jsonl files). Every spawn
+   *  RE-WRITES the standing block at cache-write prices, so the per-token costing
+   *  above already folds a spawn write term into every USD field. Approximation
+   *  noted: the fold prices each component's own token count at the blended spawn
+   *  write rate; spawnTaxMonthlyUsd below is the precise observed number. */
+  spawnsPerMonth: number;
+  /** OBSERVED: median subagent turn-1 prefix (input + cache writes) — the standing
+   *  block a spawn re-writes. */
+  spawnPrefixTokens: number;
+  /** spawnPrefixTokens × spawnsPerMonth × blended cache-write rate. The observed
+   *  monthly cost of re-writing standing context on spawns (a slice of observed
+   *  spend, already inside the totals — not additional). */
+  spawnTaxMonthlyUsd: number;
+  /** Blended $/1M cache-read rate across turns (LOCAL-ONLY; reused by recommend.ts). */
+  cacheReadRatePerMTok: number;
+  /** Blended $/1M 5-min cache-write rate across turns (LOCAL-ONLY). */
+  cacheWriteRatePerMTok: number;
 
-function median(nums: number[]): number {
-  if (nums.length === 0) return 0;
-  const s = [...nums].sort((a, b) => a - b);
-  return s[Math.floor(s.length / 2)]!;
+  note: string;
 }
 
 /** One row per SKILL.md directly under a skills dir — the per-turn skill listing is
@@ -164,6 +178,8 @@ export function computeAlwaysOn(sessions: Session[]): AlwaysOnTax {
   let maxMtime = 0;
   let weightedRateNum = 0;
   let weightedRateDen = 0;
+  let weightedWriteNum = 0;
+  let weightedWriteDen = 0;
   let mcpSessions = 0;
 
   // Static, machine-level config (same for every session): user global CLAUDE.md
@@ -187,8 +203,13 @@ export function computeAlwaysOn(sessions: Session[]): AlwaysOnTax {
       minMtime = Math.min(minMtime, s.mtime);
       maxMtime = Math.max(maxMtime, s.mtime);
     }
-    const first = s.spans[0]?.turns[0];
-    if (first) prefixes.push(first.usage.input + first.usage.cacheWrite5m + first.usage.cacheWrite1h);
+    // Main-chain spans only: on CC v2.1.x each subagent transcript is a separate
+    // file that parses as its own all-sidechain Session, and there are typically
+    // several per main session — sampling spans[0] blindly would let subagent
+    // prefixes dominate the "observed standing context" median.
+    const firstMain = s.spans.find((sp) => !sp.isSidechain && sp.turns.length > 0)?.turns[0];
+    if (firstMain)
+      prefixes.push(firstMain.usage.input + firstMain.usage.cacheWrite5m + firstMain.usage.cacheWrite1h);
 
     let projMd = 0;
     if (s.cwd) {
@@ -207,6 +228,8 @@ export function computeAlwaysOn(sessions: Session[]): AlwaysOnTax {
         const p = t.model ? getAnthropicPricing(t.model) : null;
         weightedRateNum += p ? p.cacheRead : 0.4;
         weightedRateDen += 1;
+        weightedWriteNum += p ? p.cacheWrite5min : 5.0;
+        weightedWriteDen += 1;
         if (t.tools.some((x) => x.startsWith('mcp__'))) sawMcp = true;
       }
     }
@@ -218,7 +241,16 @@ export function computeAlwaysOn(sessions: Session[]): AlwaysOnTax {
   const windowDays = maxMtime > minMtime ? Math.max(1, (maxMtime - minMtime) / 86_400_000) : 1;
   const turnsPerMonth = (totalTurns / windowDays) * 30.44;
   const rate = weightedRateDen ? weightedRateNum / weightedRateDen : 0.4; // $/1M cache-read
-  const perTurnUsd = (tok: number) => (tok * turnsPerMonth * rate) / 1_000_000;
+  const writeRate = weightedWriteDen ? weightedWriteNum / weightedWriteDen : 5.0; // $/1M 5-min cache-write
+
+  // Standing context is cache-READ every turn AND cache-WRITTEN afresh on every
+  // subagent spawn (siblings don't share cache). One kernel prices both legs so
+  // every component field below stays mutually consistent.
+  const spawns = collectSpawnStats(sessions);
+  const spawnsPerMonth = (spawns.length / windowDays) * 30.44;
+  const spawnPrefixTokens = median(spawns.map((x) => x.prefixTok));
+  const perTurnUsd = (tok: number) =>
+    (tok * (turnsPerMonth * rate + spawnsPerMonth * writeRate)) / 1_000_000;
 
   const projectClaudeMdTokens = totalTurns ? projectTokenTurns / totalTurns : 0;
   const skillDescriptionTokens = userSkills.reduce((n, s) => n + s.descTokens, 0);
@@ -261,6 +293,11 @@ export function computeAlwaysOn(sessions: Session[]): AlwaysOnTax {
     mcpDeferred,
     mcpInvokedRate: sessions.length ? mcpSessions / sessions.length : 0,
     conditionalContext: detectConditionalContext(sessions),
+    spawnsPerMonth,
+    spawnPrefixTokens,
+    spawnTaxMonthlyUsd: (spawnPrefixTokens * spawnsPerMonth * writeRate) / 1_000_000,
+    cacheReadRatePerMTok: rate,
+    cacheWriteRatePerMTok: writeRate,
     note:
       'Always-on config = project memory (every CLAUDE.md + CLAUDE.local.md from cwd up to ' +
       'the repo root) + global memory + skill listings + enabled-plugin listings, measured from your files and cache-read ' +

@@ -200,6 +200,14 @@ export function renderReport(r: AuditResult, opts: { rows?: number } = {}): stri
         `(~${usd(a.observedMonthlyUsd)}/mo of spend)`,
     ),
     c.dim("  — the rest is FIXED system prompt + tool schemas you can't trim; see /context"),
+    ...(a.spawnsPerMonth > 0
+      ? wrap(
+          `subagent spawns re-WRITE that context: ${a.spawnsPerMonth.toFixed(1)}/mo × ` +
+            `~${Math.round(a.spawnPrefixTokens).toLocaleString()} tok at cache-write prices ` +
+            `(~${usd(a.spawnTaxMonthlyUsd)}/mo — folded into the totals above)`,
+          BOX_WIDTH - 2,
+        ).map((ln) => c.dim(ln))
+      : []),
     c.dim(`MCP: ${a.mcpServerCount} servers · ${mcpDesc} · invoked in ${pct(a.mcpInvokedRate)} of sessions`),
   ];
   // Conditional context — instructed reads that load only when Claude obeys, so they're
@@ -307,7 +315,9 @@ export function renderReport(r: AuditResult, opts: { rows?: number } = {}): stri
   const L = r.roiLedger;
   if (L.skills.length > 0 || L.mcp.length > 0) {
     const roiPerMo = (x: number) => (x / s.windowDays) * 30.44;
-    const roiRows = [c.dim(`${pad('skill', 22)} ${padL('carry/mo', 9)} ${padL('inv', 5)} ${padL('used/mo', 8)}  verdict`)];
+    const roiRows = [
+      c.dim(`${pad('skill', 18)} ${padL('carry/mo', 9)} ${padL('inv', 4)} ${padL('$/run', 7)} ${padL('used/mo', 8)}  verdict`),
+    ];
     for (const sk of L.skills.slice(0, rows)) {
       const tag =
         sk.verdict === 'dead-weight'
@@ -315,10 +325,11 @@ export function renderReport(r: AuditResult, opts: { rows?: number } = {}): stri
           : sk.verdict === 'heavy-but-earning'
             ? c.emerald('earning')
             : c.dim('fine');
-      const name = sk.lowConfidence ? c.dim(pad(sk.name, 22)) : pad(sk.name, 22);
+      const name = sk.lowConfidence ? c.dim(pad(sk.name, 18)) : pad(sk.name, 18);
+      const perRun = sk.usdPerRun === null ? c.dim(padL('—', 7)) : money(padL(usd(sk.usdPerRun), 7));
       roiRows.push(
         `${name} ${money(padL(usd(sk.carryUsdPerMonth) + '/mo', 9))} ` +
-          `${padL(String(sk.invocations), 5)} ${money(padL(usd(roiPerMo(sk.realizedUsd)), 8))}  ${tag}` +
+          `${padL(String(sk.invocations), 4)} ${perRun} ${money(padL(usd(roiPerMo(sk.realizedUsd)), 8))}  ${tag}` +
           (sk.lowConfidence ? c.dim(' (n<5)') : ''),
       );
     }

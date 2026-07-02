@@ -60,6 +60,22 @@ function alwaysOn(over: Partial<AlwaysOnTax> = {}): AlwaysOnTax {
     skillDescriptionUsd: 0,
     skillCount: 0,
     skillCarry: [],
+    pluginSkillTokens: 0,
+    pluginSkillUsd: 0,
+    pluginCommandTokens: 0,
+    pluginCommandUsd: 0,
+    pluginAgentTokens: 0,
+    pluginAgentUsd: 0,
+    pluginListingTokens: 0,
+    pluginListingUsd: 0,
+    pluginCount: 0,
+    unusedPluginCount: 0,
+    plugins: [],
+    spawnsPerMonth: 0,
+    spawnPrefixTokens: 0,
+    spawnTaxMonthlyUsd: 0,
+    cacheReadRatePerMTok: 0.4,
+    cacheWriteRatePerMTok: 5,
     mcpServerCount: 0,
     mcpServerNames: [],
     mcpDeferred: true,
@@ -116,6 +132,7 @@ describe('buildRoiLedger — skill join', () => {
     expect(r.viaCommand && r.viaSubagent && r.viaModelInvoked).toBe(true);
     expect(r.invocations).toBe(3 + 1 + 2); // command 3 + subagent 1 run + model-invoked 2
     expect(r.realizedUsd).toBeCloseTo(10 + 5 + 4);
+    expect(r.usdPerRun).toBeCloseTo(19 / 6); // price per press = realized / invocations
     expect(r.verdict).toBe('heavy-but-earning');
   });
 
@@ -140,6 +157,7 @@ describe('buildRoiLedger — skill join', () => {
     expect(r.verdict).toBe('dead-weight');
     expect(r.onDisk).toBe(true);
     expect(r.invocations).toBe(0);
+    expect(r.usdPerRun).toBeNull(); // carry-only row — no price per press
     expect(l.summary.deadWeightSkillCount).toBe(1);
     expect(l.summary.deadWeightSkillCarryUsdPerMonth).toBeCloseTo(0.73);
   });

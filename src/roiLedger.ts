@@ -12,6 +12,12 @@
 //
 // LOCAL-ONLY: skill/server names are custom (repo/org-shaped) and never leave the
 // machine. Only the counts-only `summary` is safe to aggregate (see aggregate.ts).
+//
+// Workflow note: workflow-spawned agents self-stamp `attributionSkill`, so a skill
+// that fans out via the Workflow tool (e.g. deep-research) already has that spend
+// inside realizedUsd / usdPerRun. Splitting the workflow portion out would need
+// attribute.ts to retain attributionAgent alongside the skill key — deferred; the
+// per-run price already surfaces workflow-heavy skills.
 
 import type { AlwaysOnTax } from './alwaysOn.js';
 import type { SpendBreakdown } from './attribute.js';
@@ -32,6 +38,10 @@ export interface SkillRoiRow {
   /** command.costUsd + subagent.costUsd + modelInvoked.spanUsdUpperBound (UPPER BOUND —
    *  the model-invoked share is the whole span, shared with other work). */
   realizedUsd: number;
+  /** Price per press: realizedUsd / invocations. Window-invariant (a ratio of two
+   *  window totals). null for carry-only rows (0 invocations). Inherits realizedUsd's
+   *  upper-bound caveat for model-invoked skills. */
+  usdPerRun: number | null;
   viaCommand: boolean;
   viaModelInvoked: boolean;
   viaSubagent: boolean;
@@ -59,7 +69,9 @@ export interface McpRoiRow {
 }
 
 export interface RoiLedger {
-  /** Sorted: dead-weight (by carry desc) → earning (by realized desc) → cheap. */
+  /** Sorted: dead-weight (by carry desc) first, then everything else by realized
+   *  spend desc — a $200/mo bundled skill (carry 0 → 'cheap-fine') must outrank a
+   *  $2/mo 'earning' row on the price board. */
   skills: SkillRoiRow[];
   /** Sorted: dead-weight first, then by invocations desc. */
   mcp: McpRoiRow[];
@@ -100,6 +112,7 @@ export function buildRoiLedger(spend: SpendBreakdown, alwaysOn: AlwaysOnTax, ses
       carryTokens: s.descTokens,
       invocations: 0,
       realizedUsd: 0,
+      usdPerRun: null,
       viaCommand: false,
       viaModelInvoked: false,
       viaSubagent: false,
@@ -124,6 +137,7 @@ export function buildRoiLedger(spend: SpendBreakdown, alwaysOn: AlwaysOnTax, ses
         carryTokens: 0,
         invocations: 0,
         realizedUsd: 0,
+        usdPerRun: null,
         viaCommand: false,
         viaModelInvoked: false,
         viaSubagent: false,
@@ -163,12 +177,14 @@ export function buildRoiLedger(spend: SpendBreakdown, alwaysOn: AlwaysOnTax, ses
     else if (r.carryUsdPerMonth >= HEAVY_CARRY_USD && r.invocations > 0) r.verdict = 'heavy-but-earning';
     else r.verdict = 'cheap-fine';
     r.lowConfidence = r.invocations > 0 && r.invocations < CONFIDENCE_MIN;
+    r.usdPerRun = r.invocations > 0 ? r.realizedUsd / r.invocations : null;
   }
 
-  const VERDICT_ORDER: Record<SkillVerdict, number> = { 'dead-weight': 0, 'heavy-but-earning': 1, 'cheap-fine': 2 };
   const skills = [...rows.values()].sort((a, b) => {
-    if (VERDICT_ORDER[a.verdict] !== VERDICT_ORDER[b.verdict]) return VERDICT_ORDER[a.verdict] - VERDICT_ORDER[b.verdict];
-    if (a.verdict === 'dead-weight') return b.carryUsdPerMonth - a.carryUsdPerMonth;
+    const aDead = a.verdict === 'dead-weight';
+    const bDead = b.verdict === 'dead-weight';
+    if (aDead !== bDead) return aDead ? -1 : 1;
+    if (aDead) return b.carryUsdPerMonth - a.carryUsdPerMonth;
     return b.realizedUsd - a.realizedUsd;
   });
 
