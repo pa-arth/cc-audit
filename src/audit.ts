@@ -7,7 +7,7 @@ import { computeContextHygiene, type ContextHygiene } from './contextHygiene.js'
 import { computeFluency, topRedundantFiles, type FluencySignals } from './fluency.js';
 import { buildRecommendations, type Recommendation } from './recommend.js';
 import { buildRoiLedger, type RoiLedger } from './roiLedger.js';
-import { computeTemporal, type TemporalProfile } from './temporal.js';
+import { computeTemporal, computeWeeklySpend, type TemporalProfile, type WeeklySpendBucket } from './temporal.js';
 import { computeFriction, type FrictionTaxonomy } from './friction.js';
 import { anonymizeTopSessions, topSessions, type TopSession } from './topSessions.js';
 import type { Session } from './model.js';
@@ -26,6 +26,9 @@ export interface AuditResult {
   temporal: TemporalProfile;
   /** Per-skill friction (tool-error / self-correction / retry-loop). */
   friction: FrictionTaxonomy;
+  /** Spend per trailing 7-day bucket, oldest→newest — the report's run-rate sparkline.
+   *  LOCAL-ONLY, never enters the aggregate. */
+  weeklySpend: WeeklySpendBucket[];
   /** Ranked, file-anchored next actions (the config-knob bridge). Local-only — paths
    *  here never enter the aggregate. */
   recommendations: Recommendation[];
@@ -51,8 +54,9 @@ export function runAudit(
   // ROI ledger must be built BEFORE recommendations — dead-weight skills/servers feed recs.
   const roiLedger = buildRoiLedger(spend, alwaysOn, sessions);
   const temporal = computeTemporal(sessions);
+  const weeklySpend = computeWeeklySpend(sessions, Date.parse(generatedAt));
   const friction = computeFriction(sessions);
-  const recommendations = buildRecommendations(spend, alwaysOn, sessions, roiLedger);
+  const recommendations = buildRecommendations(spend, alwaysOn, sessions, roiLedger, contextHygiene);
   const top = topSessions(sessions);
   // The leaderboard enters the UPLOADED aggregate ONLY on explicit opt-in, and even
   // then anonymized (no gist/project/raw $). Default: stays local in the TUI.
@@ -66,6 +70,7 @@ export function runAudit(
     roiLedger,
     temporal,
     friction,
+    weeklySpend,
     recommendations,
     aggregate,
     topSessions: top,

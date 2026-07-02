@@ -32,6 +32,7 @@ import { judgeFootprints, postReport, type RightSizingResult } from './judgeClie
 import { buildLabelSheet, renderScore, scoreLabels, type LabelRow } from './label.js';
 import { buildFluencySheet, renderBandSummary, summarizeBands, type FluencyLabelRow } from './labelFluency.js';
 import { renderFix, runFix } from './fix.js';
+import { computeDelta, readBaseline, windowKey, writeSnapshot } from './history.js';
 import { machineAnonId, openURL } from './open.js';
 import { isPremiumModel } from './pricing.js';
 import { type Aggressiveness, renderHygieneRefinement, renderReport, renderRightSizing } from './report.js';
@@ -423,11 +424,21 @@ async function run(): Promise<void> {
     : loadSessionsOrExit(args, interactive);
 
   const result = runAudit(sessions, new Date().toISOString(), { shareSessions: args.shareSessions });
+
+  // Run history (LOCAL, best-effort, silent — --json stdout purity holds by construction).
+  // An alternate --root corpus would pollute the ~/.cc-audit timeline, so history is off there.
+  const historyOn = !args.root;
+  const key = windowKey(args.sinceDays);
+  const today = new Date().toISOString().slice(0, 10);
+  const baseline = historyOn ? readBaseline(key, today) : undefined;
+  if (historyOn) writeSnapshot(result.aggregate, key, today);
+
   if (args.json) {
     process.stdout.write(`${JSON.stringify(result.aggregate, null, 2)}\n`);
     return;
   }
-  process.stdout.write(`${renderReport(result, { rows: args.rows })}\n`);
+  const delta = baseline ? computeDelta(baseline, result.aggregate) : historyOn ? ('first-run' as const) : undefined;
+  process.stdout.write(`${renderReport(result, { rows: args.rows, delta })}\n`);
 
   const premiumMonthlyUsd = result.spend.byModel
     .filter((m) => isPremiumModel(m.model))

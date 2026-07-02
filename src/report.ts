@@ -9,6 +9,8 @@ import type { RefinedHygiene } from './hygieneFootprint.js';
 import type { RightSizingResult } from './judgeClient.js';
 import { BOX_WIDTH, c, card, panel, rule, wrap } from './theme.js';
 import { localBand } from './fluency.js';
+import type { DeltaMetric, HistoryDelta } from './history.js';
+import { sparkline } from './topSessions.js';
 
 const usd = (n: number) => `$${n >= 100 ? Math.round(n).toLocaleString() : n.toFixed(2)}`;
 const pct = (n: number) => `${Math.round(n * 100)}%`;
@@ -36,31 +38,71 @@ export function renderHygieneRefinement(refined: RefinedHygiene, windowDays: num
   return ['', ...card('CONTEXT HYGIENE  ·  judged (stale vs. genuinely-needed context)', rows, c.gold), ''].join('\n');
 }
 
-export function renderReport(r: AuditResult, opts: { rows?: number } = {}): string {
+// Hand-rolled (not toLocaleDateString) so report assertions don't vary by locale.
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+const fmtDay = (isoDay: string): string => {
+  const [, m, d] = isoDay.split('-');
+  return `${MONTHS[Number(m) - 1] ?? isoDay} ${Number(d)}`;
+};
+
+// Run-over-run movement. All four delta metrics share one polarity: down = improved
+// (spend, avoidable carry, premium share, redundant-read rate) — ▼ emerald, ▲ red.
+function usdDelta(m: DeltaMetric): string {
+  const diff = m.cur - m.prev;
+  const base = `${usd(m.prev)}/mo → ${usd(m.cur)}/mo`;
+  if (Math.abs(diff) < 1 || (m.prev > 0 && Math.abs(diff) / m.prev < 0.02)) return `${base} ${c.dim('~flat')}`;
+  if (m.prev <= 0) return `${base} ${c.red('▲new')}`;
+  const rel = `${Math.round((Math.abs(diff) / m.prev) * 100)}%`;
+  return diff < 0 ? `${base} ${c.emerald(`▼${rel}`)}` : `${base} ${c.red(`▲${rel}`)}`;
+}
+
+function rateDelta(m: DeltaMetric): string {
+  const diffPt = Math.round((m.cur - m.prev) * 100);
+  const base = `${pct(m.prev)} → ${pct(m.cur)}`;
+  if (Math.abs(m.cur - m.prev) < 0.01) return `${base} ${c.dim('~flat')}`;
+  return diffPt < 0 ? `${base} ${c.emerald(`▼${-diffPt}pt`)}` : `${base} ${c.red(`▲${diffPt}pt`)}`;
+}
+
+export function renderReport(r: AuditResult, opts: { rows?: number; delta?: HistoryDelta | 'first-run' } = {}): string {
   const rows = opts.rows ?? 8;
   const s = r.spend;
   const out: string[] = [];
   const blank = () => out.push('');
+  const delta = typeof opts.delta === 'object' ? opts.delta : undefined;
 
   // ── Header ───────────────────────────────────────────────────────────────
-  blank();
-  out.push(
-    ...card(
-      'CLAUDE CODE · SPEND & FLUENCY AUDIT',
-      [
-        c.dim(
-          `${r.sessionCount} sessions · ${Math.round(s.windowDays)}d window · ` +
-            `judge layer: run with ${c.cyan('--judge')}${c.dim(' (hosted)')}`,
-        ),
-      ],
-      c.orange,
+  const headerRows = [
+    c.dim(
+      `${r.sessionCount} sessions · ${Math.round(s.windowDays)}d window · ` +
+        `judge layer: run with ${c.cyan('--judge')}${c.dim(' (hosted)')}`,
     ),
-  );
+  ];
+  if (delta) {
+    headerRows.push(
+      `${c.dim(`vs your ${fmtDay(delta.baselineDate)} audit:`)} avoidable carry ${usdDelta(delta.avoidableCarryPerMonthUsd)}`,
+      `${c.dim('premium share')} ${rateDelta(delta.premiumTurnShare)} ${c.dim('· redundant reads')} ${rateDelta(delta.redundantReadRate)}`,
+    );
+  } else if (opts.delta === 'first-run') {
+    headerRows.push(c.dim('first audit at this window — deltas appear on your next run'));
+  }
+  blank();
+  out.push(...card('CLAUDE CODE · SPEND & FLUENCY AUDIT', headerRows, c.orange));
 
   // ── Estimated spend (the headline number, in gold) ─────────────────────────
   const spendRows = [
     `${c.dim('estimated')}  ${c.bold(money(usd(s.perMonthUsd) + '/mo'))}   ${c.dim(`(${usd(s.totalUsd)} over window)`)}`,
   ];
+  if (delta) {
+    spendRows.push(`${c.dim(`vs ${fmtDay(delta.baselineDate)}:`)} ${usdDelta(delta.spendPerMonthUsd)}`);
+  }
+  if (r.weeklySpend.length >= 2 && r.weeklySpend.some((b) => b.usd > 0)) {
+    const complete = r.weeklySpend.filter((b) => b.complete);
+    const range = (complete.length >= 2 ? complete : r.weeklySpend).map((b) => b.usd);
+    spendRows.push(
+      `${c.dim('weekly')}  ${lever(sparkline(r.weeklySpend.map((b) => b.usd)))}  ` +
+        `${c.dim('run-rate')} ${usd(Math.min(...range))}–${usd(Math.max(...range))}${c.dim('/wk — the /mo figure extrapolates this')}`,
+    );
+  }
   if (s.unpricedShare > 0.02) {
     spendRows.push(c.amber(`⚠ ${pct(s.unpricedShare)} of spend used a fallback price (unknown model id)`));
   }
