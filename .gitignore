@@ -5,6 +5,11 @@ bundles/
 .DS_Store
 .cc-audit/
 
+# Secrets — never commit (repo is/going public)
+.env
+.env.*
+!.env.example
+
 # Local calibration artifacts — contain personal task gists, never commit
 /cc-audit-labels.json
 /relabeled.json
