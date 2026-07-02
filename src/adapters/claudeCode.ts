@@ -138,7 +138,16 @@ export function parseTranscript(
   // their own spans keyed by agentId and read the explicit attribution Claude Code
   // stamps on each row (attributionSkill / attributionAgent). Without this, ~15% of
   // spend (every subagent the skill spawned) lands namelessly in "regular sessions".
+  //
+  // Legacy transcripts (before agentId was stamped) inline all sidechain rows with
+  // no grouping key. Each spawn still BEGINS with its task instruction — a genuine-
+  // prompt user row — so we start a new anonymous span there instead of merging
+  // every spawn into one (which undercounted spawns and their setup tax). Parallel
+  // legacy spawns can interleave rows across these splits; that ambiguity is
+  // inherent to the old format, and sequential splitting is strictly better than
+  // one merged span.
   const subSpans = new Map<string, Span>();
+  let anonSeq = 0;
   const ensureSubSpan = (agentId: string): Span => {
     let s = subSpans.get(agentId);
     if (!s) {
@@ -205,7 +214,15 @@ export function parseTranscript(
       // A sidechain user row is the subagent's task instruction — route it to that
       // agent's span (not the main chain) and record what spawned it.
       if (d.isSidechain) {
-        const span = ensureSubSpan((d.agentId as string | undefined) ?? 'sidechain');
+        let key = d.agentId as string | undefined;
+        if (!key) {
+          // Anonymous (legacy) sidechain: a genuine-prompt user row is the next
+          // spawn's task instruction — open a fresh span for it. tool_result-only
+          // user rows stay with the current spawn.
+          if (isGenuinePrompt(text)) anonSeq += 1;
+          key = `sidechain-${anonSeq}`;
+        }
+        const span = ensureSubSpan(key);
         span.attributionSkill ??= (d.attributionSkill as string | undefined) ?? null;
         span.attributionAgent ??= (d.attributionAgent as string | undefined) ?? null;
         span.userTs ??= parseTs(d.timestamp);
@@ -280,7 +297,7 @@ export function parseTranscript(
       // ExitPlanMode means the user accepted the plan — subsequent turns run in normal mode.
       if (turn.tools.includes('ExitPlanMode')) curMode = 'normal';
       if (d.isSidechain) {
-        const span = ensureSubSpan((d.agentId as string | undefined) ?? 'sidechain');
+        const span = ensureSubSpan((d.agentId as string | undefined) ?? `sidechain-${anonSeq}`);
         span.attributionSkill ??= (d.attributionSkill as string | undefined) ?? null;
         span.attributionAgent ??= (d.attributionAgent as string | undefined) ?? null;
         span.turns.push(turn);

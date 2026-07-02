@@ -9,10 +9,14 @@
 import { getAnthropicPricing } from './vendor/pricing.js';
 import type { Session } from './model.js';
 
-/** Fallbacks for unknown models, consistent with alwaysOn's 0.4 $/1M cache-read:
- *  5-min cache-write = 12.5× read, uncached input = 10× read (standard multipliers). */
-const FALLBACK_WRITE_RATE = 5.0;
-const FALLBACK_INPUT_RATE = 4.0;
+/** Fallbacks for unknown models, one consistent family (standard multipliers off a
+ *  0.4 $/1M cache-read): input = 10× read, 5-min write = 1.25× input, 1h write = 2×
+ *  input. Exported so alwaysOn prices with the SAME fallbacks — keep in lockstep
+ *  with vendor/pricing.ts when rates change. */
+export const FALLBACK_READ_RATE = 0.4;
+export const FALLBACK_INPUT_RATE = 4.0;
+export const FALLBACK_WRITE_RATE = 5.0;
+export const FALLBACK_WRITE_1H_RATE = 8.0;
 
 /** One subagent spawn's token economics, extracted from its sidechain span. */
 export interface SpawnStat {
@@ -30,9 +34,11 @@ export interface SpawnStat {
   outTok: number;
   /** Model of the spawn's first turn (spawns rarely switch models mid-run). */
   model: string | null;
-  /** Fixed setup cost in USD: turn-1 write tokens at the model's 5-min cache-write
-   *  rate + turn-1 uncached input at the input rate. What the spawn burned before
-   *  doing any work — the cost inline execution would not have paid. */
+  /** Turn-1 cache writes in USD, each bucket at its own rate (5-min vs 1h). */
+  writeUsd: number;
+  /** Fixed setup cost in USD: writeUsd + turn-1 uncached input at the input rate.
+   *  What the spawn burned before doing any work — the cost inline execution would
+   *  not have paid. */
   setupUsd: number;
 }
 
@@ -65,10 +71,11 @@ export function collectSpawnStats(sessions: Session[]): SpawnStat[] {
         outTok += t.usage.output;
       }
       const p = t1.model ? getAnthropicPricing(t1.model) : null;
-      const setupUsd =
-        (writeTok * (p ? p.cacheWrite5min : FALLBACK_WRITE_RATE) +
-          inputTok * (p ? p.input : FALLBACK_INPUT_RATE)) /
+      const writeUsd =
+        (t1.usage.cacheWrite5m * (p ? p.cacheWrite5min : FALLBACK_WRITE_RATE) +
+          t1.usage.cacheWrite1h * (p ? p.cacheWrite1hr : FALLBACK_WRITE_1H_RATE)) /
         1_000_000;
+      const setupUsd = writeUsd + (inputTok * (p ? p.input : FALLBACK_INPUT_RATE)) / 1_000_000;
       out.push({
         prefixTok: inputTok + writeTok,
         writeTok,
@@ -76,6 +83,7 @@ export function collectSpawnStats(sessions: Session[]): SpawnStat[] {
         newTok,
         outTok,
         model: t1.model,
+        writeUsd,
         setupUsd,
       });
     }

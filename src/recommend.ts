@@ -16,7 +16,7 @@ import { join } from 'node:path';
 import { getAnthropicPricing } from './vendor/pricing.js';
 import { isPremiumModel } from './pricing.js';
 import { sessionRedundancy, topRedundantFiles } from './fluency.js';
-import { collectSpawnStats, median } from './spawnStats.js';
+import { FALLBACK_READ_RATE, collectSpawnStats, median } from './spawnStats.js';
 import type { AlwaysOnTax } from './alwaysOn.js';
 import type { SpendBreakdown } from './attribute.js';
 import type { RoiLedger } from './roiLedger.js';
@@ -260,7 +260,22 @@ export function buildRecommendations(
   const mainTurnCounts = sessions
     .map((s) => s.spans.filter((sp) => !sp.isSidechain).reduce((n, sp) => n + sp.turns.length, 0))
     .filter((n) => n > 0);
-  const readRate = alwaysOn.cacheReadRatePerMTok;
+  // MAIN-chain read rate only: the formula models carry saved in the main loop, and
+  // alwaysOn's blend includes sidechain turns — cheap-tier fan-out subagents would
+  // drag it down and inflate the breakeven several-fold.
+  let mainRateNum = 0;
+  let mainRateDen = 0;
+  for (const s of sessions) {
+    for (const sp of s.spans) {
+      if (sp.isSidechain) continue;
+      for (const t of sp.turns) {
+        const p = t.model ? getAnthropicPricing(t.model) : null;
+        mainRateNum += p ? p.cacheRead : FALLBACK_READ_RATE;
+        mainRateDen += 1;
+      }
+    }
+  }
+  const readRate = mainRateDen ? mainRateNum / mainRateDen : alwaysOn.cacheReadRatePerMTok;
   if (spawns.length >= 5 && mainTurnCounts.length > 0 && readRate > 0) {
     const remTurns = Math.max(1, Math.round(median(mainTurnCounts) / 2));
     const setupUsd = median(spawns.map((x) => x.setupUsd));

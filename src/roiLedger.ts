@@ -69,9 +69,11 @@ export interface McpRoiRow {
 }
 
 export interface RoiLedger {
-  /** Sorted: dead-weight (by carry desc) first, then everything else by realized
-   *  spend desc — a $200/mo bundled skill (carry 0 → 'cheap-fine') must outrank a
-   *  $2/mo 'earning' row on the price board. */
+  /** Sorted: dead-weight (by carry desc) first, then everything else by monthly
+   *  dollar weight = max(carry/mo, realized/mo). A $200/mo bundled skill (carry 0 →
+   *  'cheap-fine') must outrank a $2/mo 'earning' row on the price board, but a
+   *  heavy-carry earner must not sink below cheap high-realized rows either — both
+   *  are rows the user needs to see before the render slice cuts the table. */
   skills: SkillRoiRow[];
   /** Sorted: dead-weight first, then by invocations desc. */
   mcp: McpRoiRow[];
@@ -180,12 +182,14 @@ export function buildRoiLedger(spend: SpendBreakdown, alwaysOn: AlwaysOnTax, ses
     r.usdPerRun = r.invocations > 0 ? r.realizedUsd / r.invocations : null;
   }
 
+  const perMo = (windowUsd: number) => (windowUsd / Math.max(1, spend.windowDays)) * 30.44;
+  const dollarWeight = (r: SkillRoiRow) => Math.max(r.carryUsdPerMonth, perMo(r.realizedUsd));
   const skills = [...rows.values()].sort((a, b) => {
     const aDead = a.verdict === 'dead-weight';
     const bDead = b.verdict === 'dead-weight';
     if (aDead !== bDead) return aDead ? -1 : 1;
     if (aDead) return b.carryUsdPerMonth - a.carryUsdPerMonth;
-    return b.realizedUsd - a.realizedUsd;
+    return dollarWeight(b) - dollarWeight(a);
   });
 
   const mcp = buildMcpRows(spend, alwaysOn, sessions);

@@ -15,7 +15,7 @@ import { join } from 'node:path';
 import { autoMemoryTokens, countTokens, globalMemoryTokens, projectMemoryTokens } from './configFiles.js';
 import { detectConditionalContext, type ConditionalContextItem } from './conditionalContext.js';
 import { computePluginTax, type PluginInfo } from './pluginTax.js';
-import { collectSpawnStats, median } from './spawnStats.js';
+import { FALLBACK_READ_RATE, FALLBACK_WRITE_RATE, collectSpawnStats, median } from './spawnStats.js';
 import { getAnthropicPricing } from './vendor/pricing.js';
 import type { Session } from './model.js';
 
@@ -107,13 +107,15 @@ export interface AlwaysOnTax {
   /** OBSERVED: median subagent turn-1 prefix (input + cache writes) — the standing
    *  block a spawn re-writes. */
   spawnPrefixTokens: number;
-  /** spawnPrefixTokens × spawnsPerMonth × blended cache-write rate. The observed
-   *  monthly cost of re-writing standing context on spawns (a slice of observed
-   *  spend, already inside the totals — not additional). */
+  /** OBSERVED: total spawn setup cost per month — each spawn's turn-1 cache writes
+   *  (5-min and 1h buckets at their own model rates) + uncached input, summed and
+   *  monthly-normalized. A slice of observed spend, not additional. */
   spawnTaxMonthlyUsd: number;
   /** Blended $/1M cache-read rate across turns (LOCAL-ONLY; reused by recommend.ts). */
   cacheReadRatePerMTok: number;
-  /** Blended $/1M 5-min cache-write rate across turns (LOCAL-ONLY). */
+  /** $/1M cache-write rate the kernel prices spawn re-writes at: observed blend over
+   *  actual spawn write tokens (handles the 5-min/1h mix), falling back to the
+   *  turn-weighted 5-min rate when no spawns exist (LOCAL-ONLY). */
   cacheWriteRatePerMTok: number;
 
   note: string;
@@ -226,9 +228,9 @@ export function computeAlwaysOn(sessions: Session[]): AlwaysOnTax {
         totalTurns += 1;
         sessionTurns += 1;
         const p = t.model ? getAnthropicPricing(t.model) : null;
-        weightedRateNum += p ? p.cacheRead : 0.4;
+        weightedRateNum += p ? p.cacheRead : FALLBACK_READ_RATE;
         weightedRateDen += 1;
-        weightedWriteNum += p ? p.cacheWrite5min : 5.0;
+        weightedWriteNum += p ? p.cacheWrite5min : FALLBACK_WRITE_RATE;
         weightedWriteDen += 1;
         if (t.tools.some((x) => x.startsWith('mcp__'))) sawMcp = true;
       }
@@ -240,15 +242,24 @@ export function computeAlwaysOn(sessions: Session[]): AlwaysOnTax {
   const standing = median(prefixes);
   const windowDays = maxMtime > minMtime ? Math.max(1, (maxMtime - minMtime) / 86_400_000) : 1;
   const turnsPerMonth = (totalTurns / windowDays) * 30.44;
-  const rate = weightedRateDen ? weightedRateNum / weightedRateDen : 0.4; // $/1M cache-read
-  const writeRate = weightedWriteDen ? weightedWriteNum / weightedWriteDen : 5.0; // $/1M 5-min cache-write
+  const rate = weightedRateDen ? weightedRateNum / weightedRateDen : FALLBACK_READ_RATE; // $/1M cache-read
 
   // Standing context is cache-READ every turn AND cache-WRITTEN afresh on every
   // subagent spawn (siblings don't share cache). One kernel prices both legs so
-  // every component field below stays mutually consistent.
+  // every component field below stays mutually consistent. The write rate comes
+  // from the spawns' OWN write tokens (each 5-min/1h bucket at its model's rate),
+  // so the mix is priced correctly; the turn-weighted 5-min blend is only the
+  // no-spawns fallback (where the write leg is zero anyway).
   const spawns = collectSpawnStats(sessions);
   const spawnsPerMonth = (spawns.length / windowDays) * 30.44;
   const spawnPrefixTokens = median(spawns.map((x) => x.prefixTok));
+  const spawnWriteTok = spawns.reduce((n, x) => n + x.writeTok, 0);
+  const spawnWriteUsd = spawns.reduce((n, x) => n + x.writeUsd, 0);
+  const writeRate = spawnWriteTok
+    ? (spawnWriteUsd / spawnWriteTok) * 1_000_000
+    : weightedWriteDen
+      ? weightedWriteNum / weightedWriteDen
+      : FALLBACK_WRITE_RATE; // $/1M cache-write
   const perTurnUsd = (tok: number) =>
     (tok * (turnsPerMonth * rate + spawnsPerMonth * writeRate)) / 1_000_000;
 
@@ -295,7 +306,7 @@ export function computeAlwaysOn(sessions: Session[]): AlwaysOnTax {
     conditionalContext: detectConditionalContext(sessions),
     spawnsPerMonth,
     spawnPrefixTokens,
-    spawnTaxMonthlyUsd: (spawnPrefixTokens * spawnsPerMonth * writeRate) / 1_000_000,
+    spawnTaxMonthlyUsd: (spawns.reduce((n, x) => n + x.setupUsd, 0) / windowDays) * 30.44,
     cacheReadRatePerMTok: rate,
     cacheWriteRatePerMTok: writeRate,
     note:

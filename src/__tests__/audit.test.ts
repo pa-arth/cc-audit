@@ -398,9 +398,10 @@ describe('always-on tax: spawn economics (subagents re-WRITE the standing block)
   });
 
   it('prices the spawn re-write into the kernel and reports the spawn tax', () => {
-    // windowDays=1 → spawnsPerMonth = 1·30.44; writeRate = 6.25 (both turns Opus 4.8).
+    // windowDays=1 → spawnsPerMonth = 1·30.44; writeRate = 6.25 (spawn writes are all
+    // 5-min bucket on Opus 4.8). Spawn tax = observed setup cost, monthly-normalized.
     expect(a.spawnsPerMonth).toBeCloseTo(30.44, 6);
-    expect(a.spawnTaxMonthlyUsd).toBeCloseTo((17500 * 30.44 * 6.25) / 1e6, 6);
+    expect(a.spawnTaxMonthlyUsd).toBeCloseTo(0.10875 * 30.44, 6);
     // Kernel = read leg + write leg: 2 turns/window·$0.5 read + 1 spawn/window·$6.25 write.
     const perTok = (2 * 30.44 * 0.5 + 30.44 * 6.25) / 1e6;
     expect(a.observedMonthlyUsd).toBeCloseTo(11000 * perTok, 9);
@@ -449,6 +450,61 @@ describe('always-on tax: spawn economics (subagents re-WRITE the standing block)
     expect(mixed.standingContextTokens).toBe(11000);
     // But the spawn IS counted: two spawns now, median prefix = upper median.
     expect(collectSpawnStats([session, subSession])).toHaveLength(2);
+  });
+
+  it('prices 1h cache-write tokens at the 1h rate, not the 5-min rate', () => {
+    // Same spawn shape but the 17k write lands in the 1h bucket (Opus 4.8: $10 vs $6.25).
+    const FX_1H = [
+      { type: 'user', isSidechain: true, agentId: 'agentH', message: { content: 'subagent task with 1h cache' } },
+      {
+        type: 'assistant',
+        isSidechain: true,
+        agentId: 'agentH',
+        message: {
+          id: 'h1',
+          model: 'claude-opus-4-8',
+          usage: {
+            input_tokens: 500,
+            output_tokens: 300,
+            cache_read_input_tokens: 0,
+            cache_creation: { ephemeral_1h_input_tokens: 17000 },
+          },
+          content: [{ type: 'text', text: 'done' }],
+        },
+      },
+    ]
+      .map((e) => JSON.stringify(e))
+      .join('\n');
+    const s1h = parseTranscript('/tmp/agent-h.jsonl', FX_1H, 'p', new Set())!;
+    const sp = collectSpawnStats([s1h])[0]!;
+    expect(sp.writeUsd).toBeCloseTo((17000 * 10) / 1e6, 9); // 1h rate, not 6.25
+    expect(sp.setupUsd).toBeCloseTo((17000 * 10 + 500 * 5) / 1e6, 9);
+    // The kernel's write rate comes from the observed spawn mix → $10/MTok here.
+    expect(computeAlwaysOn([s1h]).cacheWriteRatePerMTok).toBeCloseTo(10, 9);
+  });
+
+  it('splits legacy agentId-less sidechain rows into one span per task instruction', () => {
+    const legacyTurn = (id: string) => ({
+      type: 'assistant',
+      isSidechain: true,
+      message: {
+        id,
+        model: 'claude-opus-4-8',
+        usage: { input_tokens: 400, output_tokens: 200, cache_read_input_tokens: 0, cache_creation_input_tokens: 9000 },
+        content: [{ type: 'text', text: 'ok' }],
+      },
+    });
+    const LEGACY = [
+      { type: 'user', isSidechain: true, message: { content: 'first spawned task, go do it' } },
+      legacyTurn('lg1'),
+      { type: 'user', isSidechain: true, message: { content: 'second spawned task, different job' } },
+      legacyTurn('lg2'),
+    ]
+      .map((e) => JSON.stringify(e))
+      .join('\n');
+    const s = parseTranscript('/tmp/legacy.jsonl', LEGACY, 'p', new Set())!;
+    // Two task instructions ⇒ two spawns, not one merged 'sidechain' span.
+    expect(collectSpawnStats([s])).toHaveLength(2);
   });
 
   it('does not double-count a spawn logged in both the parent file and a subagent file', () => {

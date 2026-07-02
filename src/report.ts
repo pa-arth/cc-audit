@@ -204,7 +204,8 @@ export function renderReport(r: AuditResult, opts: { rows?: number } = {}): stri
       ? wrap(
           `subagent spawns re-WRITE that context: ${a.spawnsPerMonth.toFixed(1)}/mo × ` +
             `~${Math.round(a.spawnPrefixTokens).toLocaleString()} tok at cache-write prices ` +
-            `(~${usd(a.spawnTaxMonthlyUsd)}/mo — folded into the totals above)`,
+            `(~${usd(a.spawnTaxMonthlyUsd)}/mo of observed spend; the totals above ` +
+            `approximate it from your config/standing size)`,
           BOX_WIDTH - 2,
         ).map((ln) => c.dim(ln))
       : []),
@@ -316,7 +317,7 @@ export function renderReport(r: AuditResult, opts: { rows?: number } = {}): stri
   if (L.skills.length > 0 || L.mcp.length > 0) {
     const roiPerMo = (x: number) => (x / s.windowDays) * 30.44;
     const roiRows = [
-      c.dim(`${pad('skill', 18)} ${padL('carry/mo', 9)} ${padL('inv', 4)} ${padL('$/run', 7)} ${padL('used/mo', 8)}  verdict`),
+      c.dim(`${pad('skill', 20)} ${padL('carry/mo', 9)} ${padL('inv', 5)} ${padL('$/run', 7)} ${padL('used/mo', 8)}  verdict`),
     ];
     for (const sk of L.skills.slice(0, rows)) {
       const tag =
@@ -325,11 +326,11 @@ export function renderReport(r: AuditResult, opts: { rows?: number } = {}): stri
           : sk.verdict === 'heavy-but-earning'
             ? c.emerald('earning')
             : c.dim('fine');
-      const name = sk.lowConfidence ? c.dim(pad(sk.name, 18)) : pad(sk.name, 18);
+      const name = sk.lowConfidence ? c.dim(pad(sk.name, 20)) : pad(sk.name, 20);
       const perRun = sk.usdPerRun === null ? c.dim(padL('—', 7)) : money(padL(usd(sk.usdPerRun), 7));
       roiRows.push(
         `${name} ${money(padL(usd(sk.carryUsdPerMonth) + '/mo', 9))} ` +
-          `${padL(String(sk.invocations), 4)} ${perRun} ${money(padL(usd(roiPerMo(sk.realizedUsd)), 8))}  ${tag}` +
+          `${padL(String(sk.invocations), 5)} ${perRun} ${money(padL(usd(roiPerMo(sk.realizedUsd)), 8))}  ${tag}` +
           (sk.lowConfidence ? c.dim(' (n<5)') : ''),
       );
     }

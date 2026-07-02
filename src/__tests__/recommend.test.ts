@@ -126,6 +126,28 @@ describe('delegation-breakeven recommendation', () => {
     expect(rec.monthlyUsdSaved).toBeCloseTo(((3 * 0.10875) / 15) * 30.44, 4);
   });
 
+  it('uses the MAIN-chain read rate, not a blend dragged down by cheap subagent turns', () => {
+    // Main chain on Opus (cacheRead $0.5); spawns on Haiku. If the rate were blended
+    // over ALL turns, the many Haiku sidechain turns (cacheRead $0.1) would inflate
+    // the breakeven ~5x. Haiku setup = (17000·$1.25 + 500·$1)/1e6 = $0.02175 →
+    // breakeven = 0.02175e6/(10 × 0.5) = 4,350 tok → "≳4k tok".
+    const haiku = 'claude-haiku-4-5-20251001';
+    const haikuHollow = () => span([turn({ input: 500, cacheWrite5m: 17000, output: 500 }, haiku)], true);
+    const haikuEarning = () =>
+      span(
+        [turn({ input: 500, cacheWrite5m: 17000, output: 2000 }, haiku), turn({ input: 60000, output: 3000 }, haiku)],
+        true,
+      );
+    const sessions = [
+      mainSession(),
+      session('spawns', [haikuHollow(), haikuHollow(), haikuHollow(), haikuEarning(), haikuEarning(), haikuEarning()]),
+    ];
+    const recs = buildRecommendations(spendStub({ windowDays: 1 }), alwaysOnStub(), sessions, roi);
+    const rec = recs.find((r) => r.kind === 'subagent-policy')!;
+    expect(rec).toBeTruthy();
+    expect(rec.action).toContain('≳4k tok'); // main-chain 0.5 rate; a blend would give ~≳15k+
+  });
+
   it('stays silent below 5 spawns (confidence floor)', () => {
     const sessions = [
       mainSession(),
