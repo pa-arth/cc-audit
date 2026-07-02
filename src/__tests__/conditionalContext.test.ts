@@ -1,7 +1,7 @@
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, it, expect } from 'vitest';
+import { afterAll, beforeAll, describe, it, expect } from 'vitest';
 import { parseTranscript } from '../adapters/claudeCode.js';
 import { detectConditionalContext } from '../conditionalContext.js';
 
@@ -40,6 +40,22 @@ function makeSession(
 }
 
 describe('conditional-context detector (Bug 2: "read X before Y")', () => {
+  // The detector also scans the REAL user config (~/.claude/CLAUDE.md + ~/.claude/skills)
+  // via homedir() — on a machine whose installed skills contain "see references/x.md"
+  // instructions, those leak into every result and break the toHaveLength(0) assertions.
+  // Isolate $HOME like consent.test.ts so only each test's fixtures are in scope.
+  const home0 = process.env.HOME;
+  let home: string;
+  beforeAll(() => {
+    home = mkdtempSync(join(tmpdir(), 'cc-audit-cond-home-'));
+    process.env.HOME = home; // os.homedir() reads $HOME on POSIX → isolates ~/.claude
+  });
+  afterAll(() => {
+    if (home0 === undefined) delete process.env.HOME;
+    else process.env.HOME = home0;
+    rmSync(home, { recursive: true, force: true });
+  });
+
   it('detects an imperative file ref and counts the referenced file via the gateway', () => {
     const proj = mkdtempSync(join(tmpdir(), 'cc-cond-'));
     writeFileSync(join(proj, 'CLAUDE.md'), 'Read ERRORS.md before making any changes.\n');
