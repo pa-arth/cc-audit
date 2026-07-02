@@ -32,6 +32,8 @@ import { judgeFootprints, postReport, type RightSizingResult } from './judgeClie
 import { buildLabelSheet, renderScore, scoreLabels, type LabelRow } from './label.js';
 import { buildFluencySheet, renderBandSummary, summarizeBands, type FluencyLabelRow } from './labelFluency.js';
 import { renderFix, runFix } from './fix.js';
+import { DAILY_CAP, spendToday } from './fixClient.js';
+import { getInstallKey } from './installKey.js';
 import { machineAnonId, openURL } from './open.js';
 import { isPremiumModel } from './pricing.js';
 import { type Aggressiveness, renderHygieneRefinement, renderReport, renderRightSizing } from './report.js';
@@ -98,7 +100,7 @@ function parseArgs(argv: string[]): Args {
           '      Score your filled sheet vs the judge: precision (gate ≥90%), recall, confusion.\n' +
           '  cc-audit fix [--since-days N] [--root DIR]\n' +
           '      Turn recommendations into REVIEWABLE patches under ./.cc-audit/ (never applied):\n' +
-          '      local model-pin edits + a hosted CLAUDE.md trim (spends credits, daily-capped).\n' +
+          '      local model-pin edits + a hosted CLAUDE.md trim (spends credits; usage-capped per install).\n' +
           '  cc-audit --version\n' +
           '      Print the installed version. A bare run also warns (on stderr) when a newer\n' +
           '      version is published — silence with CC_AUDIT_NO_UPDATE_CHECK=1.\n',
@@ -192,14 +194,25 @@ async function runFixCmd(args: Args): Promise<void> {
   const interactive = isInteractive(args.json);
   await ensureLocalReadConsent(interactive);
   const sessions = loadSessionsOrExit(args, interactive);
+  const today = new Date().toISOString().slice(0, 10);
   const result = runAudit(sessions, new Date().toISOString());
   const hasTrim = result.recommendations.some((r) => r.kind === 'trim-config' && r.file);
+  // The CLAUDE.md trim is the only egress step. Generate/persist the install key only
+  // when we're actually going to send — a no-trim run stays fully local.
+  const installKey = hasTrim ? getInstallKey() : undefined;
   if (hasTrim) {
-    process.stderr.write('Generating a CLAUDE.md trim via the hosted config-review (spends credits, daily-capped)…\n');
+    // Surface exactly what leaves the machine: your CLAUDE.md content + a persistent
+    // install key (identifies this install for the daily cap / dedup — never your code,
+    // prompts, or paths). Same copy interactive vs. non-interactive so they can't drift.
+    const disclosure =
+      'The CLAUDE.md trim sends your CLAUDE.md content + a persistent install key\n' +
+      '(identifies this install for the daily cap — never your code, prompts, or paths)\n' +
+      `to the hosted config-review. Spends credits · ~${spendToday(today)} of ${DAILY_CAP} today.`;
+    if (interactive) p.log.message(disclosure);
+    else process.stderr.write(`${disclosure}\n`);
   }
   try {
-    const today = new Date().toISOString().slice(0, 10);
-    const proposals = await runFix(result.recommendations, today);
+    const proposals = await runFix(result.recommendations, today, { installKey });
     process.stdout.write(renderFix(proposals));
   } catch (err) {
     process.stderr.write(`fix failed: ${err instanceof Error ? err.message : String(err)}\n`);

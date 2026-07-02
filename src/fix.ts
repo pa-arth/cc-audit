@@ -59,7 +59,7 @@ function writeProposal(realFile: string, content: string): string {
 export async function runFix(
   recommendations: Recommendation[],
   today: string,
-  opts: { apiBase?: string } = {},
+  opts: { apiBase?: string; installKey?: string } = {},
 ): Promise<FixProposal[]> {
   const proposals: FixProposal[] = [];
 
@@ -86,7 +86,13 @@ export async function runFix(
       // (offline, cap hit, timeout) discard the local model-pin patches above.
       let rewrite;
       try {
-        rewrite = await requestConfigRewrite([{ path: 'CLAUDE.md', content }], today, opts.apiBase);
+        rewrite = await requestConfigRewrite(
+          [{ path: 'CLAUDE.md', content }],
+          today,
+          opts.apiBase,
+          undefined,
+          opts.installKey,
+        );
       } catch (err) {
         proposals.push({
           kind: 'config-trim',

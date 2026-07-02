@@ -1,9 +1,9 @@
 import { existsSync, mkdtempSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterAll, beforeAll, describe, it, expect } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, it, expect, vi } from 'vitest';
 import { frontmatterModelPatch, renderFix, runFix, type FixProposal } from '../fix.js';
-import { checkSpendCap, recordSpend } from '../fixClient.js';
+import { checkSpendCap, recordSpend, requestConfigRewrite, spendToday } from '../fixClient.js';
 import type { Recommendation } from '../recommend.js';
 
 describe('frontmatterModelPatch', () => {
@@ -84,7 +84,77 @@ describe('spend-cap accounting (no lockout on transient failure)', () => {
     recordSpend(day, 3);
     recordSpend(day, 3);
     recordSpend(day, 3);
-    expect(() => checkSpendCap(day, 3)).toThrow(/cap reached/);
+    expect(() => checkSpendCap(day, 3)).toThrow(/backstop reached/);
+  });
+
+  it('demoted: the default local check does not block at the old 10/day cap', () => {
+    const day = '2026-06-19-c';
+    for (let i = 0; i < 12; i++) recordSpend(day); // well past the display cap of 10
+    expect(spendToday(day)).toBe(12); // counter keeps climbing toward the backstop
+    expect(() => checkSpendCap(day)).not.toThrow(); // default (backstop) still allows it
+  });
+
+  it('the loose local backstop (default 50) still blocks a runaway', () => {
+    const day = '2026-06-19-d';
+    for (let i = 0; i < 50; i++) recordSpend(day);
+    expect(spendToday(day)).toBe(50);
+    expect(() => checkSpendCap(day)).toThrow(/backstop reached/);
+  });
+});
+
+describe('requestConfigRewrite egress (X-Install-Key + server cap)', () => {
+  const home0 = process.env.HOME;
+  let home: string;
+  beforeAll(() => {
+    home = mkdtempSync(join(tmpdir(), 'cc-audit-egress-'));
+    process.env.HOME = home; // isolate the backstop counter file
+  });
+  afterAll(() => {
+    if (home0 === undefined) delete process.env.HOME;
+    else process.env.HOME = home0;
+    rmSync(home, { recursive: true, force: true });
+  });
+  afterEach(() => vi.unstubAllGlobals());
+
+  const files = [{ path: 'CLAUDE.md', content: 'x' }];
+
+  it('sends x-install-key on both the POST and the poll GET', async () => {
+    const calls: Array<{ url: string; init?: RequestInit }> = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string, init?: RequestInit) => {
+        calls.push({ url: String(url), init });
+        if (String(url).endsWith('/v1/public/config-review')) {
+          return { ok: true, status: 202, json: async () => ({ sessionId: 's1' }) } as unknown as Response;
+        }
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ status: 'done', report: { rewrite: null } }),
+        } as unknown as Response;
+      }),
+    );
+    vi.useFakeTimers();
+    const pending = requestConfigRewrite(files, '2026-06-20-a', 'https://api.test', 'claude_code', 'KEY-123');
+    await vi.runAllTimersAsync(); // flush the poll's sleep()
+    const result = await pending;
+    vi.useRealTimers();
+
+    expect(result).toBeNull();
+    expect(calls).toHaveLength(2);
+    const header = (init?: RequestInit) => (init?.headers as Record<string, string> | undefined)?.['x-install-key'];
+    expect(header(calls[0]!.init)).toBe('KEY-123'); // POST
+    expect(header(calls[1]!.init)).toBe('KEY-123'); // poll GET
+  });
+
+  it('maps a server 429 to a clean "server-enforced" message (no raw status dump)', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({ ok: false, status: 429, text: async () => 'rate limited' }) as unknown as Response),
+    );
+    await expect(
+      requestConfigRewrite(files, '2026-06-20-b', 'https://api.test', 'claude_code', 'KEY-123'),
+    ).rejects.toThrow(/server-enforced/);
   });
 });
 
