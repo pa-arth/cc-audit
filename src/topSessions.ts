@@ -65,7 +65,7 @@ function sparkline(values: number[]): string {
 
 function spanCost(span: Span): number {
   let usd = 0;
-  for (const t of span.turns) usd += turnCostUsd(t.model, t.usage).usd;
+  for (const t of span.turns) usd += turnCostUsd(t.model, t.usage, t.ts).usd;
   return usd;
 }
 
@@ -135,7 +135,7 @@ export function topSessions(sessions: Session[], n = 5): TopSession[] {
     for (const span of s.spans) {
       for (const t of span.turns) {
         // Cost counts ALL turns (incl. subagents); structure summarizes the main chain.
-        costUsd += turnCostUsd(t.model, t.usage).usd;
+        costUsd += turnCostUsd(t.model, t.usage, t.ts).usd;
         turns += 1;
         const m = t.model ?? 'unknown';
         modelTurns.set(m, (modelTurns.get(m) ?? 0) + 1);

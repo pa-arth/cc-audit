@@ -125,7 +125,7 @@ function overdueRuns(seg: AssistantTurn[], offset: number): Omit<OverdueCompactE
       const ctx = contextTokens(seg[j]!);
       peak = Math.max(peak, ctx);
       // Carry attributable to the tokens above the line (the part a compaction sheds).
-      avoid += turnCarryUsd(seg[j]!.model, seg[j]!.usage) * ((ctx - OVERDUE_TOKENS) / ctx);
+      avoid += turnCarryUsd(seg[j]!.model, seg[j]!.usage, seg[j]!.ts) * ((ctx - OVERDUE_TOKENS) / ctx);
       j += 1;
     }
     const len = j - i;
@@ -168,7 +168,7 @@ function staleSwitches(seg: AssistantTurn[], offset: number): Omit<StaleCarrySwi
       for (let m = k; m < Math.min(seg.length, k + STALE_ATTRIB_TURNS); m += 1) {
         const ctx = contextTokens(seg[m]!);
         if (ctx <= 0) continue;
-        avoid += turnCarryUsd(seg[m]!.model, seg[m]!.usage) * Math.min(1, stale / ctx);
+        avoid += turnCarryUsd(seg[m]!.model, seg[m]!.usage, seg[m]!.ts) * Math.min(1, stale / ctx);
       }
       out.push({ atTurn: offset + k + 1, staleTokens: stale, avoidableUsd: avoid });
       k += WS_WINDOW; // don't re-detect the same rotation

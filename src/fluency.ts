@@ -73,8 +73,8 @@ const PLAN_MODE_VALUES = new Set(['plan', 'plan-mode', 'planning']);
 /** USD this turn paid to CARRY context — everything billed except generated output.
  *  Carrying the transcript (re-read every turn) dominates an agentic bill; we report
  *  it as an honest share, never as a fabricated "waste" number. */
-export function turnCarryUsd(model: string | null, u: TurnUsage): number {
-  return turnCostUsd(model, { ...u, output: 0 }).usd;
+export function turnCarryUsd(model: string | null, u: TurnUsage, ts?: number | null): number {
+  return turnCostUsd(model, { ...u, output: 0 }, ts).usd;
 }
 
 // A Read re-injects a file's content into context; Edit/Write also put it there. A Read
@@ -222,9 +222,9 @@ export function computeFluency(sessions: Session[]): FluencySignals {
       // Builder-profile signals are operator habits — own chain only.
       let spanAsked = false;
       for (const t of span.turns) {
-        const usd = turnCostUsd(t.model, t.usage).usd;
+        const usd = turnCostUsd(t.model, t.usage, t.ts).usd;
         totalCost += usd;
-        carryUsd += turnCarryUsd(t.model, t.usage); // carry = the whole bill, incl. subagents
+        carryUsd += turnCarryUsd(t.model, t.usage, t.ts); // carry = the whole bill, incl. subagents
         if (t.model) models.add(t.model);
         if (span.isSidechain) {
           subagentCost += usd;
@@ -352,7 +352,7 @@ export function computeSessionFluencySignals(session: Session): SessionFluencySi
     if (!span.isSidechain) turnsPerTask.push(span.turns.length);
     let spanAsked = false;
     for (const t of span.turns) {
-      const usd = turnCostUsd(t.model, t.usage).usd;
+      const usd = turnCostUsd(t.model, t.usage, t.ts).usd;
       totalCost += usd;
       if (t.model) models.add(t.model);
       if (span.isSidechain) subagentCost += usd;
