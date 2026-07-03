@@ -1,0 +1,110 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 860 580" width="860" height="580" font-family="ui-monospace, 'SF Mono', 'JetBrains Mono', 'Fira Code', Menlo, Consolas, monospace" role="img" aria-label="cc-audit terminal demo: local Claude Code spend and fluency audit">
+  <title>cc-audit — local Claude Code spend &amp; fluency audit</title>
+  <defs>
+    <style>
+      /* Reveal timeline — one 15s loop, per-line keyframes so the stagger
+         survives every iteration (animation-delay only offsets the first). */
+      .l { animation-duration: 15s; animation-iteration-count: infinite; animation-timing-function: cubic-bezier(.2,.7,.2,1); }
+      .l1 { animation-name: k1 } .l2 { animation-name: k2 } .l3 { animation-name: k3 }
+      .l4 { animation-name: k4 } .l5 { animation-name: k5 } .l6 { animation-name: k6 }
+      .l7 { animation-name: k7 } .l8 { animation-name: k8 } .l9 { animation-name: k9 }
+
+      @keyframes k1 { 0%,9%{opacity:0;transform:translateY(6px)}  11%{opacity:1;transform:translateY(0)} 95%{opacity:1}100%{opacity:0} }
+      @keyframes k2 { 0%,13%{opacity:0;transform:translateY(6px)} 15%{opacity:1;transform:translateY(0)} 95%{opacity:1}100%{opacity:0} }
+      @keyframes k3 { 0%,18%{opacity:0;transform:translateY(6px)} 20%{opacity:1;transform:translateY(0)} 95%{opacity:1}100%{opacity:0} }
+      @keyframes k4 { 0%,23%{opacity:0;transform:translateY(6px)} 25%{opacity:1;transform:translateY(0)} 95%{opacity:1}100%{opacity:0} }
+      @keyframes k5 { 0%,29%{opacity:0;transform:translateY(6px)} 31%{opacity:1;transform:translateY(0)} 95%{opacity:1}100%{opacity:0} }
+      @keyframes k6 { 0%,33%{opacity:0;transform:translateY(6px)} 35%{opacity:1;transform:translateY(0)} 95%{opacity:1}100%{opacity:0} }
+      @keyframes k7 { 0%,39%{opacity:0;transform:translateY(6px)} 41%{opacity:1;transform:translateY(0)} 95%{opacity:1}100%{opacity:0} }
+      @keyframes k8 { 0%,44%{opacity:0;transform:translateY(6px)} 46%{opacity:1;transform:translateY(0)} 95%{opacity:1}100%{opacity:0} }
+      @keyframes k9 { 0%,51%{opacity:0;transform:translateY(6px)} 53%{opacity:1;transform:translateY(0)} 95%{opacity:1}100%{opacity:0} }
+
+      /* Command types in like a real terminal. */
+      .cmd { animation: type 15s steps(31, end) infinite; }
+      @keyframes type { 0%{clip-path:inset(0 100% 0 0)} 8%{clip-path:inset(0 0 0 0)} 95%{clip-path:inset(0 0 0 0)} 100%{clip-path:inset(0 100% 0 0)} }
+      .caret { animation: blink 1.06s steps(1) infinite; }
+      @keyframes blink { 0%,50%{opacity:1} 50.01%,100%{opacity:0} }
+
+      text { font-size: 14px; }
+      .dim { fill:#7d8694 } .fg { fill:#c9d1d9 }
+      .org { fill:#f28c28 } .gold { fill:#ffcb6b } .bdr { fill:#bf6f2c }
+      .em { fill:#10b981 } .amb { fill:#f59e0b } .cyan { fill:#22d3ee }
+      .b { font-weight:700 }
+      .fr { fill:none; stroke-opacity:.55 }
+      .mask { fill:#0d1017 }
+
+      @media (prefers-reduced-motion: reduce) {
+        .l, .cmd, .caret { animation: none !important; opacity: 1 !important; }
+        .cmd { clip-path: none !important; }
+      }
+    </style>
+  </defs>
+
+  <!-- window -->
+  <rect x="1" y="1" width="858" height="578" rx="13" fill="#0d1017" stroke="#232833" stroke-width="1.5"/>
+  <circle cx="26" cy="27" r="6" fill="#ff5f56"/>
+  <circle cx="47" cy="27" r="6" fill="#ffbd2e"/>
+  <circle cx="68" cy="27" r="6" fill="#27c93f"/>
+  <text x="430" y="32" text-anchor="middle" class="dim" font-size="13">cc-audit — spend &amp; fluency audit</text>
+  <line x1="0" y1="52" x2="860" y2="52" stroke="#1a1f29"/>
+
+  <!-- command + typewriter -->
+  <text x="30" y="88" xml:space="preserve"><tspan class="cyan b">~/cc-audit</tspan><tspan class="dim"> % </tspan><tspan class="fg cmd">npx @promptster/cc-audit</tspan></text>
+  <rect class="caret" x="336" y="76" width="9" height="16" fill="#c9d1d9"/>
+
+  <!-- scan -->
+  <g class="l l1"><text x="30" y="114" xml:space="preserve"><tspan class="cyan">◇</tspan><tspan class="dim">  Scanning ~/.claude transcripts</tspan></text></g>
+
+  <!-- HEADER card (orange) -->
+  <g class="l l2">
+    <rect class="fr" x="30" y="124" width="800" height="50" rx="7" stroke="#f28c28"/>
+    <rect class="mask" x="46" y="117" width="286" height="14"/>
+    <text x="52" y="130" class="org b" xml:space="preserve">CLAUDE CODE · SPEND &amp; FLUENCY AUDIT</text>
+    <text x="46" y="156" xml:space="preserve"><tspan class="dim">965 sessions · 30d window · run </tspan><tspan class="cyan">--judge</tspan><tspan class="dim"> (hosted)</tspan></text>
+  </g>
+
+  <!-- ESTIMATED SPEND card (gold) -->
+  <g class="l l3">
+    <rect class="fr" x="30" y="182" width="800" height="50" rx="7" stroke="#ffcb6b"/>
+    <rect class="mask" x="46" y="175" width="136" height="14"/>
+    <text x="52" y="188" class="gold b" xml:space="preserve">ESTIMATED SPEND</text>
+    <text x="46" y="214" xml:space="preserve"><tspan class="dim">estimated  </tspan><tspan class="gold b" font-size="16">$4,220/mo</tspan><tspan class="dim">   ($4,159 over window)</tspan></text>
+  </g>
+
+  <!-- BY MODEL card (muted-orange) -->
+  <g class="l l4">
+    <rect class="fr" x="30" y="240" width="800" height="90" rx="7" stroke="#bf6f2c"/>
+    <rect class="mask" x="46" y="233" width="84" height="14"/>
+    <text x="52" y="246" class="bdr b" xml:space="preserve">BY MODEL</text>
+    <text x="46" y="272" xml:space="preserve"><tspan class="fg">opus-4-8          </tspan><tspan class="gold">  $2,980/mo</tspan><tspan class="dim">   </tspan><tspan class="cyan"> 71%</tspan></text>
+    <text x="46" y="294" xml:space="preserve"><tspan class="fg">fable-5           </tspan><tspan class="gold">  $1,120/mo</tspan><tspan class="dim">   </tspan><tspan class="cyan"> 27%</tspan></text>
+    <text x="46" y="316" xml:space="preserve"><tspan class="fg">sonnet-4-6        </tspan><tspan class="gold">  $62.46/mo</tspan><tspan class="dim">   </tspan><tspan class="cyan">  1%</tspan></text>
+  </g>
+
+  <!-- FIXABLE WASTE (plain) -->
+  <g class="l l5"><text x="46" y="352" xml:space="preserve"><tspan class="org b">FIXABLE WASTE</tspan><tspan class="dim">  — no-tradeoff cuts first</tspan></text></g>
+
+  <!-- (1) ALWAYS-ON CONTEXT TAX (emerald panel — left rail, no right wall) -->
+  <g class="l l6">
+    <rect x="30" y="362" width="3" height="92" fill="#10b981"/>
+    <text x="44" y="376" xml:space="preserve"><tspan class="em b">① ALWAYS-ON CONTEXT TAX</tspan><tspan class="dim">  ·  what your standing context costs</tspan></text>
+    <text x="44" y="398" xml:space="preserve"><tspan class="dim">project memory   </tspan><tspan class="fg">7,371 tok</tspan><tspan class="dim">   </tspan><tspan class="gold">$110/mo</tspan><tspan class="dim">  ← CLAUDE.md + auto-memory</tspan></text>
+    <text x="44" y="420" xml:space="preserve"><tspan class="dim">global memory    </tspan><tspan class="fg">1,693 tok</tspan><tspan class="dim">   </tspan><tspan class="gold">$25.27/mo</tspan><tspan class="dim"> → ~/.claude/CLAUDE.md</tspan></text>
+    <text x="44" y="442" xml:space="preserve"><tspan class="em">your config adds ≈ </tspan><tspan class="em b">$145/mo</tspan><tspan class="em"> of standing context</tspan></text>
+  </g>
+
+  <!-- FLUENCY one-liner (cyan) -->
+  <g class="l l7"><text x="46" y="474" xml:space="preserve"><tspan class="dim">self-band: </tspan><tspan class="cyan b">Strong</tspan><tspan class="dim">  ·  context carry </tspan><tspan class="gold">$3,596/mo</tspan><tspan class="dim"> (85% of bill)  ·  premium </tspan><tspan class="cyan">97%</tspan></text></g>
+
+  <!-- NEXT ACTIONS card (gold) -->
+  <g class="l l8">
+    <rect class="fr" x="30" y="484" width="800" height="70" rx="7" stroke="#ffcb6b"/>
+    <rect class="mask" x="46" y="477" width="330" height="14"/>
+    <text x="52" y="490" class="gold b" xml:space="preserve">NEXT ACTIONS · ranked by est. $/mo saved</text>
+    <text x="46" y="514" xml:space="preserve"><tspan class="fg b">1.</tspan><tspan class="dim"> [</tspan><tspan class="gold b">~$149/mo</tspan><tspan class="dim">] deep-research subagents cost 213/mo on fable-5</tspan></text>
+    <text x="46" y="536" xml:space="preserve"><tspan class="fg b">2.</tspan><tspan class="dim"> [</tspan><tspan class="gold b">~$99.90/mo</tspan><tspan class="dim">] general-purpose subagents cost 250/mo on opus-4-8</tspan></text>
+  </g>
+
+  <!-- prompt -->
+  <g class="l l9"><text x="30" y="570" xml:space="preserve"><tspan class="cyan">◆</tspan><tspan class="fg">  Right-size 25 sessions?   </tspan><tspan class="em">●</tspan><tspan class="fg"> Yes</tspan><tspan class="dim">   ○ No</tspan></text></g>
+</svg>

@@ -155,7 +155,7 @@ export function computeTemporal(sessions: Session[]): TemporalProfile {
           const hour = new Date(t.ts).getHours();
           const bucket = hourHistogram[hour]!;
           bucket.turns += 1;
-          bucket.usd += turnCostUsd(t.model, t.usage).usd;
+          bucket.usd += turnCostUsd(t.model, t.usage, t.ts).usd;
           minStart = Math.min(minStart, t.ts);
         }
         const end = turnEnd(t.ts, t.toolResultTs);

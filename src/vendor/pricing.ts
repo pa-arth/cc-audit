@@ -1,5 +1,7 @@
 // ---------------------------------------------------------------------------
 // VENDORED from @promptster/config-cost (packages/config-cost/src/pricing.ts).
+// Last synced: 2026-07-02 via scripts/sync-pricing.mjs — do not hand-edit; re-run
+// the script against a fresh backend checkout instead.
 //
 // ⚠️  DRIFT RISK — this is a hand-copied mirror, not a package dependency.
 // When this repo was split out of the promptster-backend monorepo, config-cost
@@ -11,8 +13,11 @@
 // this file (follow-up — see README "Vendored pricing").
 //
 // Until then: if Anthropic/OpenAI pricing changes, update this file AND the
-// upstream config-cost table together. The litellm-drift test in config-cost is
-// the canonical guard; this mirror has no such guard, so keep them in lockstep.
+// upstream config-cost table together. Two guards keep them in lockstep:
+//   - src/__tests__/pricingDrift.test.ts — the litellm-drift test (ported from
+//     config-cost) cross-checks these tables against LiteLLM's pricing DB in CI.
+//   - scripts/sync-pricing.mjs — re-copies this file from a sibling backend
+//     checkout (see MAINTAINING.md "Vendored pricing").
 //
 // Mirrored verbatim (no edits) so a future re-sync is a straight file copy.
 // ---------------------------------------------------------------------------
@@ -35,6 +40,8 @@ export interface ComputeCostParams {
   cacheReadTokens?: number;
   /** Defaults to 5min cache write rate (most common for per-request caching) */
   cacheWriteTokens?: number;
+  /** Turn timestamp — selects dated introductory pricing when applicable. */
+  at?: Date;
 }
 
 // Static pricing table (verified April 2026).
@@ -43,6 +50,14 @@ export interface ComputeCostParams {
 export const ANTHROPIC_PRICING: Record<string, AnthropicModelPricing> = {
   // ── Claude Fable 5 (verified June 2026: $10/$50, standard cache multipliers) ──
   'claude-fable-5': {
+    input: 10,
+    output: 50,
+    cacheRead: 1,
+    cacheWrite5min: 12.5,
+    cacheWrite1hr: 20,
+  },
+  // ── Claude Mythos 5 (limited availability; same rates as claude-fable-5) ──
+  'claude-mythos-5': {
     input: 10,
     output: 50,
     cacheRead: 1,
@@ -63,6 +78,15 @@ export const ANTHROPIC_PRICING: Record<string, AnthropicModelPricing> = {
     cacheRead: 0.5,
     cacheWrite5min: 6.25,
     cacheWrite1hr: 10,
+  },
+  // ── Claude Sonnet 5 (steady-state rates; intro pricing is handled by the
+  // dated INTRO_PRICING override below) ──
+  'claude-sonnet-5': {
+    input: 3,
+    output: 15,
+    cacheRead: 0.3,
+    cacheWrite5min: 3.75,
+    cacheWrite1hr: 6,
   },
   // ── Claude 4.6 ──
   'claude-opus-4-6': {
@@ -145,25 +169,68 @@ export const ANTHROPIC_PRICING: Record<string, AnthropicModelPricing> = {
 
 const SONNET_FALLBACK = ANTHROPIC_PRICING['claude-sonnet-4-6']!;
 
+// Models with dated introductory pricing. Anthropic bills by the date usage
+// occurred; since we recompute historical cost from stored tokens, pick the tier
+// by the turn's timestamp — a flat table entry would reprice old usage at the new
+// rate. `until` is the first instant the steady-state (base-table) rate applies.
+// After the cutoff these entries go inert and can be removed.
+const INTRO_PRICING: Array<{ model: string; until: number; rates: AnthropicModelPricing }> = [
+  {
+    model: 'claude-sonnet-5',
+    until: Date.UTC(2026, 8, 1), // Sept 1 2026 00:00 UTC (month is 0-indexed: 8 = September)
+    rates: { input: 2, output: 10, cacheRead: 0.2, cacheWrite5min: 2.5, cacheWrite1hr: 4 },
+  },
+];
+
 /**
  * Look up static Anthropic pricing for a model ID.
  * Tries: exact match → strip vendor prefix → prefix match (ignore date suffix).
  * Returns null if not an Anthropic model.
+ *
+ * When `at` is supplied and falls before a model's dated introductory cutoff,
+ * the introductory rate is returned instead of the steady-state base entry.
+ * Omitting `at` always yields the steady-state (forward-looking) rate.
  */
-export function getAnthropicPricing(model: string): AnthropicModelPricing | null {
-  // 1. Exact match
-  if (ANTHROPIC_PRICING[model]) return ANTHROPIC_PRICING[model];
-
-  // 2. Strip vendor prefix (e.g. "anthropic/claude-sonnet-4-6")
+export function getAnthropicPricing(model: string, at?: Date): AnthropicModelPricing | null {
+  // Resolve the BASE (steady-state) entry first, tracking the canonical table
+  // key it resolved to so the intro override below can match on that key rather
+  // than on a fuzzy string prefix.
   const stripped = model.replace(/^[^/]+\//, '');
-  if (stripped !== model && ANTHROPIC_PRICING[stripped]) return ANTHROPIC_PRICING[stripped];
-
-  // 3. Prefix match — handle dated variants (e.g. "claude-opus-4-6-20260301")
-  for (const key of Object.keys(ANTHROPIC_PRICING)) {
-    if (stripped.startsWith(key)) return ANTHROPIC_PRICING[key] ?? null;
+  let base: AnthropicModelPricing | null = null;
+  let matchedKey: string | null = null;
+  if (ANTHROPIC_PRICING[model]) {
+    base = ANTHROPIC_PRICING[model]!;
+    matchedKey = model;
+  } else if (stripped !== model && ANTHROPIC_PRICING[stripped]) {
+    base = ANTHROPIC_PRICING[stripped]!;
+    matchedKey = stripped;
+  } else {
+    // Prefix match — handle dated variants (e.g. "claude-opus-4-6-20260301").
+    // Longest key first so the most specific prefix wins (mirrors getOpenAIPricing).
+    for (const key of Object.keys(ANTHROPIC_PRICING).sort((a, b) => b.length - a.length)) {
+      if (stripped.startsWith(key)) {
+        base = ANTHROPIC_PRICING[key] ?? null;
+        matchedKey = key;
+        break;
+      }
+    }
   }
 
-  return null;
+  if (!base) return null;
+
+  // Apply a dated introductory override only when a timestamp is supplied and it
+  // is before the cutoff. Match on the resolved canonical key, NOT a string
+  // prefix: a dated variant (e.g. "claude-sonnet-5-20260901") resolves to the
+  // "claude-sonnet-5" key and gets intro pricing, but a distinct sibling model
+  // (e.g. a future "claude-sonnet-5-mini" with its own table entry) exact-matches
+  // its own key and is never swept into Sonnet 5's introductory rates.
+  if (at) {
+    for (const entry of INTRO_PRICING) {
+      if (matchedKey === entry.model && at.getTime() < entry.until) return entry.rates;
+    }
+  }
+
+  return base;
 }
 
 /**
@@ -172,7 +239,7 @@ export function getAnthropicPricing(model: string): AnthropicModelPricing | null
  * Cache write tokens use the 5-minute rate by default.
  */
 export function computeCost(params: ComputeCostParams): number {
-  const p = getAnthropicPricing(params.model) ?? SONNET_FALLBACK;
+  const p = getAnthropicPricing(params.model, params.at) ?? SONNET_FALLBACK;
   return (
     (params.inputTokens * p.input +
       params.outputTokens * p.output +

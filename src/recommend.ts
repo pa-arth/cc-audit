@@ -16,6 +16,7 @@ import { join } from 'node:path';
 import { getAnthropicPricing } from './vendor/pricing.js';
 import { isPremiumModel } from './pricing.js';
 import { sessionRedundancy, topRedundantFiles } from './fluency.js';
+import { FALLBACK_READ_RATE, collectSpawnStats, median } from './spawnStats.js';
 import type { AlwaysOnTax } from './alwaysOn.js';
 import type { SpendBreakdown } from './attribute.js';
 import type { ContextHygiene } from './contextHygiene.js';
@@ -53,7 +54,7 @@ function tierRatio(currentModel: string, target = DEFAULT_TARGET): number {
 }
 
 /** First on-disk SKILL.md for a skill name: user dir, then any session project dir. */
-function locateSkillFile(name: string, cwds: string[]): string | null {
+export function locateSkillFile(name: string, cwds: string[]): string | null {
   const base = name.includes(':') ? name.split(':').pop()! : name;
   const candidates = [
     join(homedir(), '.claude', 'skills', base, 'SKILL.md'),
@@ -269,6 +270,61 @@ export function buildRecommendations(
         `Run \`cc-audit fix\` to generate a statusline script that warns when live context ` +
         `crosses the compact threshold — reviewable under ./.cc-audit/, never auto-applied.`,
     });
+  }
+
+  // 10) Delegation breakeven — every spawn re-writes the standing block at cache-WRITE
+  //    prices before doing any work, so delegation only pays off when the task keeps
+  //    enough tokens out of the main loop to beat that fixed setup. Derived entirely
+  //    from the user's own spawns. Parent linkage is unavailable (subagent transcripts
+  //    are separate files), so "remaining main-chain turns" is an ASSUMPTION — half the
+  //    median main-session turn count — and the text says so.
+  const spawns = collectSpawnStats(sessions);
+  const mainTurnCounts = sessions
+    .map((s) => s.spans.filter((sp) => !sp.isSidechain).reduce((n, sp) => n + sp.turns.length, 0))
+    .filter((n) => n > 0);
+  // MAIN-chain read rate only: the formula models carry saved in the main loop, and
+  // alwaysOn's blend includes sidechain turns — cheap-tier fan-out subagents would
+  // drag it down and inflate the breakeven several-fold.
+  let mainRateNum = 0;
+  let mainRateDen = 0;
+  for (const s of sessions) {
+    for (const sp of s.spans) {
+      if (sp.isSidechain) continue;
+      for (const t of sp.turns) {
+        const p = t.model ? getAnthropicPricing(t.model) : null;
+        mainRateNum += p ? p.cacheRead : FALLBACK_READ_RATE;
+        mainRateDen += 1;
+      }
+    }
+  }
+  const readRate = mainRateDen ? mainRateNum / mainRateDen : alwaysOn.cacheReadRatePerMTok;
+  if (spawns.length >= 5 && mainTurnCounts.length > 0 && readRate > 0) {
+    const remTurns = Math.max(1, Math.round(median(mainTurnCounts) / 2));
+    const setupUsd = median(spawns.map((x) => x.setupUsd));
+    // Carry saved by keeping T tokens out of the main loop ≈ T × remTurns × readRate;
+    // solve for the T where that equals one spawn's setup cost.
+    const breakevenTok = (setupUsd * 1_000_000) / (remTurns * readRate);
+    const hollow = spawns.filter(
+      (x) =>
+        x.newTok - x.prefixTok < breakevenTok ||
+        (x.outTok < 2000 && x.prefixTok / Math.max(1, x.newTok) > 0.4),
+    );
+    // Conservative saving: only the setup cost inline execution would not have paid.
+    const savedMo = perMo(hollow.reduce((n, x) => n + x.setupUsd, 0));
+    if (hollow.length > 0 && savedMo >= 0.5 && setupUsd > 0) {
+      recs.push({
+        kind: 'subagent-policy',
+        title: `${hollow.length} of ${spawns.length} subagent spawns didn't repay their setup`,
+        monthlyUsdSaved: savedMo,
+        file: null,
+        action:
+          `Each spawn re-writes ~${Math.round(median(spawns.map((x) => x.prefixTok)) / 1000)}k tok of standing ` +
+          `context at cache-WRITE prices (≈$${setupUsd.toFixed(2)}/spawn). Delegate when the task will chew ` +
+          `through ≳${Math.round(breakevenTok / 1000)}k tok — below that, run it inline or batch several ` +
+          `checks into one agent. (Estimate: assumes a delegation saves carry for ~${remTurns} remaining ` +
+          `main-chain turns — half your median session.)`,
+      });
+    }
   }
 
   return recs.sort((a, b) => b.monthlyUsdSaved - a.monthlyUsdSaved);

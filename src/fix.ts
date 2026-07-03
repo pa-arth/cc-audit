@@ -16,6 +16,7 @@ import {
   readUserSettings,
 } from './contextGuard.js';
 import { requestConfigRewrite } from './fixClient.js';
+import { getInstallKey } from './installKey.js';
 import type { Recommendation } from './recommend.js';
 import { BOX_WIDTH, c, panel, wrap } from './theme.js';
 
@@ -67,17 +68,102 @@ function writeProposal(realFile: string, content: string): string {
   return out;
 }
 
+/** The hosted config-review only ever reviews a project CLAUDE.md. Other trim-config
+ *  recs (dead-weight SKILL.md, plugin/MCP rows with no file) are local advice — their
+ *  content must NOT be sent to the rewrite endpoint or burn daily-cap slots. */
+export function isHostedTrimCandidate(rec: Recommendation): boolean {
+  return rec.kind === 'trim-config' && !!rec.file && basename(rec.file) === 'CLAUDE.md' && existsSync(rec.file);
+}
+
+/** Local model-pin patches — pure file edits, no network, no spend. */
+export function buildModelPinProposals(recommendations: Recommendation[]): FixProposal[] {
+  const proposals: FixProposal[] = [];
+  for (const rec of recommendations) {
+    if (rec.kind !== 'model-pin' || !rec.file || !existsSync(rec.file)) continue;
+    const patched = frontmatterModelPatch(readFileSync(rec.file, 'utf8'));
+    if (!patched) continue; // already pinned / no editable frontmatter
+    const proposalFile = writeProposal(rec.file, patched);
+    proposals.push({
+      kind: 'model-pin',
+      title: rec.title,
+      realFile: rec.file,
+      proposalFile,
+      monthlyUsdSaved: rec.monthlyUsdSaved,
+      safe: true,
+      caution: null,
+      summary: '+ model: sonnet  (frontmatter)',
+    });
+  }
+  return proposals;
+}
+
+/** The hosted CLAUDE.md rewrite — the only network/spend step. A failure (offline,
+ *  cap hit, timeout) is returned as a `(skipped)` proposal, never thrown, so callers
+ *  can't lose their local patches to it. Caller gates via isHostedTrimCandidate. */
+export async function buildConfigTrimProposal(
+  rec: Recommendation,
+  today: string,
+  apiBase?: string,
+  installKey?: string,
+): Promise<FixProposal | null> {
+  let rewrite;
+  try {
+    // Read inside the try: a filesystem error (perms, file removed after the
+    // isHostedTrimCandidate check, symlink loop) must surface as a (skipped) proposal,
+    // not throw out of the function — the Promise.allSettled caller never inspects rejections.
+    const content = readFileSync(rec.file!, 'utf8');
+    // Resolve the install key at the actual send site — this function is only reached
+    // for a real hosted-trim candidate, so the key is generated/persisted only on egress.
+    rewrite = await requestConfigRewrite(
+      [{ path: 'CLAUDE.md', content }],
+      today,
+      apiBase,
+      undefined,
+      installKey ?? getInstallKey(),
+    );
+  } catch (err) {
+    return {
+      kind: 'config-trim',
+      title: rec.title,
+      realFile: rec.file!,
+      proposalFile: '(skipped)',
+      monthlyUsdSaved: 0,
+      safe: true,
+      caution: `rewrite unavailable: ${err instanceof Error ? err.message : String(err)}`,
+      summary: 'config-review did not run',
+    };
+  }
+  if (!rewrite) return null; // engine produced no rewrite
+  const proposalFile = writeProposal(rec.file!, rewrite.after);
+  const saved = -rewrite.projectedMonthlyUsdDelta; // delta is after-before (negative = saving)
+  // safety may be absent (older artifact / skipped cross-check) — treat missing
+  // as UNVERIFIED so we never present an unchecked rewrite as safe.
+  const safety = rewrite.safety;
+  const safe = safety?.verified === true;
+  return {
+    kind: 'config-trim',
+    title: rec.title,
+    realFile: rec.file!,
+    proposalFile,
+    monthlyUsdSaved: saved > 0 ? saved : 0,
+    safe,
+    caution: safe
+      ? null
+      : `may drop: ${safety?.droppedImperatives?.slice(0, 5).join(', ') || safety?.warnings?.[0] || 'safety not reported'}`,
+    summary: `${rewrite.beforeAlwaysOnTokens.toLocaleString()} → ${rewrite.afterAlwaysOnTokens.toLocaleString()} tok`,
+  };
+}
+
 /** Build reviewable patches from the recommendations that have a concrete file edit. */
 export async function runFix(
   recommendations: Recommendation[],
   today: string,
-  opts: { apiBase?: string } = {},
+  opts: { apiBase?: string; installKey?: string } = {},
 ): Promise<FixProposal[]> {
-  const proposals: FixProposal[] = [];
-
+  const proposals: FixProposal[] = buildModelPinProposals(recommendations);
   for (const rec of recommendations) {
     // Guardrail first — its target (~/.claude/settings.json) may not exist yet, so it
-    // must not fall through the existsSync gate below. Pure local: no network, no cap.
+    // must not fall through the isHostedTrimCandidate gate below. Pure local: no network, no cap.
     if (rec.kind === 'context-guardrail') {
       const settings = readUserSettings();
       const existing = existingStatusLineCommand(settings.parsed);
@@ -104,62 +190,11 @@ export async function runFix(
       });
       continue;
     }
-    if (!rec.file || !existsSync(rec.file)) continue;
-
-    if (rec.kind === 'model-pin') {
-      const patched = frontmatterModelPatch(readFileSync(rec.file, 'utf8'));
-      if (!patched) continue; // already pinned / no editable frontmatter
-      const proposalFile = writeProposal(rec.file, patched);
-      proposals.push({
-        kind: 'model-pin',
-        title: rec.title,
-        realFile: rec.file,
-        proposalFile,
-        monthlyUsdSaved: rec.monthlyUsdSaved,
-        safe: true,
-        caution: null,
-        summary: '+ model: sonnet  (frontmatter)',
-      });
-    } else if (rec.kind === 'trim-config') {
-      const content = readFileSync(rec.file, 'utf8');
-      // The hosted rewrite is the only network/spend step — never let its failure
-      // (offline, cap hit, timeout) discard the local model-pin patches above.
-      let rewrite;
-      try {
-        rewrite = await requestConfigRewrite([{ path: 'CLAUDE.md', content }], today, opts.apiBase);
-      } catch (err) {
-        proposals.push({
-          kind: 'config-trim',
-          title: rec.title,
-          realFile: rec.file,
-          proposalFile: '(skipped)',
-          monthlyUsdSaved: 0,
-          safe: true,
-          caution: `rewrite unavailable: ${err instanceof Error ? err.message : String(err)}`,
-          summary: 'config-review did not run',
-        });
-        continue;
-      }
-      if (!rewrite) continue; // engine produced no rewrite
-      const proposalFile = writeProposal(rec.file, rewrite.after);
-      const saved = -rewrite.projectedMonthlyUsdDelta; // delta is after-before (negative = saving)
-      // safety may be absent (older artifact / skipped cross-check) — treat missing
-      // as UNVERIFIED so we never present an unchecked rewrite as safe.
-      const safety = rewrite.safety;
-      const safe = safety?.verified === true;
-      proposals.push({
-        kind: 'config-trim',
-        title: rec.title,
-        realFile: rec.file,
-        proposalFile,
-        monthlyUsdSaved: saved > 0 ? saved : 0,
-        safe,
-        caution: safe
-          ? null
-          : `may drop: ${safety?.droppedImperatives?.slice(0, 5).join(', ') || safety?.warnings?.[0] || 'safety not reported'}`,
-        summary: `${rewrite.beforeAlwaysOnTokens.toLocaleString()} → ${rewrite.afterAlwaysOnTokens.toLocaleString()} tok`,
-      });
-    }
+    // Local model-pin patches are handled by buildModelPinProposals above; the only
+    // remaining file edit is the hosted CLAUDE.md trim (gated + install-key threaded).
+    if (!isHostedTrimCandidate(rec)) continue;
+    const trim = await buildConfigTrimProposal(rec, today, opts.apiBase, opts.installKey);
+    if (trim) proposals.push(trim);
   }
   return proposals;
 }

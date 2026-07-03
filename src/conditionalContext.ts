@@ -20,6 +20,7 @@ import { readdirSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { readConfigFile, resolveConfigRef, sanitizeUntrusted, stripCode } from './configFiles.js';
+import { median } from './spawnStats.js';
 import type { Session } from './model.js';
 
 /** Below this many relevant sessions, "fraction that read X" is statistical noise
@@ -38,6 +39,12 @@ export interface ConditionalContextItem {
   file: string;
   /** Tokens that file adds to context when the instruction is followed. */
   tokens: number;
+  /** The matched instruction text itself (sanitized, whitespace-collapsed) — what the
+   *  user would cut. LOCAL-ONLY: never uploaded (aggregate.ts consumes counts only). */
+  instruction: string;
+  /** Absolute path of the config file the instruction lives in — the file to edit.
+   *  LOCAL-ONLY: never uploaded (aggregate.ts consumes counts only). */
+  sourcePath: string;
   /** Where the instruction lives. A skill body is DOUBLE-conditional: it loads only
    *  when the skill is invoked, and the read happens only if Claude then obeys — so
    *  its confirmation denominator is sessions that invoked the skill, not all sessions. */
@@ -61,11 +68,6 @@ export interface ConditionalContextItem {
 // "read the README" (no ext) and "see section 2.1" (resolves to nothing) are dropped.
 const INSTRUCTION_RE =
   /\b(?:read|consult|review|check|see|follow|refer to|look at|load|open)\b[^\n]{0,40}?([~./\w-]*[\w-]+\.[A-Za-z]{1,6})\b/gi;
-
-function median(nums: number[]): number {
-  const s = [...nums].sort((a, b) => a - b);
-  return s[Math.floor(s.length / 2)]!;
-}
 
 /** 1-based index of the first turn in the session that Read `file` (by basename), or
  *  null if it was never read. */
@@ -108,8 +110,8 @@ function scanRefsInText(
   fromDir: string,
   trustRoots: string[],
   selfReal: string | null,
-): { file: string; tokens: number }[] {
-  const out = new Map<string, number>(); // basename -> tokens
+): { file: string; tokens: number; instruction: string }[] {
+  const out = new Map<string, { tokens: number; instruction: string }>(); // basename -> first match
   let processed = 0;
   for (const m of stripCode(text).matchAll(INSTRUCTION_RE)) {
     if (processed >= MAX_REFS_PER_FILE) break;
@@ -119,18 +121,21 @@ function scanRefsInText(
     const ref = readConfigFile(resolved, trustRoots);
     if (!ref || ref.tokens === 0) continue; // doesn't exist / empty ⇒ not a real ref
     if (selfReal && ref.real === selfReal) continue; // self-reference (e.g. "read this file")
-    // INVARIANT: this basename comes from an untrusted config file and flows into the
-    // report, so it passes the sanitizer before it ever becomes output — no newlines
-    // or instruction markers can ride along, even if the on-disk name is hostile.
+    // INVARIANT: the basename AND the matched instruction come from an untrusted config
+    // file and flow into the report, so both pass the sanitizer before they ever become
+    // output — no newlines or instruction markers can ride along, even if hostile.
     const base = sanitizeUntrusted(basename(resolved));
     if (!base) continue;
-    if (!out.has(base)) out.set(base, ref.tokens);
+    if (!out.has(base)) out.set(base, { tokens: ref.tokens, instruction: sanitizeUntrusted(m[0]!) });
   }
-  return [...out].map(([file, tokens]) => ({ file, tokens }));
+  return [...out].map(([file, v]) => ({ file, tokens: v.tokens, instruction: v.instruction }));
 }
 
 /** Imperative refs in one CLAUDE.md (read through the gateway). */
-function scanForRefs(configPath: string, trustRoots: string[]): { file: string; tokens: number }[] {
+function scanForRefs(
+  configPath: string,
+  trustRoots: string[],
+): { file: string; tokens: number; instruction: string }[] {
   const f = readConfigFile(configPath, trustRoots);
   if (!f || f.text === null) return []; // missing, or untrusted/oversize (can't scan safely)
   return scanRefsInText(f.text, dirname(configPath), trustRoots, f.real);
@@ -183,7 +188,7 @@ function scanSkillsDir(
     const invoked = sessionsInvoking(scopeSessions, rawName, e.name);
     for (const r of refs) {
       if (items.length >= MAX_ITEMS) return;
-      items.push({ ...r, source: 'skill', project, skill: display, ...confirm(invoked, r.file) });
+      items.push({ ...r, sourcePath: skillPath, source: 'skill', project, skill: display, ...confirm(invoked, r.file) });
     }
   }
 }
@@ -196,8 +201,9 @@ export function detectConditionalContext(sessions: Session[]): ConditionalContex
   const items: ConditionalContextItem[] = [];
 
   // Global CLAUDE.md instructions apply to EVERY session, so confirm across all.
-  for (const r of scanForRefs(join(claudeDir, 'CLAUDE.md'), [claudeDir])) {
-    items.push({ ...r, source: 'global-claude-md', project: null, skill: null, ...confirm(sessions, r.file) });
+  const globalMd = join(claudeDir, 'CLAUDE.md');
+  for (const r of scanForRefs(globalMd, [claudeDir])) {
+    items.push({ ...r, sourcePath: globalMd, source: 'global-claude-md', project: null, skill: null, ...confirm(sessions, r.file) });
   }
   // User skills (~/.claude/skills) — trusted, invokable from any project.
   scanSkillsDir(join(claudeDir, 'skills'), [claudeDir], sessions, null, items);
@@ -213,8 +219,9 @@ export function detectConditionalContext(sessions: Session[]): ConditionalContex
   for (const [cwd, group] of byCwd) {
     if (items.length >= MAX_ITEMS) break;
     const project = group[0]!.project;
-    for (const r of scanForRefs(join(cwd, 'CLAUDE.md'), [cwd, claudeDir])) {
-      items.push({ ...r, source: 'project-claude-md', project, skill: null, ...confirm(group, r.file) });
+    const projectMd = join(cwd, 'CLAUDE.md');
+    for (const r of scanForRefs(projectMd, [cwd, claudeDir])) {
+      items.push({ ...r, sourcePath: projectMd, source: 'project-claude-md', project, skill: null, ...confirm(group, r.file) });
     }
     scanSkillsDir(join(cwd, '.claude', 'skills'), [cwd, claudeDir], group, project, items);
   }

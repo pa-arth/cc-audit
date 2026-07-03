@@ -2,13 +2,14 @@
 // cc-audit — point it at your Claude Code transcripts and see where the money
 // and the bad habits are. Local-only by default (no network, no key): parse +
 // attribute + report. A bare interactive run then walks the value ladder —
-// hosted right-sizing, then a shareable report — each behind a consent gate
-// proportional to what leaves the machine (see consent.ts). `--json` and any
-// non-TTY run stay strictly non-interactive: only explicit --judge/--open send
-// anything, so CI and the audit skills are unaffected.
+// local config edits (the headline lever), hosted right-sizing, then a shareable
+// report — each behind a consent gate proportional to what leaves the machine
+// (see consent.ts). `--json` and any non-TTY run stay strictly non-interactive:
+// only explicit --judge/--open send anything, so CI and the audit skills are
+// unaffected.
 //
 // Subcommands:
-//   cc-audit                  full local report, then interactive right-size + share
+//   cc-audit                  full local report, then config edits + right-size + share
 //   cc-audit label [--out F]  judge real sessions → a sheet you hand-label (calibration)
 //   cc-audit score <F>        score your filled sheet vs the judge (the USEFUL gate)
 //   cc-audit label-fluency    sessions → a sheet you rate 0-100 (fluency calibration)
@@ -18,21 +19,26 @@
 import { readFileSync, writeFileSync } from 'node:fs';
 import * as p from '@clack/prompts';
 import { loadClaudeCodeSessions } from './adapters/claudeCode.js';
-import { runAudit } from './audit.js';
+import { runAudit, type AuditResult } from './audit.js';
+import { renderConfigSuggestions } from './configSuggestions.js';
 import { readConsent, writeConsent } from './consent.js';
 import type { ContextHygiene } from './contextHygiene.js';
-import { buildFootprints } from './footprint.js';
+import { buildFootprints, type SessionFootprint } from './footprint.js';
 import {
   buildHygieneFootprints,
   refineAvoidableCarry,
   toRefinementUpload,
+  type HygieneFootprint,
   type HygieneRefinementUpload,
 } from './hygieneFootprint.js';
 import { judgeFootprints, postReport, type RightSizingResult } from './judgeClient.js';
 import { buildLabelSheet, renderScore, scoreLabels, type LabelRow } from './label.js';
 import { buildFluencySheet, renderBandSummary, summarizeBands, type FluencyLabelRow } from './labelFluency.js';
-import { renderFix, runFix } from './fix.js';
+import { buildConfigTrimProposal, buildModelPinProposals, isHostedTrimCandidate, renderFix, runFix } from './fix.js';
+import { DAILY_CAP, spendToday } from './fixClient.js';
 import { computeDelta, readBaseline, windowKey, writeSnapshot } from './history.js';
+import { getInstallKey } from './installKey.js';
+import type { Recommendation } from './recommend.js';
 import { machineAnonId, openURL } from './open.js';
 import { isPremiumModel } from './pricing.js';
 import { type Aggressiveness, renderHygieneRefinement, renderReport, renderRightSizing } from './report.js';
@@ -84,7 +90,8 @@ function parseArgs(argv: string[]): Args {
           '  cc-audit [--since-days N] [--root DIR] [--rows N] [--json] [--judge] [--open]\n' +
           '          [--share-sessions] [--aggressiveness conservative|balanced|aggressive]\n' +
           '      Analyze ~/.claude transcripts locally. In a terminal, a bare run then\n' +
-          '      offers right-sizing and a shareable report — each asks first.\n' +
+          '      offers exact config edits (local), right-sizing, and a shareable\n' +
+          '      report — each asks first.\n' +
           '      The TOP SPENDERS leaderboard (with your prompt gists) is always LOCAL-only.\n' +
           '      --json prints the aggregate record (always local-only, no prompts).\n' +
           '      --judge calls the hosted right-sizing model (task gist + metadata, never code).\n' +
@@ -99,7 +106,7 @@ function parseArgs(argv: string[]): Args {
           '      Score your filled sheet vs the judge: precision (gate ≥90%), recall, confusion.\n' +
           '  cc-audit fix [--since-days N] [--root DIR]\n' +
           '      Turn recommendations into REVIEWABLE patches under ./.cc-audit/ (never applied):\n' +
-          '      local model-pin edits + a hosted CLAUDE.md trim (spends credits, daily-capped).\n' +
+          '      local model-pin edits + a hosted CLAUDE.md trim (spends credits; usage-capped per install).\n' +
           '  cc-audit --version\n' +
           '      Print the installed version. A bare run also warns (on stderr) when a newer\n' +
           '      version is published — silence with CC_AUDIT_NO_UPDATE_CHECK=1.\n',
@@ -193,14 +200,28 @@ async function runFixCmd(args: Args): Promise<void> {
   const interactive = isInteractive(args.json);
   await ensureLocalReadConsent(interactive);
   const sessions = loadSessionsOrExit(args, interactive);
+  const today = new Date().toISOString().slice(0, 10);
   const result = runAudit(sessions, new Date().toISOString());
-  const hasTrim = result.recommendations.some((r) => r.kind === 'trim-config' && r.file);
+  // isHostedTrimCandidate already gates on kind === 'trim-config', a CLAUDE.md basename,
+  // and existsSync — so the disclosure mirrors runFix's own skip and never fires for a
+  // trim whose target was deleted between the audit and this run (no egress ⇒ no disclosure).
+  const hasTrim = result.recommendations.some(isHostedTrimCandidate);
+  // The CLAUDE.md trim is the only egress step. Generate/persist the install key only
+  // when we're actually going to send — a no-trim run stays fully local.
+  const installKey = hasTrim ? getInstallKey() : undefined;
   if (hasTrim) {
-    process.stderr.write('Generating a CLAUDE.md trim via the hosted config-review (spends credits, daily-capped)…\n');
+    // Surface exactly what leaves the machine: your CLAUDE.md content + a persistent
+    // install key (identifies this install for the daily cap / dedup — never your code,
+    // prompts, or paths). Same copy interactive vs. non-interactive so they can't drift.
+    const disclosure =
+      'The CLAUDE.md trim sends your CLAUDE.md content + a persistent install key\n' +
+      '(identifies this install for the daily cap — never your code, prompts, or paths)\n' +
+      `to the hosted config-review. Spends credits · ~${spendToday(today)} of ${DAILY_CAP} today.`;
+    if (interactive) p.log.message(disclosure);
+    else process.stderr.write(`${disclosure}\n`);
   }
   try {
-    const today = new Date().toISOString().slice(0, 10);
-    const proposals = await runFix(result.recommendations, today);
+    const proposals = await runFix(result.recommendations, today, { installKey });
     process.stdout.write(renderFix(proposals));
   } catch (err) {
     process.stderr.write(`fix failed: ${err instanceof Error ? err.message : String(err)}\n`);
@@ -250,16 +271,54 @@ function runScoreFluency(file: string): void {
   process.stdout.write(`${renderBandSummary(summarizeBands(rows))}\n`);
 }
 
-/** Tier 1 — right-sizing. Runs on an explicit --judge (flag is consent) or, in an
- *  interactive run, after a default-Yes confirm. Returns the verdicts (or undefined). */
-async function maybeRightSize(
+/** Tier 0.5 — local config suggestions, the FIRST offer: exact cut/change edits derived
+ *  from the audit above. Zero egress, so the confirm defaults Yes (it sits BELOW the
+ *  judge confirm on the consent ladder). The optional hosted CLAUDE.md rewrite is a
+ *  SEPARATE default-No confirm — it sends the file's FULL CONTENT, more than --judge
+ *  sends. The consented rec is RETURNED, not executed, so the network call can run in
+ *  parallel with right-sizing. */
+async function maybeConfigSuggestions(interactive: boolean, result: AuditResult): Promise<Recommendation | null> {
+  if (!interactive || result.configSuggestions.length === 0) return null;
+  const n = result.configSuggestions.length;
+  p.log.message(
+    'Config suggestions are computed locally from the audit above —\n' +
+      'nothing leaves this machine, nothing is applied.',
+  );
+  const ok = await p.confirm({
+    message: `Show ${n} exact config edit${n === 1 ? '' : 's'} (cut dead weight, quote never-followed rules) and write .cc-audit/*.proposed patches for reviewable diffs?`,
+    initialValue: true,
+  });
+  if (p.isCancel(ok) || ok !== true) return null;
+  // Model-pin patches are local file proposals — written only after the consent above,
+  // matching `cc-audit fix` semantics (./.cc-audit/*.proposed, nothing applied).
+  const pins = buildModelPinProposals(result.recommendations);
+  process.stdout.write(renderConfigSuggestions(result.configSuggestions, pins));
+
+  const trim = result.recommendations.find(isHostedTrimCandidate);
+  if (!trim) return null;
+  p.log.warn(
+    "A hosted trim sends that CLAUDE.md's FULL CONTENT to our config-review service —\n" +
+      'more than --judge sends — and spends credits (daily-capped).',
+  );
+  const wantTrim = await p.confirm({ message: `Request a hosted rewrite of ${trim.file}?`, initialValue: false });
+  return !p.isCancel(wantTrim) && wantTrim === true ? trim : null;
+}
+
+/** What a consented right-sizing run needs to execute later (the call is deferred so
+ *  it can fire in parallel with the hosted trim). */
+interface RightSizeConsent {
+  footprints: SessionFootprint[];
+  hygieneItems: HygieneFootprint[];
+}
+
+/** Tier 1 consent — right-sizing. Explicit --judge (flag is consent) or, in an
+ *  interactive run, a default-Yes confirm. Prompt/receipt only — no network here. */
+async function rightSizeConsent(
   args: Args,
   interactive: boolean,
   sessions: ReturnType<typeof loadClaudeCodeSessions>,
-  windowDays: number,
-  premiumMonthlyUsd: number,
   hygiene: ContextHygiene,
-): Promise<{ result: RightSizingResult; hygieneRefinement?: HygieneRefinementUpload } | undefined> {
+): Promise<RightSizeConsent | undefined> {
   const footprints = buildFootprints(sessions);
   // Context-hygiene items ride in the SAME judge payload (one model pass) — they refine
   // the deterministic avoidable-carry headline by separating stale carry from
@@ -290,30 +349,30 @@ async function maybeRightSize(
         '…\n',
     );
   }
-  try {
-    const api = process.env.CC_AUDIT_API ?? undefined;
-    const wire = hygieneItems.map((h) => h.item); // strip the local-only avoidableUsd before sending
-    const judged = interactive
-      ? await withSpinner(`Right-sizing ${footprints.length} sessions`, () => judgeFootprints(footprints, api, wire))
-      : await judgeFootprints(footprints, api, wire);
-    process.stdout.write(
-      `${renderRightSizing(footprints, judged, windowDays, premiumMonthlyUsd, args.aggressiveness)}\n`,
-    );
-    // If the backend scored the hygiene items, refine the avoidable-carry headline from
-    // the deterministic estimate to what the judge confirmed was actually stale.
-    let hygieneRefinement: HygieneRefinementUpload | undefined;
-    if (judged.hygiene && judged.hygiene.length > 0) {
-      const refined = refineAvoidableCarry(hygiene, hygieneItems, judged.hygiene);
-      process.stdout.write(`${renderHygieneRefinement(refined, windowDays)}\n`);
-      hygieneRefinement = toRefinementUpload(refined, windowDays);
-    }
-    return { result: judged, hygieneRefinement };
-  } catch (err) {
-    const msg = `right-sizing failed: ${err instanceof Error ? err.message : String(err)}`;
-    if (interactive) p.log.error(msg);
-    else process.stderr.write(`${msg}\n`);
-    return undefined;
+  return { footprints, hygieneItems };
+}
+
+/** Render a completed judge call (right-sizing panel + optional hygiene refinement). */
+function renderJudgeOutput(
+  consent: RightSizeConsent,
+  judged: RightSizingResult,
+  args: Args,
+  windowDays: number,
+  premiumMonthlyUsd: number,
+  hygiene: ContextHygiene,
+): { result: RightSizingResult; hygieneRefinement?: HygieneRefinementUpload } {
+  process.stdout.write(
+    `${renderRightSizing(consent.footprints, judged, windowDays, premiumMonthlyUsd, args.aggressiveness)}\n`,
+  );
+  // If the backend scored the hygiene items, refine the avoidable-carry headline from
+  // the deterministic estimate to what the judge confirmed was actually stale.
+  let hygieneRefinement: HygieneRefinementUpload | undefined;
+  if (judged.hygiene && judged.hygiene.length > 0) {
+    const refined = refineAvoidableCarry(hygiene, consent.hygieneItems, judged.hygiene);
+    process.stdout.write(`${renderHygieneRefinement(refined, windowDays)}\n`);
+    hygieneRefinement = toRefinementUpload(refined, windowDays);
   }
+  return { result: judged, hygieneRefinement };
 }
 
 /** Tier 2 — public shareable report. Explicit --open (flag is consent) or, in an
@@ -440,17 +499,54 @@ async function run(): Promise<void> {
   const delta = baseline ? computeDelta(baseline, result.aggregate) : historyOn ? ('first-run' as const) : undefined;
   process.stdout.write(`${renderReport(result, { rows: args.rows, delta })}\n`);
 
+  // Offer ladder: config suggestions (local, first) → right-sizing → share. Both
+  // consents are collected up front so the two consented NETWORK calls (judge +
+  // hosted trim) fire concurrently — one round-trip of waiting, not two. The trim
+  // request body stays files-only (see fixClient.ts); parallelism changes
+  // scheduling, never payloads.
+  const trimRec = await maybeConfigSuggestions(interactive, result);
+  const consent = await rightSizeConsent(args, interactive, sessions, result.contextHygiene);
+
   const premiumMonthlyUsd = result.spend.byModel
     .filter((m) => isPremiumModel(m.model))
     .reduce((n, m) => n + (m.costUsd / result.spend.windowDays) * 30.44, 0);
-  const judgeOut = await maybeRightSize(
-    args,
-    interactive,
-    sessions,
-    result.spend.windowDays,
-    premiumMonthlyUsd,
-    result.contextHygiene,
-  );
+
+  let judgeOut: { result: RightSizingResult; hygieneRefinement?: HygieneRefinementUpload } | undefined;
+  if (consent || trimRec) {
+    const api = process.env.CC_AUDIT_API ?? undefined;
+    const today = new Date().toISOString().slice(0, 10);
+    const settle = () =>
+      Promise.allSettled([
+        consent
+          ? // strip the local-only avoidableUsd before sending
+            judgeFootprints(consent.footprints, api, consent.hygieneItems.map((h) => h.item))
+          : Promise.resolve(undefined),
+        trimRec ? buildConfigTrimProposal(trimRec, today, api) : Promise.resolve(null),
+      ] as const);
+    const label = [
+      consent ? `Right-sizing ${consent.footprints.length} sessions` : null,
+      trimRec ? 'rewriting CLAUDE.md' : null,
+    ]
+      .filter(Boolean)
+      .join(' + ');
+    const [judgeSettled, trimSettled] = interactive ? await withSpinner(label, settle) : await settle();
+
+    // Right-sizing renders first; a failure in one call never discards the other.
+    if (consent) {
+      if (judgeSettled.status === 'fulfilled' && judgeSettled.value) {
+        judgeOut = renderJudgeOutput(consent, judgeSettled.value, args, result.spend.windowDays, premiumMonthlyUsd, result.contextHygiene);
+      } else if (judgeSettled.status === 'rejected') {
+        const err: unknown = judgeSettled.reason;
+        const msg = `right-sizing failed: ${err instanceof Error ? err.message : String(err)}`;
+        if (interactive) p.log.error(msg);
+        else process.stderr.write(`${msg}\n`);
+      }
+    }
+    // buildConfigTrimProposal never throws (failures come back as a "(skipped)" row).
+    if (trimRec && trimSettled.status === 'fulfilled' && trimSettled.value) {
+      process.stdout.write(renderFix([trimSettled.value]));
+    }
+  }
   await maybeShare(args, interactive, result.aggregate, judgeOut?.result.summary, judgeOut?.hygieneRefinement);
 }
 

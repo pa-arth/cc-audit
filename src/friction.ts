@@ -81,7 +81,7 @@ export function computeFriction(sessions: Session[]): FrictionTaxonomy {
 
       span.turns.forEach((t, i) => {
         acc.turns += 1;
-        acc.usd += turnCostUsd(t.model, t.usage).usd;
+        acc.usd += turnCostUsd(t.model, t.usage, t.ts).usd;
         const errs = t.toolErrorCount ?? 0;
         if (errs > 0) acc.toolErrors += errs;
 

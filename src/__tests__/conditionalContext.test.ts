@@ -1,9 +1,23 @@
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, it, expect } from 'vitest';
+import { afterAll, beforeAll, describe, it, expect } from 'vitest';
 import { parseTranscript } from '../adapters/claudeCode.js';
 import { detectConditionalContext } from '../conditionalContext.js';
+
+// detectConditionalContext() reads the real global ~/.claude/CLAUDE.md (+ skills). Point
+// HOME at an empty tmpdir so a developer's actual global "read X" instructions can't leak
+// into the fresh-tmpdir cases that assert zero detections. (CI runs with a clean HOME, so
+// this only bites locally — but the suite should be hermetic either way.)
+let originalHome: string | undefined;
+beforeAll(() => {
+  originalHome = process.env.HOME;
+  process.env.HOME = mkdtempSync(join(tmpdir(), 'cc-cond-home-'));
+});
+afterAll(() => {
+  if (originalHome === undefined) delete process.env.HOME;
+  else process.env.HOME = originalHome;
+});
 
 // Build a session in `cwd` that optionally invokes a skill (turn 1) and/or Reads a
 // file at a given turn. `readFileAbs` lets a test point the Read at a path outside cwd.
@@ -40,6 +54,22 @@ function makeSession(
 }
 
 describe('conditional-context detector (Bug 2: "read X before Y")', () => {
+  // The detector also scans the REAL user config (~/.claude/CLAUDE.md + ~/.claude/skills)
+  // via homedir() — on a machine whose installed skills contain "see references/x.md"
+  // instructions, those leak into every result and break the toHaveLength(0) assertions.
+  // Isolate $HOME like consent.test.ts so only each test's fixtures are in scope.
+  const home0 = process.env.HOME;
+  let home: string;
+  beforeAll(() => {
+    home = mkdtempSync(join(tmpdir(), 'cc-audit-cond-home-'));
+    process.env.HOME = home; // os.homedir() reads $HOME on POSIX → isolates ~/.claude
+  });
+  afterAll(() => {
+    if (home0 === undefined) delete process.env.HOME;
+    else process.env.HOME = home0;
+    rmSync(home, { recursive: true, force: true });
+  });
+
   it('detects an imperative file ref and counts the referenced file via the gateway', () => {
     const proj = mkdtempSync(join(tmpdir(), 'cc-cond-'));
     writeFileSync(join(proj, 'CLAUDE.md'), 'Read ERRORS.md before making any changes.\n');
@@ -50,6 +80,10 @@ describe('conditional-context detector (Bug 2: "read X before Y")', () => {
     expect(errors).toBeDefined();
     expect(errors!.source).toBe('project-claude-md');
     expect(errors!.tokens).toBeGreaterThan(900);
+    // The item carries what a cut suggestion needs: the instruction text itself and
+    // the absolute path of the config file it lives in (LOCAL-ONLY fields).
+    expect(errors!.instruction).toBe('Read ERRORS.md');
+    expect(errors!.sourcePath).toBe(join(proj, 'CLAUDE.md'));
     // Single session ⇒ below the confirm threshold ⇒ detected but unverified.
     expect(errors!.observedReadRate).toBeNull();
     expect(errors!.sessionsConsidered).toBe(1);
@@ -111,6 +145,7 @@ describe('conditional-context detector (Bug 2: "read X before Y")', () => {
     expect(item).toBeDefined();
     expect(item!.skill).toBe('myskill');
     expect(item!.tokens).toBeGreaterThan(900);
+    expect(item!.sourcePath).toBe(join(skillDir, 'SKILL.md'));
     // Denominator is the 5 invoking sessions, not all 6 — and 3 of them read it.
     expect(item!.sessionsConsidered).toBe(5);
     expect(item!.observedReadRate).toBeCloseTo(3 / 5, 6);

@@ -11,6 +11,7 @@ import { computeContextHygiene } from '../contextHygiene.js';
 import { buildRoiLedger } from '../roiLedger.js';
 import { runAudit } from '../audit.js';
 import { AggregateRecordSchema } from '../aggregate.js';
+import { collectSpawnStats } from '../spawnStats.js';
 
 // Golden fixture: two promptId spans with hand-computed cost.
 //   Span A — /commit-push-pr, Sonnet: in 1000·$3 + out 500·$15 + cr 10000·$0.3
@@ -339,6 +340,211 @@ describe('always-on tax: config cost vs observed + MCP framing', () => {
   });
 });
 
+describe('always-on tax: spawn economics (subagents re-WRITE the standing block)', () => {
+  // Main session with one spawn. Both turns Opus 4.8 (cacheRead $0.5, cacheWrite5m $6.25).
+  //   Main turn-1 prefix: in 1000 + cw 10000 = 11000
+  //   Spawn turn-1 prefix: in 500 + cw 17000 = 17500
+  const SPAWN_FX = [
+    { type: 'user', promptId: 'p1', message: { content: 'do a real task with a helper agent' } },
+    {
+      type: 'assistant',
+      message: {
+        id: 'sp1',
+        model: 'claude-opus-4-8',
+        usage: { input_tokens: 1000, output_tokens: 200, cache_read_input_tokens: 0, cache_creation_input_tokens: 10000 },
+        content: [{ type: 'tool_use', name: 'Task' }],
+      },
+    },
+    {
+      type: 'user',
+      isSidechain: true,
+      agentId: 'agentA',
+      attributionAgent: 'Explore',
+      message: { content: 'go look something up' },
+    },
+    {
+      type: 'assistant',
+      isSidechain: true,
+      agentId: 'agentA',
+      attributionAgent: 'Explore',
+      message: {
+        id: 'sp2',
+        model: 'claude-opus-4-8',
+        usage: { input_tokens: 500, output_tokens: 300, cache_read_input_tokens: 0, cache_creation_input_tokens: 17000 },
+        content: [{ type: 'text', text: 'found it' }],
+      },
+    },
+  ]
+    .map((e) => JSON.stringify(e))
+    .join('\n');
+  const session = parseTranscript('/tmp/spawn.jsonl', SPAWN_FX, 'p', new Set())!;
+  const a = computeAlwaysOn([session]);
+
+  it('collectSpawnStats extracts the spawn prefix and setup cost', () => {
+    const spawns = collectSpawnStats([session]);
+    expect(spawns).toHaveLength(1);
+    const sp = spawns[0]!;
+    expect(sp.prefixTok).toBe(17500);
+    expect(sp.writeTok).toBe(17000);
+    expect(sp.inputTok).toBe(500);
+    expect(sp.outTok).toBe(300);
+    expect(sp.newTok).toBe(500 + 17000 + 300);
+    // (17000·$6.25 + 500·$5) / 1e6 — cache-write + uncached input at Opus 4.8 rates.
+    expect(sp.setupUsd).toBeCloseTo(0.10875, 6);
+  });
+
+  it('observed standing median samples the MAIN-chain prefix, not the spawn', () => {
+    expect(a.standingContextTokens).toBe(11000);
+    expect(a.spawnPrefixTokens).toBe(17500);
+  });
+
+  it('prices the spawn re-write into the kernel and reports the spawn tax', () => {
+    // windowDays=1 → spawnsPerMonth = 1·30.44; writeRate = 6.25 (spawn writes are all
+    // 5-min bucket on Opus 4.8). Spawn tax = observed setup cost, monthly-normalized.
+    expect(a.spawnsPerMonth).toBeCloseTo(30.44, 6);
+    expect(a.spawnTaxMonthlyUsd).toBeCloseTo(0.10875 * 30.44, 6);
+    // Kernel = read leg + write leg: 2 turns/window·$0.5 read + 1 spawn/window·$6.25 write.
+    const perTok = (2 * 30.44 * 0.5 + 30.44 * 6.25) / 1e6;
+    expect(a.observedMonthlyUsd).toBeCloseTo(11000 * perTok, 9);
+    expect(a.cacheReadRatePerMTok).toBeCloseTo(0.5, 9);
+    expect(a.cacheWriteRatePerMTok).toBeCloseTo(6.25, 9);
+  });
+
+  it('keeps the shared-kernel ratio invariant with a nonzero write term', () => {
+    if (a.alwaysOnConfigTokensPerTurn > 0) {
+      expect(a.alwaysOnConfigMonthlyUsd / a.alwaysOnConfigTokensPerTurn).toBeCloseTo(
+        a.observedMonthlyUsd / a.standingContextTokens,
+        9,
+      );
+    }
+  });
+
+  it('an all-sidechain (subagent-file) Session cannot contaminate the observed median', () => {
+    // CC v2.1.x writes each subagent transcript as its own file → its own Session
+    // whose spans are ALL sidechain. There are typically several per main session.
+    const SUB_FILE = [
+      {
+        type: 'user',
+        isSidechain: true,
+        agentId: 'agentB',
+        attributionAgent: 'general-purpose',
+        message: { content: 'subagent task' },
+      },
+      {
+        type: 'assistant',
+        isSidechain: true,
+        agentId: 'agentB',
+        attributionAgent: 'general-purpose',
+        message: {
+          id: 'sf1',
+          model: 'claude-opus-4-8',
+          usage: { input_tokens: 1000, output_tokens: 100, cache_read_input_tokens: 0, cache_creation_input_tokens: 49000 },
+          content: [{ type: 'text', text: 'done' }],
+        },
+      },
+    ]
+      .map((e) => JSON.stringify(e))
+      .join('\n');
+    const subSession = parseTranscript('/tmp/agent-b.jsonl', SUB_FILE, 'p', new Set())!;
+    const mixed = computeAlwaysOn([session, subSession]);
+    // Median over MAIN prefixes only = [11000]; the 50k spawn prefix stays out.
+    expect(mixed.standingContextTokens).toBe(11000);
+    // But the spawn IS counted: two spawns now, median prefix = upper median.
+    expect(collectSpawnStats([session, subSession])).toHaveLength(2);
+  });
+
+  it('prices 1h cache-write tokens at the 1h rate, not the 5-min rate', () => {
+    // Same spawn shape but the 17k write lands in the 1h bucket (Opus 4.8: $10 vs $6.25).
+    const FX_1H = [
+      { type: 'user', isSidechain: true, agentId: 'agentH', message: { content: 'subagent task with 1h cache' } },
+      {
+        type: 'assistant',
+        isSidechain: true,
+        agentId: 'agentH',
+        message: {
+          id: 'h1',
+          model: 'claude-opus-4-8',
+          usage: {
+            input_tokens: 500,
+            output_tokens: 300,
+            cache_read_input_tokens: 0,
+            cache_creation: { ephemeral_1h_input_tokens: 17000 },
+          },
+          content: [{ type: 'text', text: 'done' }],
+        },
+      },
+    ]
+      .map((e) => JSON.stringify(e))
+      .join('\n');
+    const s1h = parseTranscript('/tmp/agent-h.jsonl', FX_1H, 'p', new Set())!;
+    const sp = collectSpawnStats([s1h])[0]!;
+    expect(sp.writeUsd).toBeCloseTo((17000 * 10) / 1e6, 9); // 1h rate, not 6.25
+    expect(sp.setupUsd).toBeCloseTo((17000 * 10 + 500 * 5) / 1e6, 9);
+    // The kernel's write rate comes from the observed spawn mix → $10/MTok here.
+    expect(computeAlwaysOn([s1h]).cacheWriteRatePerMTok).toBeCloseTo(10, 9);
+  });
+
+  it('splits legacy agentId-less sidechain rows into one span per task instruction', () => {
+    const legacyTurn = (id: string) => ({
+      type: 'assistant',
+      isSidechain: true,
+      message: {
+        id,
+        model: 'claude-opus-4-8',
+        usage: { input_tokens: 400, output_tokens: 200, cache_read_input_tokens: 0, cache_creation_input_tokens: 9000 },
+        content: [{ type: 'text', text: 'ok' }],
+      },
+    });
+    const LEGACY = [
+      { type: 'user', isSidechain: true, message: { content: 'first spawned task, go do it' } },
+      legacyTurn('lg1'),
+      { type: 'user', isSidechain: true, message: { content: 'second spawned task, different job' } },
+      legacyTurn('lg2'),
+    ]
+      .map((e) => JSON.stringify(e))
+      .join('\n');
+    const s = parseTranscript('/tmp/legacy.jsonl', LEGACY, 'p', new Set())!;
+    // Two task instructions ⇒ two spawns, not one merged 'sidechain' span.
+    expect(collectSpawnStats([s])).toHaveLength(2);
+  });
+
+  it('does not double-count a spawn logged in both the parent file and a subagent file', () => {
+    const seen = new Set<string>();
+    const parent = parseTranscript('/tmp/dd-parent.jsonl', SPAWN_FX, 'p', seen)!;
+    // Same sidechain assistant row (same message.id 'sp2') re-logged in a separate
+    // subagent file — global dedup leaves its span with 0 turns.
+    const dupFile = [
+      {
+        type: 'user',
+        isSidechain: true,
+        agentId: 'agentA',
+        attributionAgent: 'Explore',
+        message: { content: 'go look something up' },
+      },
+      {
+        type: 'assistant',
+        isSidechain: true,
+        agentId: 'agentA',
+        attributionAgent: 'Explore',
+        message: {
+          id: 'sp2',
+          model: 'claude-opus-4-8',
+          usage: { input_tokens: 500, output_tokens: 300, cache_read_input_tokens: 0, cache_creation_input_tokens: 17000 },
+          content: [{ type: 'text', text: 'found it' }],
+        },
+      },
+    ]
+      .map((e) => JSON.stringify(e))
+      .join('\n');
+    const dup = parseTranscript('/tmp/agent-a.jsonl', dupFile, 'p', seen);
+    // The adapter drops the fully-deduped file entirely (null — the loader filters
+    // these out before any analysis), so the spawn is counted exactly once.
+    const sessions = [parent, dup].filter((s): s is NonNullable<typeof s> => s !== null);
+    expect(dup).toBeNull();
+    expect(collectSpawnStats(sessions)).toHaveLength(1);
+  });
+});
+
 describe('always-on tax: CLAUDE.md @imports are counted transitively', () => {
   // A tiny CLAUDE.md that `@imports` a much larger file: the always-on cost is the
   // closure, not the 200-char entry file. This is the ERRORS.md/@import undercount.
@@ -587,6 +793,19 @@ describe('aggregate record (privacy)', () => {
     expect(Object.values(aggregate.conditionalContext).every((v) => typeof v === 'number')).toBe(true);
   });
 
+  it('keeps configSuggestions strictly local — no path, quote, or evidence in the aggregate', () => {
+    const result = runAudit(sessions, '2026-06-16T00:00:00.000Z');
+    expect(Array.isArray(result.configSuggestions)).toBe(true);
+    const blob = JSON.stringify(result.aggregate);
+    for (const s of result.configSuggestions) {
+      if (s.file) expect(blob).not.toContain(s.file);
+      if (s.quote) expect(blob).not.toContain(s.quote);
+      expect(blob).not.toContain(s.evidence);
+    }
+    // The aggregate schema has no suggestions block at all.
+    expect(blob).not.toContain('configSuggestions');
+  });
+
   it('omits the session leaderboard from the aggregate unless --share-sessions', () => {
     expect(aggregate.topSessions).toEqual([]); // default run: nothing leaves
   });
@@ -605,11 +824,15 @@ describe('aggregate record (privacy)', () => {
     expect(JSON.stringify(shared)).not.toContain('fix the thing');
   });
 
-  it('is schema v7 with roiLedger/temporal/friction blocks present', () => {
-    expect(aggregate.schemaVersion).toBe(7);
+  it('is schema v8 with roiLedger/temporal/friction blocks and spawn economics present', () => {
+    expect(aggregate.schemaVersion).toBe(8);
     expect(aggregate.roiLedger).toBeTruthy();
     expect(aggregate.temporal.hourHistogram).toHaveLength(24);
     expect(Array.isArray(aggregate.friction.bySkill)).toBe(true);
+    // v8: spawn economics — numbers only, no names/paths.
+    expect(typeof aggregate.alwaysOn.spawnsPerMonth).toBe('number');
+    expect(typeof aggregate.alwaysOn.spawnPrefixTokens).toBe('number');
+    expect(typeof aggregate.alwaysOn.spawnTaxMonthlyUsd).toBe('number');
   });
 
   it('ships roiLedger as COUNTS ONLY — every value numeric/boolean, no skill/server names', () => {

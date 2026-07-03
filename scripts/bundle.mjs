@@ -2,8 +2,8 @@
 // Reproducible build of the cc-audit distribution artifacts:
 //   - self-contained single-file binaries (bun --compile, no Node needed)
 //   - a Node ESM fallback (esbuild bundle of dist/cli.js)
-// Output: bundles/ (gitignored). These are uploaded as the
-// pa-arth/cc-audit-releases release assets.
+// Output: bundles/ (gitignored). On a v* tag push, the publish workflow
+// attaches these to the GitHub Release for the tag (see .github/workflows/publish.yml).
 //
 // Prereq: `bun` on PATH or at ~/.bun/bin/bun (binary compile). esbuild is a
 // devDependency (the .mjs fallback).
@@ -19,7 +19,11 @@ const cli = path.join(repoRoot, 'dist/cli.js');
 // Bake the version into the bundle (src/version.ts) so a bun-compiled binary —
 // which ships no package.json — still reports and update-checks correctly.
 const version = JSON.parse(readFileSync(path.join(repoRoot, 'package.json'), 'utf8')).version;
-const defineVersion = `--define:__CC_AUDIT_VERSION__=${JSON.stringify(version)}`;
+// esbuild wants `--define:KEY=VALUE` (colon); bun wants `--define KEY=VALUE` (space, two
+// args). Passing the colon form to bun is silently ignored — the identifier survives and the
+// binary reports 0.0.0. Keep the two spellings separate.
+const esbuildDefine = `--define:__CC_AUDIT_VERSION__=${JSON.stringify(version)}`;
+const bunDefine = ['--define', `__CC_AUDIT_VERSION__=${JSON.stringify(version)}`];
 mkdirSync(outDir, { recursive: true });
 
 function run(cmd, args, opts = {}) {
@@ -43,7 +47,7 @@ const targets = [
 ];
 for (const [target, name] of targets) {
   console.log(`\nbundle: compiling ${name} (${target})…`);
-  run(bun, ['build', cli, '--compile', defineVersion, `--target=${target}`, `--outfile=${path.join(outDir, name)}`]);
+  run(bun, ['build', cli, '--compile', ...bunDefine, `--target=${target}`, `--outfile=${path.join(outDir, name)}`]);
 }
 
 // 3. Node ESM fallback via esbuild.
@@ -51,7 +55,7 @@ console.log('\nbundle: esbuild Node fallback (cc-audit.mjs)…');
 run('npx', [
   'esbuild', 'dist/cli.js',
   '--bundle', '--platform=node', '--format=esm', '--target=node18',
-  defineVersion,
+  esbuildDefine,
   '--outfile=bundles/cc-audit.mjs',
 ]);
 

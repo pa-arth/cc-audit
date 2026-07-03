@@ -17,16 +17,31 @@ from the workspace. The hosted judge API stays a loose HTTP boundary — see
 backend). They were vendored because config-cost is a `workspace:*` dep that doesn't
 exist on npm.
 
-- `pricing.ts` is mirrored **verbatim** so re-sync is a straight file copy.
+- `pricing.ts` is mirrored **verbatim** (vendor header + upstream body, no edits) so
+  re-sync is a straight file copy.
 - `tokenizer.ts` vendors **only** `CharCountTokenizer` (zero-dep). Upstream's
   `OpenAiTokenizer` pulls `js-tiktoken`, which cc-audit does not use — leave it out.
+  The sync script below does NOT touch it.
 
 **When Anthropic/OpenAI pricing changes, update this repo AND the upstream config-cost
-table together.** config-cost has a `litellm-drift` test guarding its table; this mirror
-has no such guard, so they can silently diverge.
+table together.** Two guards keep the mirror honest (added after 0.4.0 shipped stale
+tables that silently mis-priced `claude-sonnet-5`/`claude-mythos-5` as Sonnet fallback):
+
+- **Drift test** — `src/__tests__/pricingDrift.test.ts` is config-cost's `litellm-drift`
+  test ported to run against the vendored tables: it cross-checks every entry against
+  LiteLLM's community pricing DB (hard-fail on rate disagreement, warn on models LiteLLM
+  lists that we don't price, degrades to pass offline so CI stays non-flaky). It also
+  carries offline regression pins for the current-model entries + the Sonnet 5
+  introductory-pricing window.
+- **Sync script** — `node scripts/sync-pricing.mjs` re-copies the pricing source from a
+  sibling backend checkout (probes `../promptster-backend/packages/config-cost/src/pricing.ts`;
+  override with `--from <path>`), prepends the vendor header, and prints a diff summary
+  (model keys added/removed). Idempotent: re-running against the same source is a no-op.
+  After a sync, review `git diff src/vendor/pricing.ts`, run `npm test`, and update the
+  offline pins in the drift test if models were added/removed.
 
 **Proper fix (follow-up):** publish `@promptster/config-cost` as a standalone npm package
-during pricing centralization, depend on it here, and delete `src/vendor/`.
+during pricing centralization, depend on it here, and delete `src/vendor/` + the script.
 
 ## Hosted API
 
@@ -101,10 +116,22 @@ npm run build:npm
 npm publish ./bundles/npm --access public   # the leading ./ matters
 ```
 
-### Standalone binaries (`pa-arth/cc-audit-releases`)
+### Standalone binaries (GitHub Release)
 
 `scripts/bundle.mjs` builds `bun --compile` single-file binaries
-(darwin-arm64/x64, linux-x64) plus a Node `.mjs` fallback into `bundles/`. These are
-uploaded as release assets to the public `pa-arth/cc-audit-releases` repo. Requires `bun`
-on PATH. (CI automation for the binary release is a follow-up; the npm path is the one
-that matters for `npx`.)
+(darwin-arm64/x64, linux-x64) plus a Node `.mjs` fallback into `bundles/`. Requires `bun`
+on PATH locally.
+
+**Automated:** the `Publish to npm` workflow (on a `v*` tag push) builds these on the runner
+and attaches them — plus a `SHA256SUMS.txt` — to the GitHub Release for that tag, right after
+the npm publish. The npm path stays the critical one for `npx`; the release steps run after it
+so a bun/release hiccup can't block publish. Release creation uses the automatic `GITHUB_TOKEN`
+(hence `permissions: contents: write`), so no extra secret is needed.
+
+Cutting a release manually (needs `gh` + `bun`):
+
+```bash
+npm run bundle
+( cd bundles && sha256sum cc-audit-* cc-audit.mjs > SHA256SUMS.txt )
+gh release create vX.Y.Z --generate-notes bundles/cc-audit-* bundles/cc-audit.mjs bundles/SHA256SUMS.txt
+```

@@ -153,8 +153,9 @@ export function renderReport(r: AuditResult, opts: { rows?: number; delta?: Hist
     out.push(...card('TOP SPENDERS  ·  most expensive sessions', topRows, c.gold));
   }
 
-  // Lead with the cuts that have NO quality tradeoff. Model right-sizing
-  // (policy-dependent, often the smallest clean lever) comes last, via --judge.
+  // Lead with the cuts that have NO quality tradeoff. Config change suggestions
+  // (exact edits, local) are the first interactive offer; model right-sizing
+  // (policy-dependent, often the smallest clean lever) comes after, via --judge.
   blank();
   out.push(`  ${c.bold(c.orange('FIXABLE WASTE'))}  ${c.dim('— no-tradeoff cuts first')}`);
 
@@ -242,6 +243,15 @@ export function renderReport(r: AuditResult, opts: { rows?: number; delta?: Hist
         `(~${usd(a.observedMonthlyUsd)}/mo of spend)`,
     ),
     c.dim("  — the rest is FIXED system prompt + tool schemas you can't trim; see /context"),
+    ...(a.spawnsPerMonth > 0
+      ? wrap(
+          `subagent spawns re-WRITE that context: ${a.spawnsPerMonth.toFixed(1)}/mo × ` +
+            `~${Math.round(a.spawnPrefixTokens).toLocaleString()} tok at cache-write prices ` +
+            `(~${usd(a.spawnTaxMonthlyUsd)}/mo of observed spend; the totals above ` +
+            `approximate it from your config/standing size)`,
+          BOX_WIDTH - 2,
+        ).map((ln) => c.dim(ln))
+      : []),
     c.dim(`MCP: ${a.mcpServerCount} servers · ${mcpDesc} · invoked in ${pct(a.mcpInvokedRate)} of sessions`),
   ];
   // Conditional context — instructed reads that load only when Claude obeys, so they're
@@ -349,7 +359,9 @@ export function renderReport(r: AuditResult, opts: { rows?: number; delta?: Hist
   const L = r.roiLedger;
   if (L.skills.length > 0 || L.mcp.length > 0) {
     const roiPerMo = (x: number) => (x / s.windowDays) * 30.44;
-    const roiRows = [c.dim(`${pad('skill', 22)} ${padL('carry/mo', 9)} ${padL('inv', 5)} ${padL('used/mo', 8)}  verdict`)];
+    const roiRows = [
+      c.dim(`${pad('skill', 20)} ${padL('carry/mo', 9)} ${padL('inv', 5)} ${padL('$/run', 7)} ${padL('used/mo', 8)}  verdict`),
+    ];
     for (const sk of L.skills.slice(0, rows)) {
       const tag =
         sk.verdict === 'dead-weight'
@@ -357,10 +369,11 @@ export function renderReport(r: AuditResult, opts: { rows?: number; delta?: Hist
           : sk.verdict === 'heavy-but-earning'
             ? c.emerald('earning')
             : c.dim('fine');
-      const name = sk.lowConfidence ? c.dim(pad(sk.name, 22)) : pad(sk.name, 22);
+      const name = sk.lowConfidence ? c.dim(pad(sk.name, 20)) : pad(sk.name, 20);
+      const perRun = sk.usdPerRun === null ? c.dim(padL('—', 7)) : money(padL(usd(sk.usdPerRun), 7));
       roiRows.push(
         `${name} ${money(padL(usd(sk.carryUsdPerMonth) + '/mo', 9))} ` +
-          `${padL(String(sk.invocations), 5)} ${money(padL(usd(roiPerMo(sk.realizedUsd)), 8))}  ${tag}` +
+          `${padL(String(sk.invocations), 5)} ${perRun} ${money(padL(usd(roiPerMo(sk.realizedUsd)), 8))}  ${tag}` +
           (sk.lowConfidence ? c.dim(' (n<5)') : ''),
       );
     }
@@ -435,13 +448,34 @@ export function renderReport(r: AuditResult, opts: { rows?: number; delta?: Hist
   blank();
   out.push(...card('FLUENCY  ·  the habits behind the bill', fluencyRows, c.cyan));
 
-  // ── 3. Model right-sizing teaser (the --judge upsell) ──────────────────────
+  // ── 3. Config change suggestions teaser (the headline lever, offered first) ─
+  if (r.configSuggestions.length > 0) {
+    const cs = r.configSuggestions;
+    const csSaved = cs.reduce((n, s) => n + s.monthlyUsdSaved, 0);
+    const kinds = new Set(cs.map((s) => s.kind));
+    const what = [
+      kinds.has('delete-skill') ? 'dead-weight skills' : null,
+      kinds.has('cut-instruction') ? 'never-followed "read X" rules' : null,
+      kinds.has('model-pin') ? 'missing model pins' : null,
+      kinds.has('disable-plugin') || kinds.has('remove-mcp') ? 'unused plugins/servers' : null,
+    ].filter(Boolean).join(', ');
+    const csRows = [
+      `${lever(`${cs.length} exact edit${cs.length === 1 ? '' : 's'}`)} found` +
+        (csSaved >= 0.5 ? ` (${c.gold(`~${usd(csSaved)}/mo`)})` : '') +
+        `${c.dim(` — ${what}`)}`,
+      c.dim('offered right after this report, or run ') + c.cyan('cc-audit fix'),
+    ];
+    blank();
+    out.push(...card('③ CONFIG CHANGE SUGGESTIONS  ·  exact edits, computed locally', csRows, c.gold));
+  }
+
+  // ── 4. Model right-sizing teaser (the --judge upsell — demoted below config) ─
   const rsRows = [
     `${lever(pct(f.premiumTurnShare))} of turns run premium models. Run ${c.cyan('cc-audit --judge')} to see which`,
     c.dim('tasks a cheaper model could do — frontier choice stays your policy.'),
   ];
   blank();
-  out.push(...card('③ MODEL RIGHT-SIZING  ·  policy-dependent, often the smallest clean lever', rsRows));
+  out.push(...card('④ MODEL RIGHT-SIZING  ·  policy-dependent, often the smallest clean lever', rsRows));
 
   // The treatment layer: synthesize everything above into ranked, file-anchored
   // actions. Estimates — a candidate tier is never a mandate.
@@ -456,6 +490,9 @@ export function renderReport(r: AuditResult, opts: { rows?: number; delta?: Hist
       for (const ln of wrap(rec.action, BOX_WIDTH - 3)) actionRows.push(c.dim(`   ${ln}`));
       i += 1;
     }
+    actionRows.push(
+      c.dim('→ exact edits for these: say yes at the next prompt, or run ') + c.cyan('cc-audit fix'),
+    );
     blank();
     out.push(...card('NEXT ACTIONS  ·  ranked by est. $/mo saved', actionRows, c.gold));
   }
