@@ -4,6 +4,7 @@
 // surface premium-model share as the lever indicator.
 
 import type { AuditResult } from './audit.js';
+import type { ContextBucket, ContextKnee } from './contextKnee.js';
 import type { SessionFootprint } from './footprint.js';
 import type { RefinedHygiene } from './hygieneFootprint.js';
 import type { RightSizingResult } from './judgeClient.js';
@@ -405,6 +406,10 @@ export function renderReport(r: AuditResult, opts: { rows?: number } = {}): stri
   blank();
   out.push(...card('FLUENCY  ·  the habits behind the bill', fluencyRows, c.cyan));
 
+  // ── Context degradation knee (the number the live-guardrail statusline arms against) ──
+  blank();
+  out.push(...renderContextKnee(r.contextKnee));
+
   // ── 3. Model right-sizing teaser (the --judge upsell) ──────────────────────
   const rsRows = [
     `${lever(pct(f.premiumTurnShare))} of turns run premium models. Run ${c.cyan('cc-audit --judge')} to see which`,
@@ -431,6 +436,92 @@ export function renderReport(r: AuditResult, opts: { rows?: number } = {}): stri
   }
   blank();
   return out.join('\n');
+}
+
+const kfmt = (n: number | null): string => (n == null ? '∞' : `${Math.round(n / 1000)}k`);
+
+/** A proportional block bar for a 0..max value across ~`width` columns, with a
+ *  fractional last cell (eighth-block glyphs) so small differences still read. */
+function kneeBar(v: number, max: number, width = 16): string {
+  if (max <= 0 || v <= 0) return '';
+  const filled = (v / max) * width;
+  const full = Math.min(Math.floor(filled), width);
+  const eighths = '▏▎▍▌▋▊▉█';
+  let bar = '█'.repeat(full);
+  const rem = filled - full;
+  if (rem > 0 && full < width) bar += eighths[Math.min(7, Math.floor(rem * 8))];
+  return bar;
+}
+
+/**
+ * The personal context-degradation knee, with the per-band ramp so the climb is
+ * VISIBLE — the single most actionable context signal, and the number the
+ * live-guardrail statusline arms against. LOCAL-ONLY: buckets are counts/rates
+ * (no source, no paths), rendered in the TUI, never uploaded.
+ */
+export function renderContextKnee(knee: ContextKnee): string[] {
+  const rate = (b: ContextBucket) => (b.turns > 0 ? (b.redundantReReads + b.frictionEvents) / b.turns : 0);
+
+  // Fewer than 2 sessions with per-turn telemetry → nothing stable to fit.
+  if (knee.sessionsWithSignal < 2) {
+    return card(
+      'CONTEXT DEGRADATION KNEE',
+      [
+        c.dim(
+          `not enough per-turn telemetry yet — ${knee.sessionsWithSignal} of ${knee.windowSessions} ` +
+            `sessions carried the signal (need ≥2)`,
+        ),
+      ],
+      c.border,
+    );
+  }
+
+  const baseline = rate(knee.buckets[0]!);
+  const maxRate = Math.max(...knee.buckets.map(rate), 1e-9);
+  const onset = knee.onsetTokens;
+
+  // Per-band ramp. Lower edge of band i = buckets[i-1].maxTokens (0 for the first).
+  const ramp: string[] = [];
+  let peakRate = 0;
+  let peakLabel = '';
+  knee.buckets.forEach((b, i) => {
+    if (b.turns === 0) return;
+    const lo = i === 0 ? 0 : (knee.buckets[i - 1]!.maxTokens ?? 0);
+    const label = b.maxTokens == null ? `${kfmt(lo)}+` : `${kfmt(lo)}-${kfmt(b.maxTokens)}`;
+    const r = rate(b);
+    if (r > peakRate) {
+      peakRate = r;
+      peakLabel = label;
+    }
+    const isKnee = onset != null && lo === onset;
+    const armed = onset != null && lo >= onset; // at/past the knee
+    const barColor = armed ? c.amber : c.dim;
+    const mult = baseline > 0 ? `${(r / baseline).toFixed(1)}×` : '—';
+    const tag = isKnee ? c.amber('  ← knee') : '';
+    ramp.push(
+      `${c.dim(label.padEnd(9))} ${barColor(kneeBar(r, maxRate).padEnd(17))} ` +
+        `${padL(pct(r), 4)}  ${c.dim(mult)}${tag}`,
+    );
+  });
+
+  const rows: string[] = [];
+  if (onset != null) {
+    const peakMult = baseline > 0 ? `${(peakRate / baseline).toFixed(1)}×` : '—';
+    rows.push(
+      c.bold(`re-reads + friction roughly double past ${c.amber(kfmt(onset))} tokens`) +
+        c.dim(`  (peak ${peakMult} at ${peakLabel})`),
+    );
+  } else {
+    rows.push(c.emerald('no sharp knee — friction stays under 2× baseline across context sizes'));
+  }
+  rows.push(rule());
+  rows.push(...ramp);
+  if (onset != null) {
+    rows.push(rule());
+    rows.push(c.cyan(`→ a /compact before ~${kfmt(onset)} keeps you in the clean zone`));
+  }
+  rows.push(c.dim(`fitted from ${knee.sessionsWithSignal} sessions carrying per-turn telemetry`));
+  return card('CONTEXT DEGRADATION KNEE', rows, onset != null ? c.amber : c.emerald);
 }
 
 /**

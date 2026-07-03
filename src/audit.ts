@@ -10,6 +10,7 @@ import { buildRoiLedger, type RoiLedger } from './roiLedger.js';
 import { computeTemporal, type TemporalProfile } from './temporal.js';
 import { computeFriction, type FrictionTaxonomy } from './friction.js';
 import { anonymizeTopSessions, topSessions, type TopSession } from './topSessions.js';
+import { computeContextKnee, type ContextKnee } from './contextKnee.js';
 import type { Session } from './model.js';
 
 export interface AuditResult {
@@ -36,6 +37,10 @@ export interface AuditResult {
   /** N most expensive sessions with their structure. LOCAL-ONLY (raw gists/projects) —
    *  rendered in the TUI, never placed in the aggregate. */
   topSessions: TopSession[];
+  /** Personal context-degradation knee — the context band where redundant re-reads +
+   *  friction first climb ≥2× the low-context baseline, merged across the window. The
+   *  same number the live-guardrail statusline arms against. Counts/rates only. */
+  contextKnee: ContextKnee;
   sessionCount: number;
 }
 
@@ -54,6 +59,9 @@ export function runAudit(
   const friction = computeFriction(sessions);
   const recommendations = buildRecommendations(spend, alwaysOn, sessions, roiLedger);
   const top = topSessions(sessions);
+  // Sessions are already loaded, so fitting the knee here is near-free (the statusline
+  // pays the scan separately because it runs without a full audit in scope).
+  const contextKnee = computeContextKnee(sessions);
   // The leaderboard enters the UPLOADED aggregate ONLY on explicit opt-in, and even
   // then anonymized (no gist/project/raw $). Default: stays local in the TUI.
   const anonTop = opts.shareSessions ? anonymizeTopSessions(top, spend.totalUsd) : [];
@@ -69,6 +77,7 @@ export function runAudit(
     recommendations,
     aggregate,
     topSessions: top,
+    contextKnee,
     topRedundantFiles: topRedundantFiles(sessions, 3),
     sessionCount: sessions.length,
   };
