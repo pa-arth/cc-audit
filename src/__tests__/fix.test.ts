@@ -2,7 +2,14 @@ import { existsSync, mkdtempSync, readFileSync, writeFileSync, rmSync } from 'no
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, afterEach, beforeAll, describe, it, expect, vi } from 'vitest';
-import { frontmatterModelPatch, renderFix, runFix, type FixProposal } from '../fix.js';
+import {
+  buildModelPinProposals,
+  frontmatterModelPatch,
+  isHostedTrimCandidate,
+  renderFix,
+  runFix,
+  type FixProposal,
+} from '../fix.js';
 import { checkSpendCap, recordSpend, requestConfigRewrite, spendToday } from '../fixClient.js';
 import type { Recommendation } from '../recommend.js';
 
@@ -57,6 +64,37 @@ describe('runFix (model-pin branch — local, no network)', () => {
     expect(readFileSync(skillFile, 'utf8')).toBe(before); // real file untouched
     expect(existsSync(proposals[0]!.proposalFile)).toBe(true);
     expect(readFileSync(proposals[0]!.proposalFile, 'utf8')).toMatch(/^---\nmodel: sonnet\n/);
+  });
+
+  it('buildModelPinProposals is the same local path (patch written, real file untouched)', () => {
+    const before = readFileSync(skillFile, 'utf8');
+    const proposals = buildModelPinProposals([
+      { kind: 'model-pin', title: 'pin', monthlyUsdSaved: 1, file: skillFile, action: 'pin' },
+      { kind: 'trim-config', title: 'not a pin', monthlyUsdSaved: 1, file: skillFile, action: 'x' },
+    ]);
+    expect(proposals).toHaveLength(1);
+    expect(proposals[0]!.kind).toBe('model-pin');
+    expect(readFileSync(skillFile, 'utf8')).toBe(before);
+    expect(existsSync(proposals[0]!.proposalFile)).toBe(true);
+  });
+
+  it('gates the hosted rewrite to real CLAUDE.md files — a SKILL.md trim rec must never egress', () => {
+    const claudeMd = join(work, 'CLAUDE.md');
+    writeFileSync(claudeMd, 'standing guidance\n');
+    const trim = (file: string | null): Recommendation => ({
+      kind: 'trim-config',
+      title: 't',
+      monthlyUsdSaved: 1,
+      file,
+      action: 'trim',
+    });
+    expect(isHostedTrimCandidate(trim(claudeMd))).toBe(true);
+    // Dead-weight skills and unused plugins are also kind trim-config — a SKILL.md
+    // path or no path at all must NOT be sent to the hosted config-review.
+    expect(isHostedTrimCandidate(trim(skillFile))).toBe(false);
+    expect(isHostedTrimCandidate(trim(null))).toBe(false);
+    expect(isHostedTrimCandidate(trim(join(work, 'missing', 'CLAUDE.md')))).toBe(false);
+    expect(isHostedTrimCandidate({ kind: 'model-pin', title: 'p', monthlyUsdSaved: 1, file: claudeMd, action: 'a' })).toBe(false);
   });
 });
 

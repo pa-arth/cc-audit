@@ -53,7 +53,7 @@ function tierRatio(currentModel: string, target = DEFAULT_TARGET): number {
 }
 
 /** First on-disk SKILL.md for a skill name: user dir, then any session project dir. */
-function locateSkillFile(name: string, cwds: string[]): string | null {
+export function locateSkillFile(name: string, cwds: string[]): string | null {
   const base = name.includes(':') ? name.split(':').pop()! : name;
   const candidates = [
     join(homedir(), '.claude', 'skills', base, 'SKILL.md'),

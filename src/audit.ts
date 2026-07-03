@@ -3,6 +3,7 @@
 import { computeAlwaysOn, type AlwaysOnTax } from './alwaysOn.js';
 import { attributeSpend, type SpendBreakdown } from './attribute.js';
 import { buildAggregateRecord, type AggregateRecord } from './aggregate.js';
+import { buildConfigSuggestions, type ConfigSuggestion } from './configSuggestions.js';
 import { computeContextHygiene, type ContextHygiene } from './contextHygiene.js';
 import { computeFluency, topRedundantFiles, type FluencySignals } from './fluency.js';
 import { buildRecommendations, type Recommendation } from './recommend.js';
@@ -29,6 +30,10 @@ export interface AuditResult {
   /** Ranked, file-anchored next actions (the config-knob bridge). Local-only — paths
    *  here never enter the aggregate. */
   recommendations: Recommendation[];
+  /** Exact config edits (delete skill X, cut instruction Y) — the first interactive
+   *  offer. LOCAL-ONLY (paths, skill names, quoted instruction text) — never enters
+   *  the aggregate. */
+  configSuggestions: ConfigSuggestion[];
   /** Most-re-read files (basename only) for the report's concrete redundancy story.
    *  LOCAL-ONLY — never enters the aggregate (the uploaded shape carries only the rate). */
   topRedundantFiles: { name: string; rereads: number }[];
@@ -53,6 +58,11 @@ export function runAudit(
   const temporal = computeTemporal(sessions);
   const friction = computeFriction(sessions);
   const recommendations = buildRecommendations(spend, alwaysOn, sessions, roiLedger);
+  const cwds = [...new Set(sessions.map((s) => s.cwd).filter((c): c is string => !!c))];
+  const configSuggestions = buildConfigSuggestions(
+    { roiLedger, alwaysOn, recommendations, sessionCount: sessions.length },
+    cwds,
+  );
   const top = topSessions(sessions);
   // The leaderboard enters the UPLOADED aggregate ONLY on explicit opt-in, and even
   // then anonymized (no gist/project/raw $). Default: stays local in the TUI.
@@ -67,6 +77,7 @@ export function runAudit(
     temporal,
     friction,
     recommendations,
+    configSuggestions,
     aggregate,
     topSessions: top,
     topRedundantFiles: topRedundantFiles(sessions, 3),

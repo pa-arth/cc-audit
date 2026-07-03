@@ -751,6 +751,19 @@ describe('aggregate record (privacy)', () => {
     expect(Object.values(aggregate.conditionalContext).every((v) => typeof v === 'number')).toBe(true);
   });
 
+  it('keeps configSuggestions strictly local — no path, quote, or evidence in the aggregate', () => {
+    const result = runAudit(sessions, '2026-06-16T00:00:00.000Z');
+    expect(Array.isArray(result.configSuggestions)).toBe(true);
+    const blob = JSON.stringify(result.aggregate);
+    for (const s of result.configSuggestions) {
+      if (s.file) expect(blob).not.toContain(s.file);
+      if (s.quote) expect(blob).not.toContain(s.quote);
+      expect(blob).not.toContain(s.evidence);
+    }
+    // The aggregate schema has no suggestions block at all.
+    expect(blob).not.toContain('configSuggestions');
+  });
+
   it('omits the session leaderboard from the aggregate unless --share-sessions', () => {
     expect(aggregate.topSessions).toEqual([]); // default run: nothing leaves
   });

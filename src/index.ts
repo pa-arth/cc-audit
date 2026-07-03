@@ -40,6 +40,8 @@ export type { AggregateRecord } from './aggregate.js';
 
 export { runAudit } from './audit.js';
 export type { AuditResult } from './audit.js';
+export { buildConfigSuggestions, renderConfigSuggestions } from './configSuggestions.js';
+export type { ConfigSuggestion } from './configSuggestions.js';
 export { renderReport, renderRightSizing } from './report.js';
 export { buildFootprints } from './footprint.js';
 export type { SessionFootprint } from './footprint.js';
