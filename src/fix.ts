@@ -92,9 +92,12 @@ export async function buildConfigTrimProposal(
   today: string,
   apiBase?: string,
 ): Promise<FixProposal | null> {
-  const content = readFileSync(rec.file!, 'utf8');
   let rewrite;
   try {
+    // Read inside the try: a filesystem error (perms, file removed after the
+    // isHostedTrimCandidate check, symlink loop) must surface as a (skipped) proposal,
+    // not throw out of the function — the Promise.allSettled caller never inspects rejections.
+    const content = readFileSync(rec.file!, 'utf8');
     rewrite = await requestConfigRewrite([{ path: 'CLAUDE.md', content }], today, apiBase);
   } catch (err) {
     return {

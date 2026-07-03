@@ -268,7 +268,7 @@ async function maybeConfigSuggestions(interactive: boolean, result: AuditResult)
       'nothing leaves this machine, nothing is applied.',
   );
   const ok = await p.confirm({
-    message: `Show ${n} exact config edit${n === 1 ? '' : 's'} (cut dead weight, quote never-followed rules)?`,
+    message: `Show ${n} exact config edit${n === 1 ? '' : 's'} (cut dead weight, quote never-followed rules) and write .cc-audit/*.proposed patches for reviewable diffs?`,
     initialValue: true,
   });
   if (p.isCancel(ok) || ok !== true) return null;
