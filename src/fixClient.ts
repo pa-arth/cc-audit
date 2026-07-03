@@ -9,7 +9,6 @@
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { getInstallKey } from './installKey.js';
 
 const DEFAULT_API = 'https://api.promptster.ai';
 const POLL_MS = 2000;
@@ -93,7 +92,7 @@ export async function requestConfigRewrite(
   today: string,
   apiBase: string = process.env.CC_AUDIT_API ?? DEFAULT_API,
   targetRuntime = 'claude_code',
-  installKey: string = getInstallKey(),
+  installKey: string,
 ): Promise<ConfigRewrite | null> {
   // Gate on the LOCAL backstop BEFORE the request, but only CONSUME a slot once the
   // server has accepted the job (credits committed). A transient POST failure must not

@@ -8,6 +8,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
 import { requestConfigRewrite } from './fixClient.js';
+import { getInstallKey } from './installKey.js';
 import type { Recommendation } from './recommend.js';
 import { BOX_WIDTH, c, panel, wrap } from './theme.js';
 
@@ -91,7 +92,9 @@ export async function runFix(
           today,
           opts.apiBase,
           undefined,
-          opts.installKey,
+          // Resolve the install key at the actual send site: a bare no-trim run never
+          // reaches here, so the key is only generated/persisted when we truly egress.
+          opts.installKey ?? getInstallKey(),
         );
       } catch (err) {
         proposals.push({

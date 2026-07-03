@@ -15,7 +15,7 @@
 //   cc-audit score-fluency <F> fit the server fluency shapes to your ratings
 //   cc-audit fix              turn recommendations into reviewable patches
 
-import { readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import * as p from '@clack/prompts';
 import { loadClaudeCodeSessions } from './adapters/claudeCode.js';
 import { runAudit } from './audit.js';
@@ -196,7 +196,12 @@ async function runFixCmd(args: Args): Promise<void> {
   const sessions = loadSessionsOrExit(args, interactive);
   const today = new Date().toISOString().slice(0, 10);
   const result = runAudit(sessions, new Date().toISOString());
-  const hasTrim = result.recommendations.some((r) => r.kind === 'trim-config' && r.file);
+  // Match runFix's own skip condition (file must still exist) so the disclosure never
+  // fires for a trim whose target was deleted between the audit and this run — no egress
+  // means no disclosure.
+  const hasTrim = result.recommendations.some(
+    (r) => r.kind === 'trim-config' && r.file && existsSync(r.file),
+  );
   // The CLAUDE.md trim is the only egress step. Generate/persist the install key only
   // when we're actually going to send — a no-trim run stays fully local.
   const installKey = hasTrim ? getInstallKey() : undefined;
