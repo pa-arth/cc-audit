@@ -16,7 +16,7 @@
 //   cc-audit score-fluency <F> fit the server fluency shapes to your ratings
 //   cc-audit fix              turn recommendations into reviewable patches
 
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { readFileSync, writeFileSync } from 'node:fs';
 import * as p from '@clack/prompts';
 import { loadClaudeCodeSessions } from './adapters/claudeCode.js';
 import { runAudit, type AuditResult } from './audit.js';
@@ -36,6 +36,7 @@ import { buildLabelSheet, renderScore, scoreLabels, type LabelRow } from './labe
 import { buildFluencySheet, renderBandSummary, summarizeBands, type FluencyLabelRow } from './labelFluency.js';
 import { buildConfigTrimProposal, buildModelPinProposals, isHostedTrimCandidate, renderFix, runFix } from './fix.js';
 import { DAILY_CAP, spendToday } from './fixClient.js';
+import { computeDelta, readBaseline, windowKey, writeSnapshot } from './history.js';
 import { getInstallKey } from './installKey.js';
 import type { Recommendation } from './recommend.js';
 import { machineAnonId, openURL } from './open.js';
@@ -482,11 +483,21 @@ async function run(): Promise<void> {
     : loadSessionsOrExit(args, interactive);
 
   const result = runAudit(sessions, new Date().toISOString(), { shareSessions: args.shareSessions });
+
+  // Run history (LOCAL, best-effort, silent — --json stdout purity holds by construction).
+  // An alternate --root corpus would pollute the ~/.cc-audit timeline, so history is off there.
+  const historyOn = !args.root;
+  const key = windowKey(args.sinceDays);
+  const today = new Date().toISOString().slice(0, 10);
+  const baseline = historyOn ? readBaseline(key, today) : undefined;
+  if (historyOn) writeSnapshot(result.aggregate, key, today);
+
   if (args.json) {
     process.stdout.write(`${JSON.stringify(result.aggregate, null, 2)}\n`);
     return;
   }
-  process.stdout.write(`${renderReport(result, { rows: args.rows })}\n`);
+  const delta = baseline ? computeDelta(baseline, result.aggregate) : historyOn ? ('first-run' as const) : undefined;
+  process.stdout.write(`${renderReport(result, { rows: args.rows, delta })}\n`);
 
   // Offer ladder: config suggestions (local, first) → right-sizing → share. Both
   // consents are collected up front so the two consented NETWORK calls (judge +

@@ -47,6 +47,61 @@ export interface TemporalProfile {
   medianSessionMs: number;
 }
 
+/** One trailing-7-day spend bucket (calendar-agnostic — anchored at the run moment, not
+ *  ISO weeks, because the audit window is fractional). LOCAL-ONLY via AuditResult. */
+export interface WeeklySpendBucket {
+  startMs: number; // exclusive
+  endMs: number; // inclusive
+  usd: number;
+  /** False for the newest (week in progress) and oldest (clipped by the window) buckets —
+   *  the run-rate range should read over complete weeks only. */
+  complete: boolean;
+}
+
+const WEEK_MS = 7 * 86_400_000;
+// Backstop against pathological mtimes; sparkline max-pools to 24 anyway.
+const MAX_WEEK_BUCKETS = 26;
+
+/** Spend per trailing 7-day bucket, oldest→newest. Bucket k (from newest) covers
+ *  (now-(k+1)·7d, now-k·7d]. Timestamps outside the range clamp to the edge buckets
+ *  (clock skew must never drop spend). */
+export function computeWeeklySpend(sessions: Session[], nowMs: number): WeeklySpendBucket[] {
+  let oldest = Infinity;
+  for (const s of sessions) {
+    for (const span of s.spans) {
+      for (const t of span.turns) {
+        const ts = t.ts ?? span.userTs ?? s.mtime;
+        if (ts) oldest = Math.min(oldest, ts);
+      }
+    }
+  }
+  if (oldest === Infinity || oldest >= nowMs) return [];
+
+  const count = Math.min(MAX_WEEK_BUCKETS, Math.ceil((nowMs - oldest) / WEEK_MS));
+  const buckets: WeeklySpendBucket[] = Array.from({ length: count }, (_, i) => {
+    const fromNewest = count - 1 - i;
+    return {
+      startMs: nowMs - (fromNewest + 1) * WEEK_MS,
+      endMs: nowMs - fromNewest * WEEK_MS,
+      usd: 0,
+      // Newest bucket is a week in progress; oldest is clipped by the window edge.
+      complete: fromNewest !== 0 && i !== 0,
+    };
+  });
+
+  for (const s of sessions) {
+    for (const span of s.spans) {
+      for (const t of span.turns) {
+        const ts = t.ts ?? span.userTs ?? s.mtime;
+        if (!ts) continue;
+        const fromNewest = Math.min(count - 1, Math.max(0, Math.ceil((nowMs - ts) / WEEK_MS) - 1));
+        buckets[count - 1 - fromNewest]!.usd += turnCostUsd(t.model, t.usage).usd;
+      }
+    }
+  }
+  return buckets;
+}
+
 // Gaps longer than this are "walked away" / resumed-next-day idle time, NOT active
 // think/exec/wait — counting them makes the split read as hundreds of hours of "wait"
 // dominated by overnight gaps. Cap each gap so the stratification reflects ACTIVE work.

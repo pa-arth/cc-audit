@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, afterEach, beforeAll, describe, it, expect, vi } from 'vitest';
@@ -228,5 +228,80 @@ describe('renderFix', () => {
     expect(out).toContain('~$12.50/mo');
     expect(out).toContain('git diff --no-index /p/.claude/skills/myskill/SKILL.md .cc-audit/myskill__SKILL.md.proposed');
     expect(out).toContain('⚠ SAFETY: may drop: NEVER push to main');
+  });
+});
+
+describe('runFix (context-guardrail branch — local, no network)', () => {
+  const cwd0 = process.cwd();
+  const home0 = process.env.HOME;
+  let work: string;
+  let home: string;
+
+  beforeAll(() => {
+    work = mkdtempSync(join(tmpdir(), 'cc-audit-guardfix-'));
+    home = mkdtempSync(join(tmpdir(), 'cc-audit-guardfix-home-'));
+    process.chdir(work); // proposals are written to ./.cc-audit relative to cwd
+    process.env.HOME = home; // isolates ~/.claude/settings.json reads
+  });
+  afterAll(() => {
+    process.chdir(cwd0);
+    if (home0 === undefined) delete process.env.HOME;
+    else process.env.HOME = home0;
+    rmSync(work, { recursive: true, force: true });
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  const rec = (): Recommendation => ({
+    kind: 'context-guardrail',
+    title: 'Ran to the context wall 12× — add a live /compact guardrail',
+    monthlyUsdSaved: 28,
+    file: join(home, '.claude', 'settings.json'),
+    action: 'Run `cc-audit fix`.',
+  });
+
+  it('emits script + settings proposal even when settings.json does not exist', async () => {
+    const proposals = await runFix([rec()], '2026-07-01');
+    expect(proposals).toHaveLength(1);
+    const p = proposals[0]!;
+    expect(p.kind).toBe('context-guardrail');
+    expect(p.realFileMissing).toBe(true);
+    expect(p.safe).toBe(true);
+    expect(existsSync(p.companion!.artifact)).toBe(true);
+    expect(readFileSync(p.companion!.artifact, 'utf8')).toContain('WARN_PCT=80');
+    expect(p.companion!.installTo).toBe(join(home, '.claude', 'cc-audit-context-guard.sh'));
+    const proposed = JSON.parse(readFileSync(p.proposalFile, 'utf8')) as { statusLine: { command: string } };
+    expect(proposed.statusLine.command).toBe(p.companion!.installTo);
+    // The real settings file was never created — proposals only.
+    expect(existsSync(join(home, '.claude', 'settings.json'))).toBe(false);
+    const out = renderFix(proposals);
+    expect(out).toContain('new file — review');
+    expect(out).toContain('chmod +x');
+    expect(out).not.toContain('git diff --no-index');
+  });
+
+  it('wraps an existing statusLine command and preserves other settings keys', async () => {
+    mkdirSync(join(home, '.claude'), { recursive: true });
+    writeFileSync(
+      join(home, '.claude', 'settings.json'),
+      JSON.stringify({ statusLine: { type: 'command', command: 'my-hud.sh' }, env: { FOO: '1' } }),
+    );
+    const proposals = await runFix([rec()], '2026-07-01');
+    const p = proposals[0]!;
+    expect(p.realFileMissing).toBe(false);
+    expect(p.summary).toContain('wraps your existing statusline');
+    expect(readFileSync(p.companion!.artifact, 'utf8')).toContain('my-hud.sh');
+    const proposed = JSON.parse(readFileSync(p.proposalFile, 'utf8')) as Record<string, unknown>;
+    expect(proposed.env).toEqual({ FOO: '1' });
+    expect(renderFix(proposals)).toContain('git diff --no-index');
+  });
+
+  it('corrupt settings.json → caution proposal, script still emitted', async () => {
+    writeFileSync(join(home, '.claude', 'settings.json'), '{not json');
+    const proposals = await runFix([rec()], '2026-07-01');
+    const p = proposals[0]!;
+    expect(p.safe).toBe(false);
+    expect(p.caution).toContain('did not parse');
+    expect(existsSync(p.companion!.artifact)).toBe(true);
+    expect(renderFix(proposals)).toContain('⚠ SAFETY:');
   });
 });

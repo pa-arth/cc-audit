@@ -4,6 +4,7 @@ import { buildRoiLedger } from '../roiLedger.js';
 import type { AlwaysOnTax } from '../alwaysOn.js';
 import type { SpendBreakdown } from '../attribute.js';
 import type { Session, Span, AssistantTurn, TurnUsage } from '../model.js';
+import type { ContextHygiene } from '../contextHygiene.js';
 
 // Hand-built sessions (no fs, no transcripts) — buildRecommendations' breakeven block
 // reads only span/turn usage plus the blended read rate off AlwaysOnTax.
@@ -94,6 +95,21 @@ function alwaysOnStub(over: Partial<AlwaysOnTax> = {}): AlwaysOnTax {
     ...over,
   };
 }
+// All-zero hygiene: the guardrail block stays silent so these delegation-breakeven
+// tests see only the subagent-policy rec. The real call site (audit.ts) passes live data.
+function hygieneStub(over: Partial<ContextHygiene> = {}): ContextHygiene {
+  return {
+    windowDays: 15,
+    autoCompactions: 0,
+    sessionsRunToWall: 0,
+    overdueEpisodes: [],
+    avoidableCompactUsd: 0,
+    staleCarrySwitches: [],
+    avoidableClearUsd: 0,
+    avoidableTotalUsd: 0,
+    ...over,
+  };
+}
 
 // A hollow spawn: 17.5k-token setup, 500 tok of actual work beyond it.
 const hollowSpawn = () => span([turn({ input: 500, cacheWrite5m: 17000, output: 500 })], true);
@@ -115,7 +131,7 @@ describe('delegation-breakeven recommendation', () => {
       mainSession(),
       session('spawns', [hollowSpawn(), hollowSpawn(), hollowSpawn(), earningSpawn(), earningSpawn(), earningSpawn()]),
     ];
-    const recs = buildRecommendations(spendStub(), alwaysOnStub(), sessions, roi);
+    const recs = buildRecommendations(spendStub(), alwaysOnStub(), sessions, roi, hygieneStub());
     const rec = recs.find((r) => r.kind === 'subagent-policy')!;
     expect(rec).toBeTruthy();
     expect(rec.title).toContain('3 of 6 subagent spawns');
@@ -142,7 +158,7 @@ describe('delegation-breakeven recommendation', () => {
       mainSession(),
       session('spawns', [haikuHollow(), haikuHollow(), haikuHollow(), haikuEarning(), haikuEarning(), haikuEarning()]),
     ];
-    const recs = buildRecommendations(spendStub({ windowDays: 1 }), alwaysOnStub(), sessions, roi);
+    const recs = buildRecommendations(spendStub({ windowDays: 1 }), alwaysOnStub(), sessions, roi, hygieneStub());
     const rec = recs.find((r) => r.kind === 'subagent-policy')!;
     expect(rec).toBeTruthy();
     expect(rec.action).toContain('≳4k tok'); // main-chain 0.5 rate; a blend would give ~≳15k+
@@ -153,7 +169,7 @@ describe('delegation-breakeven recommendation', () => {
       mainSession(),
       session('spawns', [hollowSpawn(), hollowSpawn(), earningSpawn(), earningSpawn()]),
     ];
-    const recs = buildRecommendations(spendStub(), alwaysOnStub(), sessions, roi);
+    const recs = buildRecommendations(spendStub(), alwaysOnStub(), sessions, roi, hygieneStub());
     expect(recs.filter((r) => r.kind === 'subagent-policy')).toHaveLength(0);
   });
 
@@ -162,7 +178,7 @@ describe('delegation-breakeven recommendation', () => {
       mainSession(),
       session('spawns', [earningSpawn(), earningSpawn(), earningSpawn(), earningSpawn(), earningSpawn()]),
     ];
-    const recs = buildRecommendations(spendStub(), alwaysOnStub(), sessions, roi);
+    const recs = buildRecommendations(spendStub(), alwaysOnStub(), sessions, roi, hygieneStub());
     expect(recs.filter((r) => r.kind === 'subagent-policy')).toHaveLength(0);
   });
 });

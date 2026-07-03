@@ -30,8 +30,8 @@ export { computePluginTax } from './pluginTax.js';
 export type { PluginTax, PluginInfo } from './pluginTax.js';
 export { buildRoiLedger } from './roiLedger.js';
 export type { RoiLedger, SkillRoiRow, McpRoiRow, SkillVerdict } from './roiLedger.js';
-export { computeTemporal } from './temporal.js';
-export type { TemporalProfile, HourBucket, StratifiedTime } from './temporal.js';
+export { computeTemporal, computeWeeklySpend } from './temporal.js';
+export type { TemporalProfile, HourBucket, StratifiedTime, WeeklySpendBucket } from './temporal.js';
 export { computeFriction, spanSkillKey } from './friction.js';
 export type { FrictionTaxonomy, SkillFriction, FrictionKind } from './friction.js';
 

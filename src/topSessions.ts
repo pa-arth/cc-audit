@@ -47,8 +47,8 @@ const BARS = '▁▂▃▄▅▆▇█';
 const MAX_BARS = 24; // keep the trajectory inside the report's column width
 
 /** Turns-per-prompt sparkline, max-pooled into <= MAX_BARS buckets so a 60-prompt
- *  session doesn't overflow the line. */
-function sparkline(values: number[]): string {
+ *  session doesn't overflow the line. Also renders the weekly-spend line in the report. */
+export function sparkline(values: number[]): string {
   if (values.length === 0) return '';
   let v = values;
   if (values.length > MAX_BARS) {

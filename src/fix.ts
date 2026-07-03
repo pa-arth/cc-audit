@@ -6,14 +6,22 @@
 //   - config-trim: the hosted config-review rewrite engine (spends credits; capped).
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
+import {
+  buildGuardScript,
+  buildSettingsProposal,
+  existingStatusLineCommand,
+  GUARD_SCRIPT_NAME,
+  readUserSettings,
+} from './contextGuard.js';
 import { requestConfigRewrite } from './fixClient.js';
 import { getInstallKey } from './installKey.js';
 import type { Recommendation } from './recommend.js';
 import { BOX_WIDTH, c, panel, wrap } from './theme.js';
 
 export interface FixProposal {
-  kind: 'model-pin' | 'config-trim';
+  kind: 'model-pin' | 'config-trim' | 'context-guardrail';
   title: string;
   /** The real file the change targets (never written to). */
   realFile: string;
@@ -24,6 +32,10 @@ export interface FixProposal {
   safe: boolean;
   caution: string | null;
   summary: string;
+  /** Companion artifact (the guardrail script) with its install destination. */
+  companion?: { artifact: string; installTo: string };
+  /** The real file doesn't exist yet — review the proposal directly, no diff to show. */
+  realFileMissing?: boolean;
 }
 
 const PROPOSAL_DIR = '.cc-audit';
@@ -150,6 +162,36 @@ export async function runFix(
 ): Promise<FixProposal[]> {
   const proposals: FixProposal[] = buildModelPinProposals(recommendations);
   for (const rec of recommendations) {
+    // Guardrail first — its target (~/.claude/settings.json) may not exist yet, so it
+    // must not fall through the isHostedTrimCandidate gate below. Pure local: no network, no cap.
+    if (rec.kind === 'context-guardrail') {
+      const settings = readUserSettings();
+      const existing = existingStatusLineCommand(settings.parsed);
+      const installTo = join(homedir(), '.claude', GUARD_SCRIPT_NAME);
+      const script = buildGuardScript({ existingCommand: existing, monthlyUsd: rec.monthlyUsdSaved });
+      mkdirSync(PROPOSAL_DIR, { recursive: true });
+      const artifact = join(PROPOSAL_DIR, GUARD_SCRIPT_NAME);
+      writeFileSync(artifact, script, { mode: 0o755 });
+      const corrupt = settings.raw !== null && settings.parsed === null;
+      const proposalFile = writeProposal(settings.path, buildSettingsProposal(settings.parsed, installTo));
+      proposals.push({
+        kind: 'context-guardrail',
+        title: rec.title,
+        realFile: settings.path,
+        proposalFile,
+        monthlyUsdSaved: rec.monthlyUsdSaved,
+        safe: !corrupt,
+        caution: corrupt ? 'your settings.json did not parse — merge the statusLine block by hand' : null,
+        summary: existing
+          ? `statusline warns at 80% context — wraps your existing statusline command`
+          : `statusline warns at 80% context (amber) and 90% (red)`,
+        companion: { artifact, installTo },
+        realFileMissing: settings.raw === null,
+      });
+      continue;
+    }
+    // Local model-pin patches are handled by buildModelPinProposals above; the only
+    // remaining file edit is the hosted CLAUDE.md trim (gated + install-key threaded).
     if (!isHostedTrimCandidate(rec)) continue;
     const trim = await buildConfigTrimProposal(rec, today, opts.apiBase, opts.installKey);
     if (trim) proposals.push(trim);
@@ -186,7 +228,14 @@ export function renderFix(proposals: FixProposal[]): string {
           rows.push(c.amber(`   ${ln}`));
         }
       }
-      rows.push(`   ${c.dim('review:')}  ${c.cyan(`git diff --no-index ${p.realFile} ${p.proposalFile}`)}`);
+      if (p.companion) {
+        rows.push(`   ${c.dim('install:')} ${c.cyan(`cp ${p.companion.artifact} ${p.companion.installTo} && chmod +x ${p.companion.installTo}`)}`);
+      }
+      if (p.realFileMissing) {
+        rows.push(`   ${c.dim('review:')}  new file — review ${p.proposalFile} directly`);
+      } else {
+        rows.push(`   ${c.dim('review:')}  ${c.cyan(`git diff --no-index ${p.realFile} ${p.proposalFile}`)}`);
+      }
     }
     i += 1;
   }
