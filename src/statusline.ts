@@ -25,7 +25,7 @@ import { contextTokens } from './contextHygiene.js';
 import { detectLiveBoundary } from './liveBoundary.js';
 import { isKneeCacheStale, readKneeCache, spawnKneeRefresh } from './kneeCache.js';
 import { installStatusline, uninstallStatusline } from './statuslineInstall.js';
-import { allTurns, type Session } from './model.js';
+import { type Session } from './model.js';
 
 export interface StatuslineState {
   /** Live context size (tokens) of the current turn, or null when undiscoverable. */
@@ -57,12 +57,17 @@ export function renderStatuslineLabel(s: StatuslineState): string {
   return `⚠ past your knee · ${ctx}`;
 }
 
-/** Context size of the most recent own-chain turn — the live ctx gauge. */
+/** Context size of the most recent own-chain turn — the live ctx gauge. Skip sidechain
+ *  spans: when a sub-agent is active its (small, fresh) context is the newest entry, and
+ *  reading it would understate the main session's live ctx and flicker the knee warning. */
 function lastOwnCtx(session: Session): number | null {
   let ctx: number | null = null;
-  for (const t of allTurns(session)) {
-    const c = contextTokens(t);
-    if (c > 0) ctx = c;
+  for (const span of session.spans) {
+    if (span.isSidechain) continue;
+    for (const t of span.turns) {
+      const c = contextTokens(t);
+      if (c > 0) ctx = c;
+    }
   }
   return ctx;
 }

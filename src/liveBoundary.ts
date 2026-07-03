@@ -1,7 +1,8 @@
 // Compact-boundary detection over the LIVE session — the "FIRE" half of the live-guardrail
 // two-part trigger. A compact boundary requires BOTH signals (either alone is too weak):
 //   - topic shift:   the latest prompt's content words barely overlap the recent prompt
-//                    thread (content-word Jaccard < 0.2 vs the last ~3 meaningful prompts).
+//                    thread (< 20% of the new prompt's content words appear in the last
+//                    ~3 meaningful prompts — a containment ratio, not a symmetric Jaccard).
 //   - file rotation: the file working set fully rotated across that prompt (≥2 distinct
 //                    files each side, zero overlap) — reuses contextHygiene.workingSetRotated
 //                    (its staleSwitches "new idea, didn't /clear" detector).
@@ -16,7 +17,7 @@ import type { Session, Span } from './model.js';
 import { workingSetRotated } from './contextHygiene.js';
 
 const TOPIC_SHIFT_MIN_WORDS = 8; // a prompt below this is too short to judge a topic shift
-const TOPIC_SHIFT_MAX_OVERLAP = 0.2; // content-word Jaccard below this = a new topic
+const TOPIC_SHIFT_MAX_OVERLAP = 0.2; // fraction of the new prompt's words seen recently; below this = a new topic
 const TOPIC_SHIFT_WINDOW = 3; // meaningful prompts of recent thread to compare against
 const TOPIC_STOPWORDS = new Set(
   ('this that these those with have having from what when where which while should would could ' +

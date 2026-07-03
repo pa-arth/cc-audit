@@ -55,10 +55,16 @@ export type PatchStatus =
   | 'already-installed'
   | 'foreign-extra-cmd'
   | 'not-hud'
-  | 'unsafe-value';
+  | 'unsafe-value'
+  // A backup/write to settings.json threw — distinct from 'not-hud' (no claude-hud
+  // statusline) so a caller routing on status can't misread I/O failure as bad setup.
+  | 'io-error';
 
 export interface PatchResult {
-  status: PatchStatus;
+  // injectExtraCmd is a pure classifier — it never does I/O, so it can't yield 'io-error'
+  // (that only comes from the settings.json write). Excluding it keeps the install switch
+  // exhaustive without a dead branch.
+  status: Exclude<PatchStatus, 'io-error'>;
   /** The rewritten command — only present when status === 'patched'. */
   command?: string;
 }
@@ -233,7 +239,7 @@ export function installStatusline(opts: InstallOptions = {}): InstallOutcome {
         (read.obj.statusLine as { command: string }).command = patch.command!;
         writeFileSync(path, `${JSON.stringify(read.obj, null, 2)}\n`);
       } catch (err) {
-        return { ok: false, status: 'not-hud', value, message: `Failed to write settings.json: ${err instanceof Error ? err.message : String(err)}` };
+        return { ok: false, status: 'io-error', value, message: `Failed to write settings.json: ${err instanceof Error ? err.message : String(err)}` };
       }
       const formNote =
         resolved.form === 'absolute'
@@ -281,7 +287,7 @@ export function uninstallStatusline(opts: InstallOptions = {}): InstallOutcome {
     (read.obj.statusLine as { command: string }).command = next;
     writeFileSync(path, `${JSON.stringify(read.obj, null, 2)}\n`);
   } catch (err) {
-    return { ok: false, status: 'not-hud', value, message: `Failed to write settings.json: ${err instanceof Error ? err.message : String(err)}` };
+    return { ok: false, status: 'io-error', value, message: `Failed to write settings.json: ${err instanceof Error ? err.message : String(err)}` };
   }
   return { ok: true, status: 'patched', value, message: `Removed the guardrail line from claude-hud (backup at ${path}.bak).` };
 }
