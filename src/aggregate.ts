@@ -38,7 +38,11 @@ import type { AnonTopSession } from './topSessions.js';
 // enabled-plugin bundled skill/command/agent listing tokens (folded into the per-turn
 // config total), plugin count, and unused-plugin count. TOKENS + COUNTS only; per-plugin
 // names/paths stay LOCAL in the TUI.
-export const AGGREGATE_SCHEMA_VERSION = 7;
+// v8: alwaysOn spawn economics — spawnsPerMonth, spawnPrefixTokens (median subagent
+// turn-1 prefix), spawnTaxMonthlyUsd (the standing block re-WRITTEN at cache-write
+// prices on every subagent spawn). COUNTS + TOKENS + $ only; the blended rate fields
+// on AlwaysOnTax stay LOCAL (derivable from public pricing anyway).
+export const AGGREGATE_SCHEMA_VERSION = 8;
 
 // Well-known public command/skill names kept verbatim; everything else is hashed
 // so a custom name like `acme-deploy` can't leak project/company info.
@@ -161,6 +165,9 @@ export const AggregateRecordSchema = z.object({
     mcpServerCount: z.number(),
     mcpDeferred: z.boolean(),
     mcpInvokedRate: z.number(),
+    spawnsPerMonth: z.number(),
+    spawnPrefixTokens: z.number(),
+    spawnTaxMonthlyUsd: z.number(),
   }),
   // Anonymized "top spenders" — empty unless --share-sessions. Cost SHARE + structure
   // only; never the prompt gist, project, or a raw dollar amount.
@@ -316,6 +323,9 @@ export function buildAggregateRecord(
       mcpServerCount: alwaysOn.mcpServerCount,
       mcpDeferred: alwaysOn.mcpDeferred,
       mcpInvokedRate: alwaysOn.mcpInvokedRate,
+      spawnsPerMonth: alwaysOn.spawnsPerMonth,
+      spawnPrefixTokens: alwaysOn.spawnPrefixTokens,
+      spawnTaxMonthlyUsd: alwaysOn.spawnTaxMonthlyUsd,
     },
     contextHygiene: {
       autoCompactions: contextHygiene.autoCompactions,

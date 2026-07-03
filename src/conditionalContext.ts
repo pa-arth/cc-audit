@@ -20,6 +20,7 @@ import { readdirSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { readConfigFile, resolveConfigRef, sanitizeUntrusted, stripCode } from './configFiles.js';
+import { median } from './spawnStats.js';
 import type { Session } from './model.js';
 
 /** Below this many relevant sessions, "fraction that read X" is statistical noise
@@ -67,11 +68,6 @@ export interface ConditionalContextItem {
 // "read the README" (no ext) and "see section 2.1" (resolves to nothing) are dropped.
 const INSTRUCTION_RE =
   /\b(?:read|consult|review|check|see|follow|refer to|look at|load|open)\b[^\n]{0,40}?([~./\w-]*[\w-]+\.[A-Za-z]{1,6})\b/gi;
-
-function median(nums: number[]): number {
-  const s = [...nums].sort((a, b) => a - b);
-  return s[Math.floor(s.length / 2)]!;
-}
 
 /** 1-based index of the first turn in the session that Read `file` (by basename), or
  *  null if it was never read. */

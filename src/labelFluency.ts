@@ -81,7 +81,7 @@ function sessionTopModel(session: Session): string {
 function sessionCostUsd(session: Session): number {
   let usd = 0;
   for (const span of session.spans) {
-    for (const t of span.turns) usd += turnCostUsd(t.model, t.usage).usd;
+    for (const t of span.turns) usd += turnCostUsd(t.model, t.usage, t.ts).usd;
   }
   return usd;
 }

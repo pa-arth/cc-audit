@@ -127,7 +127,7 @@ export function attributeSpend(sessions: Session[]): SpendBreakdown {
     for (const span of session.spans) {
       let spanCost = 0;
       for (const turn of span.turns) {
-        const { usd, priced } = turnCostUsd(turn.model, turn.usage);
+        const { usd, priced } = turnCostUsd(turn.model, turn.usage, turn.ts);
         spanCost += usd;
         total += usd;
         if (!priced) unpriced += usd;

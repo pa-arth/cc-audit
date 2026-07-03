@@ -8,6 +8,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
 import { requestConfigRewrite } from './fixClient.js';
+import { getInstallKey } from './installKey.js';
 import type { Recommendation } from './recommend.js';
 import { BOX_WIDTH, c, panel, wrap } from './theme.js';
 
@@ -91,6 +92,7 @@ export async function buildConfigTrimProposal(
   rec: Recommendation,
   today: string,
   apiBase?: string,
+  installKey?: string,
 ): Promise<FixProposal | null> {
   let rewrite;
   try {
@@ -98,7 +100,15 @@ export async function buildConfigTrimProposal(
     // isHostedTrimCandidate check, symlink loop) must surface as a (skipped) proposal,
     // not throw out of the function — the Promise.allSettled caller never inspects rejections.
     const content = readFileSync(rec.file!, 'utf8');
-    rewrite = await requestConfigRewrite([{ path: 'CLAUDE.md', content }], today, apiBase);
+    // Resolve the install key at the actual send site — this function is only reached
+    // for a real hosted-trim candidate, so the key is generated/persisted only on egress.
+    rewrite = await requestConfigRewrite(
+      [{ path: 'CLAUDE.md', content }],
+      today,
+      apiBase,
+      undefined,
+      installKey ?? getInstallKey(),
+    );
   } catch (err) {
     return {
       kind: 'config-trim',
@@ -136,12 +146,12 @@ export async function buildConfigTrimProposal(
 export async function runFix(
   recommendations: Recommendation[],
   today: string,
-  opts: { apiBase?: string } = {},
+  opts: { apiBase?: string; installKey?: string } = {},
 ): Promise<FixProposal[]> {
   const proposals: FixProposal[] = buildModelPinProposals(recommendations);
   for (const rec of recommendations) {
     if (!isHostedTrimCandidate(rec)) continue;
-    const trim = await buildConfigTrimProposal(rec, today, opts.apiBase);
+    const trim = await buildConfigTrimProposal(rec, today, opts.apiBase, opts.installKey);
     if (trim) proposals.push(trim);
   }
   return proposals;

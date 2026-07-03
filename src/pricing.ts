@@ -10,8 +10,19 @@ import type { TurnUsage } from './model.js';
 // flags any spend that hit this path so a missing price can't silently distort.
 const FALLBACK = { input: 3, output: 15, cacheRead: 0.3, cacheWrite5min: 3.75, cacheWrite1hr: 6 };
 
-export function turnCostUsd(model: string | null, u: TurnUsage): { usd: number; priced: boolean } {
-  const a = model ? getAnthropicPricing(model) : null;
+/**
+ * Cost of one assistant turn. Pass the turn's epoch-ms timestamp (`AssistantTurn.ts`)
+ * as `ts` so dated introductory pricing (e.g. Sonnet 5 until Sept 2026) reprices
+ * historical usage at the rate that was actually billed; omitting it uses the
+ * steady-state table rate.
+ */
+export function turnCostUsd(
+  model: string | null,
+  u: TurnUsage,
+  ts?: number | null,
+): { usd: number; priced: boolean } {
+  const at = ts != null ? new Date(ts) : undefined;
+  const a = model ? getAnthropicPricing(model, at) : null;
   if (a) {
     return {
       usd:
