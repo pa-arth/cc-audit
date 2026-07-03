@@ -145,8 +145,10 @@ export function computeFriction(sessions: Session[]): FrictionTaxonomy {
   for (const session of sessions) {
     for (const span of session.spans) {
       const acc = get(spanSkillKey(span));
+      // Single source of truth: sum the located friction events (same detector the
+      // context-knee buckets read). turnCostUsd takes t.ts for time-aware pricing.
       acc.turns += span.turns.length;
-      for (const t of span.turns) acc.usd += turnCostUsd(t.model, t.usage).usd;
+      for (const t of span.turns) acc.usd += turnCostUsd(t.model, t.usage, t.ts).usd;
       for (const e of spanFrictionEvents(span)) {
         if (e.kind === 'tool-error') acc.toolErrors += e.count;
         else if (e.kind === 'self-correction') acc.selfCorrections += e.count;

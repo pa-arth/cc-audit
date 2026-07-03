@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { parseTranscript } from '../adapters/claudeCode.js';
-import { computeTemporal } from '../temporal.js';
+import { computeTemporal, computeWeeklySpend } from '../temporal.js';
 
 // Helpers that emit JSONL rows with ISO timestamps and tool_result back-references, so
 // these tests exercise the real adapter parsing (ts / toolResultTs / mode).
@@ -114,5 +114,44 @@ describe('adapter — per-turn mode tracking', () => {
     const turns = s.spans[0]!.turns;
     expect(turns[0]!.mode).toBe('plan'); // the ExitPlanMode turn still ran in plan
     expect(turns[1]!.mode).toBe('normal'); // flipped after acceptance
+  });
+});
+
+describe('computeWeeklySpend — trailing 7-day buckets', () => {
+  const DAY = 86_400_000;
+  const day = (n: number) => T0 - n * DAY;
+
+  it('buckets turns into trailing weeks anchored at now, oldest→newest', () => {
+    const s = parseTranscript(
+      '/tmp/w.jsonl',
+      raw([user('p1', day(15)), asst(day(15)), asst(day(8)), asst(day(1))]),
+      'proj',
+    )!;
+    const buckets = computeWeeklySpend([s], T0);
+    expect(buckets).toHaveLength(3); // 15 days back ⇒ ceil(15/7) = 3 buckets
+    expect(buckets.map((b) => b.usd > 0)).toEqual([true, true, true]); // one turn each
+    expect(buckets[0]!.usd).toBeCloseTo(buckets[2]!.usd); // identical usage per turn
+    expect(buckets.map((b) => b.complete)).toEqual([false, true, false]); // edges partial
+    expect(buckets[2]!.endMs).toBe(T0);
+    expect(buckets[2]!.startMs).toBe(T0 - 7 * DAY);
+  });
+
+  it('falls back ts → span.userTs → session.mtime and clamps future timestamps', () => {
+    const s = parseTranscript(
+      '/tmp/w2.jsonl',
+      raw([user('p1', day(9)), asst(null), user('p2', day(9)), asst(T0 + DAY)]),
+      'proj',
+    )!;
+    const buckets = computeWeeklySpend([s], T0);
+    expect(buckets).toHaveLength(2);
+    expect(buckets[0]!.usd).toBeGreaterThan(0); // ts:null turn landed via span.userTs @ -9d
+    expect(buckets[1]!.usd).toBeGreaterThan(0); // future turn clamped into the newest bucket
+  });
+
+  it('returns [] when no usable timestamps exist', () => {
+    const s = parseTranscript('/tmp/w3.jsonl', raw([user('p1', T0), asst(null)]), 'proj')!;
+    s.mtime = 0;
+    s.spans[0]!.userTs = null;
+    expect(computeWeeklySpend([s], T0)).toEqual([]);
   });
 });

@@ -3,11 +3,12 @@
 import { computeAlwaysOn, type AlwaysOnTax } from './alwaysOn.js';
 import { attributeSpend, type SpendBreakdown } from './attribute.js';
 import { buildAggregateRecord, type AggregateRecord } from './aggregate.js';
+import { buildConfigSuggestions, type ConfigSuggestion } from './configSuggestions.js';
 import { computeContextHygiene, type ContextHygiene } from './contextHygiene.js';
 import { computeFluency, topRedundantFiles, type FluencySignals } from './fluency.js';
 import { buildRecommendations, type Recommendation } from './recommend.js';
 import { buildRoiLedger, type RoiLedger } from './roiLedger.js';
-import { computeTemporal, type TemporalProfile } from './temporal.js';
+import { computeTemporal, computeWeeklySpend, type TemporalProfile, type WeeklySpendBucket } from './temporal.js';
 import { computeFriction, type FrictionTaxonomy } from './friction.js';
 import { anonymizeTopSessions, topSessions, type TopSession } from './topSessions.js';
 import { computeContextKnee, type ContextKnee } from './contextKnee.js';
@@ -27,9 +28,16 @@ export interface AuditResult {
   temporal: TemporalProfile;
   /** Per-skill friction (tool-error / self-correction / retry-loop). */
   friction: FrictionTaxonomy;
+  /** Spend per trailing 7-day bucket, oldest→newest — the report's run-rate sparkline.
+   *  LOCAL-ONLY, never enters the aggregate. */
+  weeklySpend: WeeklySpendBucket[];
   /** Ranked, file-anchored next actions (the config-knob bridge). Local-only — paths
    *  here never enter the aggregate. */
   recommendations: Recommendation[];
+  /** Exact config edits (delete skill X, cut instruction Y) — the first interactive
+   *  offer. LOCAL-ONLY (paths, skill names, quoted instruction text) — never enters
+   *  the aggregate. */
+  configSuggestions: ConfigSuggestion[];
   /** Most-re-read files (basename only) for the report's concrete redundancy story.
    *  LOCAL-ONLY — never enters the aggregate (the uploaded shape carries only the rate). */
   topRedundantFiles: { name: string; rereads: number }[];
@@ -56,8 +64,14 @@ export function runAudit(
   // ROI ledger must be built BEFORE recommendations — dead-weight skills/servers feed recs.
   const roiLedger = buildRoiLedger(spend, alwaysOn, sessions);
   const temporal = computeTemporal(sessions);
+  const weeklySpend = computeWeeklySpend(sessions, Date.parse(generatedAt));
   const friction = computeFriction(sessions);
-  const recommendations = buildRecommendations(spend, alwaysOn, sessions, roiLedger);
+  const recommendations = buildRecommendations(spend, alwaysOn, sessions, roiLedger, contextHygiene);
+  const cwds = [...new Set(sessions.map((s) => s.cwd).filter((c): c is string => !!c))];
+  const configSuggestions = buildConfigSuggestions(
+    { roiLedger, alwaysOn, recommendations, sessionCount: sessions.length },
+    cwds,
+  );
   const top = topSessions(sessions);
   // Sessions are already loaded, so fitting the knee here is near-free (the statusline
   // pays the scan separately because it runs without a full audit in scope).
@@ -74,7 +88,9 @@ export function runAudit(
     roiLedger,
     temporal,
     friction,
+    weeklySpend,
     recommendations,
+    configSuggestions,
     aggregate,
     topSessions: top,
     contextKnee,

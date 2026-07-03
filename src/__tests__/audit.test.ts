@@ -7,6 +7,7 @@ import { attributeSpend } from '../attribute.js';
 import { computeAlwaysOn } from '../alwaysOn.js';
 import { computeFluency } from '../fluency.js';
 import { buildRecommendations } from '../recommend.js';
+import { computeContextHygiene } from '../contextHygiene.js';
 import { buildRoiLedger } from '../roiLedger.js';
 import { runAudit } from '../audit.js';
 import { AggregateRecordSchema } from '../aggregate.js';
@@ -680,7 +681,7 @@ describe('recommendations: the config-knob bridge', () => {
   const session = parseTranscript('/tmp/rec.jsonl', FX, 'p', new Set())!;
   const recSpend = attributeSpend([session]);
   const recAlwaysOn = computeAlwaysOn([session]);
-  const recs = buildRecommendations(recSpend, recAlwaysOn, [session], buildRoiLedger(recSpend, recAlwaysOn, [session]));
+  const recs = buildRecommendations(recSpend, recAlwaysOn, [session], buildRoiLedger(recSpend, recAlwaysOn, [session]), computeContextHygiene([session]));
 
   it('points an unpinned premium skill at its exact SKILL.md with a model-pin action', () => {
     const r = recs.find((x) => x.kind === 'model-pin' && x.title.includes('myskill'))!;
@@ -688,6 +689,47 @@ describe('recommendations: the config-knob bridge', () => {
     expect(r.file).toBe(join(proj, '.claude', 'skills', 'myskill', 'SKILL.md'));
     expect(r.action).toMatch(/model:/);
     expect(r.monthlyUsdSaved).toBeGreaterThan(0);
+  });
+
+  it('recommends a context guardrail when sessions ran to the wall', () => {
+    // The auto-compaction marker: a user row carrying isCompactSummary + a promptId.
+    const fx = [
+      { type: 'user', promptId: 'g1', message: { content: 'big task' } },
+      {
+        type: 'assistant',
+        message: {
+          id: 'g1a',
+          model: 'claude-opus-4-8',
+          usage: { input_tokens: 0, output_tokens: 100, cache_read_input_tokens: 200000, cache_creation_input_tokens: 0 },
+          content: [],
+        },
+      },
+      { type: 'user', promptId: 'g2', isCompactSummary: true, message: { content: 'This session is being continued.' } },
+      {
+        type: 'assistant',
+        message: {
+          id: 'g2a',
+          model: 'claude-opus-4-8',
+          usage: { input_tokens: 0, output_tokens: 100, cache_read_input_tokens: 1000, cache_creation_input_tokens: 0 },
+          content: [],
+        },
+      },
+    ]
+      .map((e) => JSON.stringify(e))
+      .join('\n');
+    const sess = parseTranscript('/tmp/guard.jsonl', fx, 'p', new Set())!;
+    const gSpend = attributeSpend([sess]);
+    const gAlwaysOn = computeAlwaysOn([sess]);
+    const out = buildRecommendations(gSpend, gAlwaysOn, [sess], buildRoiLedger(gSpend, gAlwaysOn, [sess]), computeContextHygiene([sess]));
+    const r = out.find((x) => x.kind === 'context-guardrail')!;
+    expect(r).toBeTruthy();
+    expect(r.title).toContain('context wall');
+    expect(r.file).toMatch(/\.claude\/settings\.json$/);
+    expect(r.action).toContain('cc-audit fix');
+  });
+
+  it('does NOT recommend a guardrail for quiet sessions (no walls, trivial compact carry)', () => {
+    expect(recs.some((x) => x.kind === 'context-guardrail')).toBe(false);
   });
 
   it('does NOT recommend pinning a skill that already has a model pin', () => {
@@ -714,7 +756,7 @@ describe('recommendations: the config-knob bridge', () => {
     const sess = parseTranscript('/tmp/rec2.jsonl', fx, 'p', new Set())!;
     const sSpend = attributeSpend([sess]);
     const sAlwaysOn = computeAlwaysOn([sess]);
-    const out = buildRecommendations(sSpend, sAlwaysOn, [sess], buildRoiLedger(sSpend, sAlwaysOn, [sess]));
+    const out = buildRecommendations(sSpend, sAlwaysOn, [sess], buildRoiLedger(sSpend, sAlwaysOn, [sess]), computeContextHygiene([sess]));
     expect(out.some((x) => x.kind === 'model-pin' && x.title.includes('pinnedskill'))).toBe(false);
   });
 });
@@ -749,6 +791,19 @@ describe('aggregate record (privacy)', () => {
     // Every value in the conditionalContext aggregate must be a number; a string here
     // would mean a basename or skill name leaked off the machine.
     expect(Object.values(aggregate.conditionalContext).every((v) => typeof v === 'number')).toBe(true);
+  });
+
+  it('keeps configSuggestions strictly local — no path, quote, or evidence in the aggregate', () => {
+    const result = runAudit(sessions, '2026-06-16T00:00:00.000Z');
+    expect(Array.isArray(result.configSuggestions)).toBe(true);
+    const blob = JSON.stringify(result.aggregate);
+    for (const s of result.configSuggestions) {
+      if (s.file) expect(blob).not.toContain(s.file);
+      if (s.quote) expect(blob).not.toContain(s.quote);
+      expect(blob).not.toContain(s.evidence);
+    }
+    // The aggregate schema has no suggestions block at all.
+    expect(blob).not.toContain('configSuggestions');
   });
 
   it('omits the session leaderboard from the aggregate unless --share-sessions', () => {

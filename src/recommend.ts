@@ -19,12 +19,13 @@ import { sessionRedundancy, topRedundantFiles } from './fluency.js';
 import { FALLBACK_READ_RATE, collectSpawnStats, median } from './spawnStats.js';
 import type { AlwaysOnTax } from './alwaysOn.js';
 import type { SpendBreakdown } from './attribute.js';
+import type { ContextHygiene } from './contextHygiene.js';
 import type { RoiLedger } from './roiLedger.js';
 import type { Session } from './model.js';
 
 export interface Recommendation {
   /** Action class — drives how the report renders it. */
-  kind: 'model-pin' | 'restructure' | 'trim-config' | 'subagent-policy';
+  kind: 'model-pin' | 'restructure' | 'trim-config' | 'subagent-policy' | 'context-guardrail';
   title: string;
   /** Projected monthly saving (estimate). 0 when the saving isn't quantifiable. */
   monthlyUsdSaved: number;
@@ -53,7 +54,7 @@ function tierRatio(currentModel: string, target = DEFAULT_TARGET): number {
 }
 
 /** First on-disk SKILL.md for a skill name: user dir, then any session project dir. */
-function locateSkillFile(name: string, cwds: string[]): string | null {
+export function locateSkillFile(name: string, cwds: string[]): string | null {
   const base = name.includes(':') ? name.split(':').pop()! : name;
   const candidates = [
     join(homedir(), '.claude', 'skills', base, 'SKILL.md'),
@@ -75,6 +76,7 @@ export function buildRecommendations(
   alwaysOn: AlwaysOnTax,
   sessions: Session[],
   roi: RoiLedger,
+  contextHygiene: ContextHygiene,
 ): Recommendation[] {
   const recs: Recommendation[] = [];
   const perMo = (windowUsd: number) => (windowUsd / spend.windowDays) * 30.44;
@@ -250,7 +252,27 @@ export function buildRecommendations(
     });
   }
 
-  // 9) Delegation breakeven — every spawn re-writes the standing block at cache-WRITE
+  // 9) Context guardrail: the biggest line item (avoidable compact carry) has a LIVE fix —
+  //    a statusline warning at the compact threshold beats a post-hoc "you were 208 turns
+  //    overdue". Only the /compact half counts (a guardrail doesn't fix missed /clear).
+  //    Statusline scripting is bash; skip on Windows rather than emit a broken proposal.
+  const compactPerMo = (contextHygiene.avoidableCompactUsd / Math.max(1, contextHygiene.windowDays)) * 30.44;
+  if (process.platform !== 'win32' && (compactPerMo > 10 || contextHygiene.autoCompactions > 0)) {
+    const walls = contextHygiene.autoCompactions;
+    recs.push({
+      kind: 'context-guardrail',
+      title: walls > 0
+        ? `Ran to the context wall ${walls}× — add a live /compact guardrail`
+        : `~${compactPerMo.toFixed(0)}/mo of overdue-compact carry — add a live /compact guardrail`,
+      monthlyUsdSaved: compactPerMo,
+      file: join(homedir(), '.claude', 'settings.json'),
+      action:
+        `Run \`cc-audit fix\` to generate a statusline script that warns when live context ` +
+        `crosses the compact threshold — reviewable under ./.cc-audit/, never auto-applied.`,
+    });
+  }
+
+  // 10) Delegation breakeven — every spawn re-writes the standing block at cache-WRITE
   //    prices before doing any work, so delegation only pays off when the task keeps
   //    enough tokens out of the main loop to beat that fixed setup. Derived entirely
   //    from the user's own spawns. Parent linkage is unavailable (subagent transcripts

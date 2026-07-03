@@ -160,7 +160,8 @@ function overdueRuns(
     while (j < seg.length && compactNetUsd(seg, j, ratio) > 0) {
       peak = Math.max(peak, contextTokens(seg[j]!));
       // Carry on the sheddable fraction — what a timely compaction would have removed.
-      avoid += turnCarryUsd(seg[j]!.model, seg[j]!.usage) * (1 - ratio);
+      // turnCarryUsd takes t.ts for time-aware pricing (matches the /clear detector below).
+      avoid += turnCarryUsd(seg[j]!.model, seg[j]!.usage, seg[j]!.ts) * (1 - ratio);
       j += 1;
     }
     const len = j - i;
@@ -244,7 +245,7 @@ function staleSwitches(seg: AssistantTurn[], offset: number): Omit<StaleCarrySwi
       for (let m = k; m < Math.min(seg.length, k + STALE_ATTRIB_TURNS); m += 1) {
         const ctx = contextTokens(seg[m]!);
         if (ctx <= 0) continue;
-        avoid += turnCarryUsd(seg[m]!.model, seg[m]!.usage) * Math.min(1, stale / ctx);
+        avoid += turnCarryUsd(seg[m]!.model, seg[m]!.usage, seg[m]!.ts) * Math.min(1, stale / ctx);
       }
       out.push({ atTurn: offset + k + 1, staleTokens: stale, avoidableUsd: avoid });
       k += WS_WINDOW; // don't re-detect the same rotation

@@ -227,7 +227,9 @@ export function computeAlwaysOn(sessions: Session[]): AlwaysOnTax {
       for (const t of span.turns) {
         totalTurns += 1;
         sessionTurns += 1;
-        const p = t.model ? getAnthropicPricing(t.model) : null;
+        const p = t.model
+          ? getAnthropicPricing(t.model, t.ts != null ? new Date(t.ts) : undefined)
+          : null;
         weightedRateNum += p ? p.cacheRead : FALLBACK_READ_RATE;
         weightedRateDen += 1;
         weightedWriteNum += p ? p.cacheWrite5min : FALLBACK_WRITE_RATE;

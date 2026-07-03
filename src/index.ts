@@ -47,8 +47,8 @@ export { computePluginTax } from './pluginTax.js';
 export type { PluginTax, PluginInfo } from './pluginTax.js';
 export { buildRoiLedger } from './roiLedger.js';
 export type { RoiLedger, SkillRoiRow, McpRoiRow, SkillVerdict } from './roiLedger.js';
-export { computeTemporal } from './temporal.js';
-export type { TemporalProfile, HourBucket, StratifiedTime } from './temporal.js';
+export { computeTemporal, computeWeeklySpend } from './temporal.js';
+export type { TemporalProfile, HourBucket, StratifiedTime, WeeklySpendBucket } from './temporal.js';
 export { computeFriction, spanSkillKey, spanFrictionEvents, sessionFrictionEvents } from './friction.js';
 export type { FrictionTaxonomy, SkillFriction, FrictionKind, LocatedFriction } from './friction.js';
 
@@ -57,6 +57,8 @@ export type { AggregateRecord } from './aggregate.js';
 
 export { runAudit } from './audit.js';
 export type { AuditResult } from './audit.js';
+export { buildConfigSuggestions, renderConfigSuggestions } from './configSuggestions.js';
+export type { ConfigSuggestion } from './configSuggestions.js';
 export { renderReport, renderRightSizing } from './report.js';
 export { buildFootprints } from './footprint.js';
 export type { SessionFootprint } from './footprint.js';

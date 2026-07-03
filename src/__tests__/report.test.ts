@@ -1,5 +1,8 @@
 import { describe, it, expect } from 'vitest';
-import { renderRightSizing } from '../report.js';
+import { renderReport, renderRightSizing } from '../report.js';
+import { parseTranscript } from '../adapters/claudeCode.js';
+import { runAudit } from '../audit.js';
+import type { ConfigSuggestion } from '../configSuggestions.js';
 import type { SessionFootprint } from '../footprint.js';
 import type { RightSizingResult, Verdict } from '../judgeClient.js';
 
@@ -28,6 +31,68 @@ const result: RightSizingResult = {
   summary: { judged: 3, overModeledCount: 2, overModeledShare: 2 / 3, totalCostUsd: 30, totalSavingsUsd: 8, savingsShare: 8 / 30 },
 };
 
+describe('renderReport section order (config suggestions first among offers)', () => {
+  // A minimal real session so runAudit produces a full AuditResult; the sections
+  // under test are then made deterministic by patching in local-only fixtures
+  // (renderReport is pure — it renders whatever the result carries).
+  const events = [
+    { type: 'user', promptId: 'p1', cwd: '/tmp/proj', message: { content: 'do a task' } },
+    {
+      type: 'assistant',
+      message: {
+        id: 'a1',
+        model: 'claude-opus-4-8',
+        usage: { input_tokens: 100, output_tokens: 50, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
+        content: [{ type: 'text', text: 'ok' }],
+      },
+    },
+  ];
+  const session = parseTranscript('/tmp/cc-report.jsonl', events.map((e) => JSON.stringify(e)).join('\n'), 'proj', new Set())!;
+  const base = runAudit([session], '2026-06-16T00:00:00.000Z');
+  const suggestion: ConfigSuggestion = {
+    kind: 'delete-skill',
+    title: '`ghost` loads every turn but was never invoked',
+    file: '/p/.claude/skills/ghost/SKILL.md',
+    quote: null,
+    action: 'Delete it, or rewrite its `description:` trigger keywords.',
+    evidence: '0 invocations across 12 sessions',
+    monthlyUsdSaved: 3,
+  };
+  const result = {
+    ...base,
+    configSuggestions: [suggestion],
+    recommendations: [
+      { kind: 'trim-config' as const, title: 'Trim CLAUDE.md', monthlyUsdSaved: 5, file: '/p/CLAUDE.md', action: 'cut stale guidance' },
+    ],
+  };
+  const out = renderReport(result);
+
+  it('renders ③ CONFIG CHANGE SUGGESTIONS before ④ MODEL RIGHT-SIZING', () => {
+    const cs = out.indexOf('③ CONFIG CHANGE SUGGESTIONS');
+    const rs = out.indexOf('④ MODEL RIGHT-SIZING');
+    expect(cs).toBeGreaterThan(-1);
+    expect(rs).toBeGreaterThan(-1);
+    expect(cs).toBeLessThan(rs);
+  });
+
+  it('teaser counts the edits and points at the offer / cc-audit fix', () => {
+    expect(out).toContain('1 exact edit');
+    expect(out).toContain('dead-weight skills');
+    expect(out).toContain('cc-audit fix');
+  });
+
+  it('omits the ③ card when there is nothing to suggest, keeping ④ stable', () => {
+    const empty = renderReport({ ...result, configSuggestions: [] });
+    expect(empty).not.toContain('③ CONFIG CHANGE SUGGESTIONS');
+    expect(empty).toContain('④ MODEL RIGHT-SIZING');
+  });
+
+  it('NEXT ACTIONS footer routes to the reviewable-edits flow', () => {
+    const next = out.slice(out.indexOf('NEXT ACTIONS'));
+    expect(next).toContain('cc-audit fix');
+  });
+});
+
 describe('renderRightSizing aggressiveness gate', () => {
   it('conservative surfaces only high-confidence cuts', () => {
     const out = renderRightSizing(footprints, result, 30, 100, 'conservative');
@@ -46,5 +111,71 @@ describe('renderRightSizing aggressiveness gate', () => {
     // conservative: gated savings = 4 of 30 cost = 13.3% → 13.3% × $100/mo ≈ $13
     const out = renderRightSizing(footprints, result, 30, 100, 'conservative');
     expect(out).toMatch(/~\$13.*\/mo right-sizable/);
+  });
+});
+
+describe('renderReport — run-over-run delta + weekly run-rate', () => {
+  const iso = (ms: number) => new Date(ms).toISOString();
+  const NOW = Date.parse('2026-06-16T00:00:00.000Z');
+  const DAY = 86_400_000;
+  const turn = (tsMs: number) => ({
+    type: 'assistant',
+    timestamp: iso(tsMs),
+    message: {
+      model: 'claude-opus-4-8',
+      usage: { input_tokens: 1000, output_tokens: 500, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
+      content: [{ type: 'text', text: 'ok' }],
+    },
+  });
+  const fixture = [
+    { type: 'user', promptId: 'p1', timestamp: iso(NOW - 8 * DAY), message: { content: 'do a thing' } },
+    turn(NOW - 8 * DAY),
+    { type: 'user', promptId: 'p2', timestamp: iso(NOW - 1 * DAY), message: { content: 'another thing' } },
+    turn(NOW - 1 * DAY),
+  ]
+    .map((e) => JSON.stringify(e))
+    .join('\n');
+  const result = () => runAudit([parseTranscript('/tmp/rr.jsonl', fixture, 'proj')!], iso(NOW));
+
+  const delta = {
+    baselineDate: '2026-06-12',
+    spendPerMonthUsd: { prev: 3926, cur: 3100 },
+    avoidableCarryPerMonthUsd: { prev: 910, cur: 640 },
+    premiumTurnShare: { prev: 0.96, cur: 0.71 },
+    redundantReadRate: { prev: 0.35, cur: 0.35 },
+  };
+
+  it('renders delta rows against the baseline with polarity arrows', () => {
+    const out = renderReport(result(), { delta });
+    expect(out).toContain('vs your Jun 12 audit:');
+    expect(out).toContain('avoidable carry $910/mo → $640/mo ▼30%');
+    expect(out).toContain('vs Jun 12: $3,926/mo → $3,100/mo ▼21%');
+    expect(out).toContain('premium share 96% → 71% ▼25pt');
+    expect(out).toContain('redundant reads 35% → 35% ~flat');
+  });
+
+  it('worsened metrics point up', () => {
+    const out = renderReport(result(), {
+      delta: { ...delta, avoidableCarryPerMonthUsd: { prev: 640, cur: 910 } },
+    });
+    expect(out).toContain('avoidable carry $640/mo → $910/mo ▲42%');
+  });
+
+  it('first-run shows the explainer instead of a delta', () => {
+    const out = renderReport(result(), { delta: 'first-run' });
+    expect(out).toContain('first audit at this window');
+    expect(out).not.toContain('vs your');
+  });
+
+  it('no delta opt (history disabled) renders neither', () => {
+    const out = renderReport(result(), {});
+    expect(out).not.toContain('first audit at this window');
+    expect(out).not.toContain('vs your');
+  });
+
+  it('renders the weekly run-rate sparkline from timestamped turns', () => {
+    const out = renderReport(result(), {});
+    expect(out).toContain('run-rate $');
+    expect(out).toContain('/wk');
   });
 });

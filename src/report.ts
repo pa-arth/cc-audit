@@ -10,6 +10,8 @@ import type { RefinedHygiene } from './hygieneFootprint.js';
 import type { RightSizingResult } from './judgeClient.js';
 import { BOX_WIDTH, c, card, panel, rule, wrap } from './theme.js';
 import { localBand } from './fluency.js';
+import type { DeltaMetric, HistoryDelta } from './history.js';
+import { sparkline } from './topSessions.js';
 
 const usd = (n: number) => `$${n >= 100 ? Math.round(n).toLocaleString() : n.toFixed(2)}`;
 const pct = (n: number) => `${Math.round(n * 100)}%`;
@@ -37,31 +39,71 @@ export function renderHygieneRefinement(refined: RefinedHygiene, windowDays: num
   return ['', ...card('CONTEXT HYGIENE  ·  judged (stale vs. genuinely-needed context)', rows, c.gold), ''].join('\n');
 }
 
-export function renderReport(r: AuditResult, opts: { rows?: number } = {}): string {
+// Hand-rolled (not toLocaleDateString) so report assertions don't vary by locale.
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+const fmtDay = (isoDay: string): string => {
+  const [, m, d] = isoDay.split('-');
+  return `${MONTHS[Number(m) - 1] ?? isoDay} ${Number(d)}`;
+};
+
+// Run-over-run movement. All four delta metrics share one polarity: down = improved
+// (spend, avoidable carry, premium share, redundant-read rate) — ▼ emerald, ▲ red.
+function usdDelta(m: DeltaMetric): string {
+  const diff = m.cur - m.prev;
+  const base = `${usd(m.prev)}/mo → ${usd(m.cur)}/mo`;
+  if (Math.abs(diff) < 1 || (m.prev > 0 && Math.abs(diff) / m.prev < 0.02)) return `${base} ${c.dim('~flat')}`;
+  if (m.prev <= 0) return `${base} ${c.red('▲new')}`;
+  const rel = `${Math.round((Math.abs(diff) / m.prev) * 100)}%`;
+  return diff < 0 ? `${base} ${c.emerald(`▼${rel}`)}` : `${base} ${c.red(`▲${rel}`)}`;
+}
+
+function rateDelta(m: DeltaMetric): string {
+  const diffPt = Math.round((m.cur - m.prev) * 100);
+  const base = `${pct(m.prev)} → ${pct(m.cur)}`;
+  if (Math.abs(m.cur - m.prev) < 0.01) return `${base} ${c.dim('~flat')}`;
+  return diffPt < 0 ? `${base} ${c.emerald(`▼${-diffPt}pt`)}` : `${base} ${c.red(`▲${diffPt}pt`)}`;
+}
+
+export function renderReport(r: AuditResult, opts: { rows?: number; delta?: HistoryDelta | 'first-run' } = {}): string {
   const rows = opts.rows ?? 8;
   const s = r.spend;
   const out: string[] = [];
   const blank = () => out.push('');
+  const delta = typeof opts.delta === 'object' ? opts.delta : undefined;
 
   // ── Header ───────────────────────────────────────────────────────────────
-  blank();
-  out.push(
-    ...card(
-      'CLAUDE CODE · SPEND & FLUENCY AUDIT',
-      [
-        c.dim(
-          `${r.sessionCount} sessions · ${Math.round(s.windowDays)}d window · ` +
-            `judge layer: run with ${c.cyan('--judge')}${c.dim(' (hosted)')}`,
-        ),
-      ],
-      c.orange,
+  const headerRows = [
+    c.dim(
+      `${r.sessionCount} sessions · ${Math.round(s.windowDays)}d window · ` +
+        `judge layer: run with ${c.cyan('--judge')}${c.dim(' (hosted)')}`,
     ),
-  );
+  ];
+  if (delta) {
+    headerRows.push(
+      `${c.dim(`vs your ${fmtDay(delta.baselineDate)} audit:`)} avoidable carry ${usdDelta(delta.avoidableCarryPerMonthUsd)}`,
+      `${c.dim('premium share')} ${rateDelta(delta.premiumTurnShare)} ${c.dim('· redundant reads')} ${rateDelta(delta.redundantReadRate)}`,
+    );
+  } else if (opts.delta === 'first-run') {
+    headerRows.push(c.dim('first audit at this window — deltas appear on your next run'));
+  }
+  blank();
+  out.push(...card('CLAUDE CODE · SPEND & FLUENCY AUDIT', headerRows, c.orange));
 
   // ── Estimated spend (the headline number, in gold) ─────────────────────────
   const spendRows = [
     `${c.dim('estimated')}  ${c.bold(money(usd(s.perMonthUsd) + '/mo'))}   ${c.dim(`(${usd(s.totalUsd)} over window)`)}`,
   ];
+  if (delta) {
+    spendRows.push(`${c.dim(`vs ${fmtDay(delta.baselineDate)}:`)} ${usdDelta(delta.spendPerMonthUsd)}`);
+  }
+  if (r.weeklySpend.length >= 2 && r.weeklySpend.some((b) => b.usd > 0)) {
+    const complete = r.weeklySpend.filter((b) => b.complete);
+    const range = (complete.length >= 2 ? complete : r.weeklySpend).map((b) => b.usd);
+    spendRows.push(
+      `${c.dim('weekly')}  ${lever(sparkline(r.weeklySpend.map((b) => b.usd)))}  ` +
+        `${c.dim('run-rate')} ${usd(Math.min(...range))}–${usd(Math.max(...range))}${c.dim('/wk — the /mo figure extrapolates this')}`,
+    );
+  }
   if (s.unpricedShare > 0.02) {
     spendRows.push(c.amber(`⚠ ${pct(s.unpricedShare)} of spend used a fallback price (unknown model id)`));
   }
@@ -112,8 +154,9 @@ export function renderReport(r: AuditResult, opts: { rows?: number } = {}): stri
     out.push(...card('TOP SPENDERS  ·  most expensive sessions', topRows, c.gold));
   }
 
-  // Lead with the cuts that have NO quality tradeoff. Model right-sizing
-  // (policy-dependent, often the smallest clean lever) comes last, via --judge.
+  // Lead with the cuts that have NO quality tradeoff. Config change suggestions
+  // (exact edits, local) are the first interactive offer; model right-sizing
+  // (policy-dependent, often the smallest clean lever) comes after, via --judge.
   blank();
   out.push(`  ${c.bold(c.orange('FIXABLE WASTE'))}  ${c.dim('— no-tradeoff cuts first')}`);
 
@@ -410,13 +453,34 @@ export function renderReport(r: AuditResult, opts: { rows?: number } = {}): stri
   blank();
   out.push(...renderContextKnee(r.contextKnee));
 
-  // ── 3. Model right-sizing teaser (the --judge upsell) ──────────────────────
+  // ── 3. Config change suggestions teaser (the headline lever, offered first) ─
+  if (r.configSuggestions.length > 0) {
+    const cs = r.configSuggestions;
+    const csSaved = cs.reduce((n, s) => n + s.monthlyUsdSaved, 0);
+    const kinds = new Set(cs.map((s) => s.kind));
+    const what = [
+      kinds.has('delete-skill') ? 'dead-weight skills' : null,
+      kinds.has('cut-instruction') ? 'never-followed "read X" rules' : null,
+      kinds.has('model-pin') ? 'missing model pins' : null,
+      kinds.has('disable-plugin') || kinds.has('remove-mcp') ? 'unused plugins/servers' : null,
+    ].filter(Boolean).join(', ');
+    const csRows = [
+      `${lever(`${cs.length} exact edit${cs.length === 1 ? '' : 's'}`)} found` +
+        (csSaved >= 0.5 ? ` (${c.gold(`~${usd(csSaved)}/mo`)})` : '') +
+        `${c.dim(` — ${what}`)}`,
+      c.dim('offered right after this report, or run ') + c.cyan('cc-audit fix'),
+    ];
+    blank();
+    out.push(...card('③ CONFIG CHANGE SUGGESTIONS  ·  exact edits, computed locally', csRows, c.gold));
+  }
+
+  // ── 4. Model right-sizing teaser (the --judge upsell — demoted below config) ─
   const rsRows = [
     `${lever(pct(f.premiumTurnShare))} of turns run premium models. Run ${c.cyan('cc-audit --judge')} to see which`,
     c.dim('tasks a cheaper model could do — frontier choice stays your policy.'),
   ];
   blank();
-  out.push(...card('③ MODEL RIGHT-SIZING  ·  policy-dependent, often the smallest clean lever', rsRows));
+  out.push(...card('④ MODEL RIGHT-SIZING  ·  policy-dependent, often the smallest clean lever', rsRows));
 
   // The treatment layer: synthesize everything above into ranked, file-anchored
   // actions. Estimates — a candidate tier is never a mandate.
@@ -431,6 +495,9 @@ export function renderReport(r: AuditResult, opts: { rows?: number } = {}): stri
       for (const ln of wrap(rec.action, BOX_WIDTH - 3)) actionRows.push(c.dim(`   ${ln}`));
       i += 1;
     }
+    actionRows.push(
+      c.dim('→ exact edits for these: say yes at the next prompt, or run ') + c.cyan('cc-audit fix'),
+    );
     blank();
     out.push(...card('NEXT ACTIONS  ·  ranked by est. $/mo saved', actionRows, c.gold));
   }
