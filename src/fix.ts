@@ -8,6 +8,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
 import { requestConfigRewrite } from './fixClient.js';
+import { getInstallKey } from './installKey.js';
 import type { Recommendation } from './recommend.js';
 import { BOX_WIDTH, c, panel, wrap } from './theme.js';
 
@@ -59,7 +60,7 @@ function writeProposal(realFile: string, content: string): string {
 export async function runFix(
   recommendations: Recommendation[],
   today: string,
-  opts: { apiBase?: string } = {},
+  opts: { apiBase?: string; installKey?: string } = {},
 ): Promise<FixProposal[]> {
   const proposals: FixProposal[] = [];
 
@@ -86,7 +87,15 @@ export async function runFix(
       // (offline, cap hit, timeout) discard the local model-pin patches above.
       let rewrite;
       try {
-        rewrite = await requestConfigRewrite([{ path: 'CLAUDE.md', content }], today, opts.apiBase);
+        rewrite = await requestConfigRewrite(
+          [{ path: 'CLAUDE.md', content }],
+          today,
+          opts.apiBase,
+          undefined,
+          // Resolve the install key at the actual send site: a bare no-trim run never
+          // reaches here, so the key is only generated/persisted when we truly egress.
+          opts.installKey ?? getInstallKey(),
+        );
       } catch (err) {
         proposals.push({
           kind: 'config-trim',
