@@ -57,6 +57,36 @@ interface ContentBlock {
 // without resetting re-injects its content (the redundant-read signal).
 const FILE_TOOLS = new Set(['Read', 'Edit', 'Write', 'NotebookEdit', 'MultiEdit']);
 
+/** Fold one JSONL row's content blocks into a turn: union tool names, file ops,
+ *  Read basenames, and reasoning/prose lengths, and register each tool_use id so
+ *  a later tool_result can match back. A single streamed assistant message is
+ *  logged across MULTIPLE rows sharing one message.id — usage repeated verbatim,
+ *  but content blocks PARTITIONED across rows (thinking on one, the tool_use on
+ *  the next). Calling this once per same-id row accumulates the whole message;
+ *  usage is applied ONCE by the caller, on the row that first opens the turn. */
+function foldBlocksIntoTurn(
+  turn: AssistantTurn,
+  blocks: ContentBlock[],
+  turnByToolId: Map<string, AssistantTurn>,
+): void {
+  for (const b of blocks) {
+    if (b.type === 'tool_use') {
+      if (b.name) turn.tools.push(b.name);
+      if (b.name && FILE_TOOLS.has(b.name)) {
+        const path = b.input?.file_path ?? b.input?.notebook_path ?? '';
+        if (path) turn.fileOps!.push({ tool: b.name, path });
+      }
+      // Basename only — never the full path (privacy invariant).
+      if (b.name === 'Read' && b.input?.file_path) turn.reads.push(basename(b.input.file_path));
+      if (b.id) turnByToolId.set(b.id, turn);
+    } else if (b.type === 'thinking') {
+      turn.thinkingChars += b.thinking?.length ?? 0;
+    } else if (b.type === 'text') {
+      turn.textChars += b.text?.length ?? 0;
+    }
+  }
+}
+
 function userText(content: unknown): string {
   if (typeof content === 'string') return content;
   if (Array.isArray(content)) {
@@ -115,6 +145,10 @@ export function parseTranscript(
   // tool_use id → the turn that issued it, so a later tool_result row (in a user message)
   // can fold its is_error flag + timestamp back onto the right turn. Global across spans.
   const turnByToolId = new Map<string, AssistantTurn>();
+  // message.id → the turn it opened, so subsequent rows of the same streamed
+  // assistant message merge their (partitioned) content blocks into it instead
+  // of being dropped by the cross-transcript `seen` dedup. Per-transcript.
+  const turnById = new Map<string, AssistantTurn>();
   const ensureSpan = (promptId: string | null): Span => {
     if (cur && cur.promptId === promptId) return cur;
     cur = {
@@ -265,35 +299,51 @@ export function parseTranscript(
     if (type === 'assistant') {
       const msg = (d.message ?? {}) as { id?: string; model?: string; usage?: RawUsage; content?: unknown };
       if (!msg.usage) continue;
-      if (seen) {
-        // Dedupe streamed-message duplicates by message id (identical usage on
-        // each logged row). Falls back to requestId/uuid when id is absent.
-        const key = msg.id ?? (d.requestId as string) ?? (d.uuid as string) ?? '';
-        if (key && seen.has(key)) continue;
-        if (key) seen.add(key);
-      }
+      const key = msg.id ?? (d.requestId as string) ?? (d.uuid as string) ?? '';
       const blocks = Array.isArray(msg.content) ? (msg.content as ContentBlock[]) : [];
+
+      // A single streamed assistant message is logged across MULTIPLE rows sharing
+      // one message.id — usage repeated identically, content blocks PARTITIONED
+      // across rows (row1 thinking, row2 text, row3 the tool_use). Merge same-id
+      // rows into ONE turn: fold their blocks in (so tool_use/fileOps/reads on
+      // later rows aren't dropped — first-row-wins lost ~60% of file reads), but
+      // count usage ONCE. `turnById` is per-transcript; the global `seen` set owns
+      // cross-transcript dedup (a resumed session replays prior ids — skip those).
+      const existing = key ? turnById.get(key) : undefined;
+      if (existing) {
+        foldBlocksIntoTurn(existing, blocks, turnByToolId);
+        if (existing.tools.includes('ExitPlanMode')) curMode = 'normal';
+        // A Skill tool_use landing on a merged (later) row still needs recording.
+        if (!d.isSidechain) {
+          const span = cur ?? ensureSpan(null);
+          for (const b of blocks) {
+            if (b.type === 'tool_use' && b.name === 'Skill') {
+              const skill = b.input?.skill ?? b.input?.command;
+              if (skill) span.invokedSkills.push(skill);
+            }
+          }
+        }
+        continue;
+      }
+      if (seen && key) {
+        if (seen.has(key)) continue; // owned by an earlier transcript (resumed replay)
+        seen.add(key);
+      }
       const turn: AssistantTurn = {
         model: msg.model ?? null,
         usage: parseUsage(msg.usage),
-        tools: blocks.filter((b) => b.type === 'tool_use' && b.name).map((b) => b.name!),
-        fileOps: blocks
-          .filter((b) => b.type === 'tool_use' && b.name && FILE_TOOLS.has(b.name))
-          .map((b) => ({ tool: b.name!, path: b.input?.file_path ?? b.input?.notebook_path ?? '' }))
-          .filter((o) => o.path),
-        thinkingChars: blocks.filter((b) => b.type === 'thinking').reduce((n, b) => n + (b.thinking?.length ?? 0), 0),
-        textChars: blocks.filter((b) => b.type === 'text').reduce((n, b) => n + (b.text?.length ?? 0), 0),
-        // Basename only — never the full path (privacy invariant).
-        reads: blocks
-          .filter((b) => b.type === 'tool_use' && b.name === 'Read' && b.input?.file_path)
-          .map((b) => basename(b.input!.file_path!)),
+        tools: [],
+        fileOps: [],
+        thinkingChars: 0,
+        textChars: 0,
+        reads: [],
         ts: parseTs(d.timestamp),
         mode: curMode,
         toolResultTs: null,
         toolErrorCount: 0,
       };
-      // Register this turn's tool_use ids so their results can match back to it.
-      for (const b of blocks) if (b.type === 'tool_use' && b.id) turnByToolId.set(b.id, turn);
+      foldBlocksIntoTurn(turn, blocks, turnByToolId);
+      if (key) turnById.set(key, turn);
       // ExitPlanMode means the user accepted the plan — subsequent turns run in normal mode.
       if (turn.tools.includes('ExitPlanMode')) curMode = 'normal';
       if (d.isSidechain) {
@@ -369,6 +419,40 @@ export function loadClaudeCodeSessions(opts: LoadOptions = {}): Session[] {
     }
   }
   return sessions;
+}
+
+/** Claude Code's project-directory slug for a working directory: every non-alphanumeric
+ *  character becomes '-' (so `/Users/x/repo/.claude/wt` → `-Users-x-repo--claude-wt`). */
+export function projectDirSlug(cwd: string): string {
+  return cwd.replace(/[^a-zA-Z0-9]/g, '-');
+}
+
+/**
+ * The LIVE session transcript for a working directory — the newest-mtime `*.jsonl` under
+ * `<root>/<slug(cwd)>/` (transcripts nest, so we walk it). This is how the live-guardrail
+ * statusline self-discovers the active session without any input from claude-hud: it
+ * inherits the project cwd and maps it to Claude Code's project dir. null when the project
+ * has no transcripts (or the dir doesn't exist). LOCAL-ONLY, reads no file contents.
+ */
+export function findLiveTranscript(cwd: string, root?: string): string | null {
+  const projectsRoot = root ?? join(homedir(), '.claude', 'projects');
+  const dir = join(projectsRoot, projectDirSlug(cwd));
+  const files: string[] = [];
+  collectJsonl(dir, files);
+  let newest: string | null = null;
+  let newestMtime = -Infinity;
+  for (const fp of files) {
+    try {
+      const m = statSync(fp).mtimeMs;
+      if (m > newestMtime) {
+        newestMtime = m;
+        newest = fp;
+      }
+    } catch {
+      /* file vanished mid-scan — skip */
+    }
+  }
+  return newest;
 }
 
 function collectJsonl(dir: string, acc: string[]): void {

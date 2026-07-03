@@ -19,6 +19,9 @@
 import { readFileSync, writeFileSync } from 'node:fs';
 import * as p from '@clack/prompts';
 import { loadClaudeCodeSessions } from './adapters/claudeCode.js';
+import { computeAndWriteKneeCache } from './kneeCache.js';
+import { runStatusline } from './statusline.js';
+import { installStatusline, isOfferable } from './statuslineInstall.js';
 import { runAudit, type AuditResult } from './audit.js';
 import { renderConfigSuggestions } from './configSuggestions.js';
 import { readConsent, writeConsent } from './consent.js';
@@ -107,6 +110,16 @@ function parseArgs(argv: string[]): Args {
           '  cc-audit fix [--since-days N] [--root DIR]\n' +
           '      Turn recommendations into REVIEWABLE patches under ./.cc-audit/ (never applied):\n' +
           '      local model-pin edits + a hosted CLAUDE.md trim (spends credits; usage-capped per install).\n' +
+          '  cc-audit statusline\n' +
+          '      LIVE GUARDRAIL label provider for the claude-hud statusline. Prints JSON\n' +
+          '      {"label":"…"}: past your PERSONAL context-degradation knee it warns (soft), and\n' +
+          '      at a compact boundary it says compact now (hard); otherwise a small ctx gauge.\n' +
+          '      Self-discovers the live session from the cwd — no stdin. Strictly local, no\n' +
+          '      network; the cross-session knee is cached under ~/.cc-audit/.\n' +
+          '  cc-audit statusline --install   (and --uninstall)\n' +
+          '      Auto-wire (or remove) the guardrail line in your claude-hud statusLine.command\n' +
+          '      in settings.json — backs up first, refuses if the file has comments or a\n' +
+          '      foreign --extra-cmd. A bare interactive `cc-audit` run also offers this.\n' +
           '  cc-audit --version\n' +
           '      Print the installed version. A bare run also warns (on stderr) when a newer\n' +
           '      version is published — silence with CC_AUDIT_NO_UPDATE_CHECK=1.\n',
@@ -441,6 +454,20 @@ async function maybeShare(
   }
 }
 
+/** Interactive offer to wire the live-guardrail statusline into claude-hud. Fits the consent
+ *  ladder: default-Yes (it's a local settings edit, nothing leaves the machine), but STRICTLY
+ *  interactive — a --json or non-TTY run never reaches here, so settings.json is only ever
+ *  modified by an explicit --install/--uninstall or a real "yes". */
+async function maybeOfferHudInstall(interactive: boolean): Promise<void> {
+  if (!interactive) return;
+  if (!isOfferable()) return; // no claude-hud, already installed, foreign extra-cmd, or JSONC
+  const ok = await p.confirm({ message: 'Add the context-guardrail line to your claude-hud HUD?', initialValue: true });
+  if (p.isCancel(ok) || ok !== true) return;
+  const r = installStatusline();
+  if (r.ok) p.log.success(r.message);
+  else p.log.warn(r.message);
+}
+
 async function run(): Promise<void> {
   const argv = process.argv.slice(2);
   const sub = argv[0];
@@ -507,6 +534,11 @@ async function run(): Promise<void> {
   const trimRec = await maybeConfigSuggestions(interactive, result);
   const consent = await rightSizeConsent(args, interactive, sessions, result.contextHygiene);
 
+  // Offer to auto-wire the live-guardrail statusline into claude-hud (local settings edit,
+  // no egress). Interactive-only + gated on a clean, hud-shaped, not-yet-installed config —
+  // a --json/non-TTY run never prompts or touches settings.json.
+  await maybeOfferHudInstall(interactive);
+
   const premiumMonthlyUsd = result.spend.byModel
     .filter((m) => isPremiumModel(m.model))
     .reduce((n, m) => n + (m.costUsd / result.spend.windowDays) * 30.44, 0);
@@ -554,6 +586,19 @@ async function main(): Promise<void> {
   const sub = process.argv[2];
   if (sub === '--version' || sub === '-v' || sub === 'version') {
     process.stdout.write(`${VERSION}\n`);
+    return;
+  }
+  // The live-guardrail statusline (and its detached cache-refresh sidecar) must be FAST and
+  // strictly local — bypass the network update check entirely and return before run().
+  if (sub === 'statusline') {
+    runStatusline(process.argv.slice(3));
+    return;
+  }
+  if (sub === '__refresh-knee') {
+    // Internal: the detached sidecar spawnKneeRefresh() launches. Rebuild the knee cache and
+    // exit. Not user-facing — no output, never throws.
+    const rootIdx = process.argv.indexOf('--root');
+    computeAndWriteKneeCache({ root: rootIdx >= 0 ? process.argv[rootIdx + 1] : undefined });
     return;
   }
   // Kick the update check off up front so its (cached, short-timeout) fetch

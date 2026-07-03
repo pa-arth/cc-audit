@@ -64,6 +64,20 @@ export function turnTokens(u: TurnUsage): number {
   return u.input + u.output + u.cacheRead + u.cacheWrite5m + u.cacheWrite1h;
 }
 
+/** Per-TOKEN cache-read and cache-write ($/token) rates for a model — the two prices the
+ *  compact counterfactual turns on: carried context is cache-READ into every later turn,
+ *  and the compacted summary is cache-WRITTEN once (Anthropic's 5-minute write bucket, the
+ *  1.25× input rate). OpenAI has no separate cache write, so re-caching the compacted
+ *  context is priced at its uncached input rate. Unknown model ⇒ the Sonnet-tier fallback,
+ *  matching turnCostUsd. */
+export function cacheRatesUsdPerToken(model: string | null): { cacheRead: number; cacheWrite: number } {
+  const a = model ? getAnthropicPricing(model) : null;
+  if (a) return { cacheRead: a.cacheRead / 1_000_000, cacheWrite: a.cacheWrite5min / 1_000_000 };
+  const o = model ? getOpenAIPricing(model) : null;
+  if (o) return { cacheRead: o.cachedInput / 1_000_000, cacheWrite: o.input / 1_000_000 };
+  return { cacheRead: FALLBACK.cacheRead / 1_000_000, cacheWrite: FALLBACK.cacheWrite5min / 1_000_000 };
+}
+
 const PREMIUM_PREFIXES = ['claude-opus', 'claude-fable', 'gpt-5.5', 'claude-mythos'];
 export function isPremiumModel(model: string | null): boolean {
   return !!model && PREMIUM_PREFIXES.some((p) => model.startsWith(p));
