@@ -58,12 +58,19 @@ describe('pricing drift vs LiteLLM (network; degrades to pass offline)', () => {
       return;
     }
     const mismatches: string[] = [];
-    for (const [model, p] of Object.entries(ANTHROPIC_PRICING)) {
+    // Compare against the TIME-AWARE rate, not the raw base table: a model in an
+    // introductory-pricing window (e.g. claude-sonnet-5 at $2/$10 until Sep 2026)
+    // shows its intro rate on LiteLLM too, so the base steady-state table would
+    // false-positive. getAnthropicPricing(model, now) tracks whichever rate is
+    // actually live, matching what LiteLLM publishes.
+    const now = new Date();
+    for (const [model] of Object.entries(ANTHROPIC_PRICING)) {
       const e = ll[model];
       if (!e) {
         console.warn(`[litellm-drift] LiteLLM has no entry for ${model} — can't cross-check`);
         continue;
       }
+      const p = getAnthropicPricing(model, now) ?? ANTHROPIC_PRICING[model];
       if (!agree(p.input, e.input_cost_per_token))
         mismatches.push(
           `${model}.input: ours=${p.input} ll=${(e.input_cost_per_token ?? 0) * PER_M}`,
