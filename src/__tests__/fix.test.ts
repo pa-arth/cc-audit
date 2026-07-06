@@ -225,6 +225,35 @@ describe('requestConfigReview egress (X-Install-Key + server cap)', () => {
     expect(result?.notes).toEqual(['Rewrite skipped: judge returned no parseable JSON.']);
   });
 
+  it('keeps polling through a transient 404 (read-your-writes lag) instead of aborting', async () => {
+    // Regression guard: a 404 right after the 202 is expected lag; the session id came
+    // from our own 202 and will materialize. It must NOT abort the review.
+    let polls = 0;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string) => {
+        if (String(url).endsWith('/v1/public/config-review')) {
+          return { ok: true, status: 202, json: async () => ({ sessionId: 's1' }) } as unknown as Response;
+        }
+        polls += 1;
+        if (polls === 1) return { ok: false, status: 404 } as unknown as Response; // lag window
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ status: 'completed', report: { verdict: 'net_neutral', findings: [] } }),
+        } as unknown as Response;
+      }),
+    );
+    vi.useFakeTimers();
+    const pending = requestConfigReview(files, '2026-06-20-d', 'https://api.test', 'claude_code', 'KEY-123');
+    await vi.runAllTimersAsync();
+    const result = await pending;
+    vi.useRealTimers();
+
+    expect(result?.verdict).toBe('net_neutral'); // survived the 404 and read the completed result
+    expect(polls).toBe(2);
+  });
+
   it('maps a server 429 to a clean "server-enforced" message (no raw status dump)', async () => {
     vi.stubGlobal(
       'fetch',

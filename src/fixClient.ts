@@ -41,22 +41,32 @@ export interface ConfigReview {
 }
 
 // The GET returns the full config_review_v1 artifact; we read only these fields.
+// Typed as unknown because it's third-party-shaped data on the wire — normalizeReview
+// is the trust boundary that coerces it into the ConfigReview shape.
 interface ReviewReport {
-  verdict?: string;
-  findings?: ConfigFinding[] | null;
-  meta?: { notes?: string[] | null } | null;
+  verdict?: unknown;
+  findings?: unknown;
+  meta?: { notes?: unknown } | null;
 }
 
-/** Normalize the untrusted network report into a ConfigReview. Defensive: the
- *  server validates the artifact, but this is third-party-shaped data on the wire. */
+/** Normalize the untrusted network report into a ConfigReview. Coerces every field
+ *  so the returned shape actually matches ConfigReview (e.g. a wire `detail: null`
+ *  becomes `''`), rather than trusting the server contract on untrusted data. */
 function normalizeReview(report: ReviewReport | null): ConfigReview | null {
   if (!report) return null;
-  const findings = Array.isArray(report.findings)
-    ? report.findings.filter((f): f is ConfigFinding => !!f && typeof f.title === 'string')
-    : [];
-  const notes = Array.isArray(report.meta?.notes)
-    ? report.meta!.notes!.filter((n): n is string => typeof n === 'string')
-    : [];
+  const rawFindings = Array.isArray(report.findings) ? report.findings : [];
+  const findings: ConfigFinding[] = rawFindings
+    .filter((f): f is Record<string, unknown> => !!f && typeof f === 'object')
+    .filter((f) => typeof f.title === 'string' && f.title.trim() !== '')
+    .map((f) => ({
+      severity: f.severity === 'high' ? 'high' : f.severity === 'medium' ? 'medium' : 'low',
+      path: typeof f.path === 'string' ? f.path : null,
+      title: f.title as string,
+      detail: typeof f.detail === 'string' ? f.detail : '',
+      suggestedChange: typeof f.suggestedChange === 'string' ? f.suggestedChange : null,
+    }));
+  const rawNotes = report.meta && Array.isArray(report.meta.notes) ? report.meta.notes : [];
+  const notes = (rawNotes as unknown[]).filter((n): n is string => typeof n === 'string');
   return {
     verdict: typeof report.verdict === 'string' ? report.verdict : 'insufficient_evidence',
     findings,
@@ -89,7 +99,7 @@ export function spendToday(today: string): number {
 export function checkSpendCap(today: string, cap = BACKSTOP_CAP): void {
   if (readSpend(today).count >= cap) {
     throw new Error(
-      `local config-review backstop reached (${cap}/day). The rewrite spends credits; ` +
+      `local config-review backstop reached (${cap}/day). The review spends credits; ` +
         'try again tomorrow.',
     );
   }
@@ -154,9 +164,10 @@ export async function requestConfigReview(
       headers: { 'x-install-key': installKey },
     });
     // 404 right after enqueue is expected (read-your-writes lag) — keep polling; the
-    // session id came from our own 202, so it will materialize. Any other non-2xx is
-    // also treated as transient until the overall timeout.
-    if (poll.status === 404) throw new Error('config-review session not found (may have expired)');
+    // session id came from our own 202, so it will materialize. 404 and any other
+    // non-2xx are treated as transient (the `!poll.ok` continue below) until the
+    // overall timeout, which then reports the honest "timed out" rather than a
+    // misleading "session not found".
     if (!poll.ok) continue;
     const { status, report } = (await poll.json()) as { status: string; report: ReviewReport | null };
     // The server's terminal states are 'completed' / 'failed' (the persisted
