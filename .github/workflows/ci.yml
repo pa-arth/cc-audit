@@ -1,0 +1,51 @@
+name: CI
+
+# Lint, typecheck, test, and build on every push to main and every PR.
+# The publish workflow re-runs the same gate on tag pushes; this catches
+# breakage before it ever reaches a release.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 20 is the publish/runtime target; 22 is the local dev version.
+        node-version: [20, 22]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Test
+        run: npm test
+
+      - name: Build
+        run: npm run build
+
+      - name: Build npm artifact
+        run: npm run build:npm
+
+      - name: Smoke test the bundle
+        run: node bundles/npm/cc-audit.mjs --help
