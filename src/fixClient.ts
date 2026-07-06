@@ -1,10 +1,16 @@
-// Client for the hosted config-review REWRITE (POST /v1/public/config-review →
-// poll GET). This is the only `fix` path that spends our credits (the rewrite +
-// the k=3 judge + the adversarial safety cross-check run server-side). Spend is
-// enforced SERVER-SIDE, keyed by the `X-Install-Key` header; the local cap is now a
-// UX counter (DAILY_CAP) plus a loose abuse backstop (BACKSTOP_CAP) so we're never
-// fully uncapped if server enforcement lags. The model-pin patches are purely local
-// and don't touch this.
+// Client for the hosted config-review (POST /v1/public/config-review → poll GET).
+// The only `fix` path that spends our credits — the k=3 net-value judge runs
+// server-side. Spend is enforced SERVER-SIDE, keyed by the `X-Install-Key` header;
+// the local cap is a UX counter (DAILY_CAP) plus a loose abuse backstop
+// (BACKSTOP_CAP) so we're never fully uncapped if server enforcement lags. The
+// model-pin patches are purely local and don't touch this.
+//
+// We deliberately do NOT request the server's full-file REWRITE. It echoed the
+// whole rewritten file back through a JSON envelope capped at ~4k output tokens, so
+// any normal-sized CLAUDE.md truncated to unparseable JSON → a silent null. It was
+// also risky (an auto-rewrite can drop a load-bearing rule). The judge's targeted
+// findings round-trip regardless of file size and are review-first by nature, so
+// that's what we surface.
 
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
@@ -16,21 +22,46 @@ const MAX_POLLS = 60; // ~2 min ceiling
 export const DAILY_CAP = 10; // display-only: the per-install daily cap the SERVER enforces
 const BACKSTOP_CAP = 50; // local abuse ceiling — the only guard if server enforcement lags
 
-/** The rewrite half of the config_review_v1 artifact (see configReview.ts).
- *  `safety` is optional — an older artifact or a rewrite that skipped the
- *  cross-check may omit it; callers must treat its absence as "unverified". */
-export interface ConfigRewrite {
-  before: string;
-  after: string;
-  beforeAlwaysOnTokens: number;
-  afterAlwaysOnTokens: number;
-  tokenDelta: number;
-  projectedMonthlyUsdDelta: number;
-  safety?: { verified: boolean; droppedImperatives: string[]; warnings: string[] };
+/** One targeted finding from the config_review_v1 artifact (see configReview.ts). */
+export interface ConfigFinding {
+  severity: 'high' | 'medium' | 'low';
+  path: string | null;
+  title: string;
+  detail: string;
+  suggestedChange: string | null;
 }
 
+/** The advisory slice of config_review_v1 we act on: the k=3 judge's net-value
+ *  verdict plus its findings. `notes` carries engine notes (e.g. a judge sample
+ *  that failed) so a degraded run surfaces WHY instead of vanishing. */
+export interface ConfigReview {
+  verdict: string; // net_positive | net_neutral | net_negative | insufficient_evidence
+  findings: ConfigFinding[];
+  notes: string[];
+}
+
+// The GET returns the full config_review_v1 artifact; we read only these fields.
 interface ReviewReport {
-  rewrite?: ConfigRewrite | null;
+  verdict?: string;
+  findings?: ConfigFinding[] | null;
+  meta?: { notes?: string[] | null } | null;
+}
+
+/** Normalize the untrusted network report into a ConfigReview. Defensive: the
+ *  server validates the artifact, but this is third-party-shaped data on the wire. */
+function normalizeReview(report: ReviewReport | null): ConfigReview | null {
+  if (!report) return null;
+  const findings = Array.isArray(report.findings)
+    ? report.findings.filter((f): f is ConfigFinding => !!f && typeof f.title === 'string')
+    : [];
+  const notes = Array.isArray(report.meta?.notes)
+    ? report.meta!.notes!.filter((n): n is string => typeof n === 'string')
+    : [];
+  return {
+    verdict: typeof report.verdict === 'string' ? report.verdict : 'insufficient_evidence',
+    findings,
+    notes,
+  };
 }
 
 function capFile(): string {
@@ -83,17 +114,17 @@ export function recordSpend(today: string, cap = BACKSTOP_CAP): void {
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
 /**
- * Submit a config bundle for review and poll until the rewrite is ready. Returns the
- * rewrite (or null if the engine produced none). `today` is passed in (no Date.now()
- * in the deterministic core) for the daily-cap key.
+ * Submit a config bundle for review and poll until the judge is done. Returns the
+ * review (verdict + findings), or null if the server returned no report. `today` is
+ * passed in (no Date.now() in the deterministic core) for the daily-cap key.
  */
-export async function requestConfigRewrite(
+export async function requestConfigReview(
   files: Array<{ path: string; content: string }>,
   today: string,
   apiBase: string = process.env.CC_AUDIT_API ?? DEFAULT_API,
   targetRuntime = 'claude_code',
   installKey: string,
-): Promise<ConfigRewrite | null> {
+): Promise<ConfigReview | null> {
   // Gate on the LOCAL backstop BEFORE the request, but only CONSUME a slot once the
   // server has accepted the job (credits committed). A transient POST failure must not
   // burn a slot. The real per-install daily cap is enforced server-side via X-Install-Key.
@@ -113,7 +144,7 @@ export async function requestConfigRewrite(
     const body = await res.text().catch(() => '');
     throw new Error(`config-review returned ${res.status}: ${body.slice(0, 200)}`);
   }
-  // 202 ⇒ job enqueued ⇒ the rewrite + judge WILL run server-side. Charge the slot now.
+  // 202 ⇒ job enqueued ⇒ the k=3 judge WILL run server-side. Charge the slot now.
   recordSpend(today);
   const { sessionId } = (await res.json()) as { sessionId: string };
 
@@ -128,7 +159,14 @@ export async function requestConfigRewrite(
     if (poll.status === 404) throw new Error('config-review session not found (may have expired)');
     if (!poll.ok) continue;
     const { status, report } = (await poll.json()) as { status: string; report: ReviewReport | null };
-    if (status === 'done' || status === 'complete') return report?.rewrite ?? null;
+    // The server's terminal states are 'completed' / 'failed' (the persisted
+    // configAuditStatus, echoed verbatim by the GET route). Match those. The
+    // legacy 'done'/'complete'/'error' spellings are kept as tolerant aliases:
+    // the two repos share no drift guard, so a status-word mismatch here silently
+    // strands the client polling to the 2-min ceiling on EVERY completed review.
+    if (status === 'completed' || status === 'done' || status === 'complete') {
+      return normalizeReview(report);
+    }
     if (status === 'failed' || status === 'error') throw new Error('config-review failed server-side');
   }
   throw new Error('config-review timed out (no result after ~2 min)');

@@ -557,7 +557,7 @@ async function run(): Promise<void> {
       ] as const);
     const label = [
       consent ? `Right-sizing ${consent.footprints.length} sessions` : null,
-      trimRec ? 'rewriting CLAUDE.md' : null,
+      trimRec ? 'reviewing CLAUDE.md' : null,
     ]
       .filter(Boolean)
       .join(' + ');

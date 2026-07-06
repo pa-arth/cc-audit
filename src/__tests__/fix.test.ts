@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, afterEach, beforeAll, describe, it, expect, vi } from 'vitest';
 import {
+  buildConfigTrimProposal,
   buildModelPinProposals,
   frontmatterModelPatch,
   isHostedTrimCandidate,
@@ -10,7 +11,7 @@ import {
   runFix,
   type FixProposal,
 } from '../fix.js';
-import { checkSpendCap, recordSpend, requestConfigRewrite, spendToday } from '../fixClient.js';
+import { checkSpendCap, recordSpend, requestConfigReview, spendToday } from '../fixClient.js';
 import type { Recommendation } from '../recommend.js';
 
 describe('frontmatterModelPatch', () => {
@@ -140,7 +141,7 @@ describe('spend-cap accounting (no lockout on transient failure)', () => {
   });
 });
 
-describe('requestConfigRewrite egress (X-Install-Key + server cap)', () => {
+describe('requestConfigReview egress (X-Install-Key + server cap)', () => {
   const home0 = process.env.HOME;
   let home: string;
   beforeAll(() => {
@@ -165,24 +166,63 @@ describe('requestConfigRewrite egress (X-Install-Key + server cap)', () => {
         if (String(url).endsWith('/v1/public/config-review')) {
           return { ok: true, status: 202, json: async () => ({ sessionId: 's1' }) } as unknown as Response;
         }
+        // The server reports terminal success as 'completed' (configAuditStatus) —
+        // NOT 'done'/'complete'. Mock the real contract so this guards the client
+        // against the status-string mismatch that silently timed out every review.
         return {
           ok: true,
           status: 200,
-          json: async () => ({ status: 'done', report: { rewrite: null } }),
+          json: async () => ({ status: 'completed', report: { verdict: 'net_neutral', findings: [] } }),
         } as unknown as Response;
       }),
     );
     vi.useFakeTimers();
-    const pending = requestConfigRewrite(files, '2026-06-20-a', 'https://api.test', 'claude_code', 'KEY-123');
+    const pending = requestConfigReview(files, '2026-06-20-a', 'https://api.test', 'claude_code', 'KEY-123');
     await vi.runAllTimersAsync(); // flush the poll's sleep()
     const result = await pending;
     vi.useRealTimers();
 
-    expect(result).toBeNull();
+    expect(result?.verdict).toBe('net_neutral');
     expect(calls).toHaveLength(2);
     const header = (init?: RequestInit) => (init?.headers as Record<string, string> | undefined)?.['x-install-key'];
     expect(header(calls[0]!.init)).toBe('KEY-123'); // POST
     expect(header(calls[1]!.init)).toBe('KEY-123'); // poll GET
+  });
+
+  it("returns the judge's findings when the server reports status 'completed'", async () => {
+    // Regression guard: the server writes configAuditStatus='completed', which the
+    // client once failed to recognize (it waited for 'done'/'complete'), so every
+    // finished review polled to the 2-min ceiling and degraded to "did not run".
+    const report = {
+      verdict: 'net_negative',
+      findings: [
+        { severity: 'high', path: 'CLAUDE.md', title: 'Too large', detail: 'trim it', suggestedChange: 'cut section X' },
+      ],
+      meta: { notes: ['Rewrite skipped: judge returned no parseable JSON.'] },
+    };
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string) => {
+        if (String(url).endsWith('/v1/public/config-review')) {
+          return { ok: true, status: 202, json: async () => ({ sessionId: 's1' }) } as unknown as Response;
+        }
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ status: 'completed', report }),
+        } as unknown as Response;
+      }),
+    );
+    vi.useFakeTimers();
+    const pending = requestConfigReview(files, '2026-06-20-c', 'https://api.test', 'claude_code', 'KEY-123');
+    await vi.runAllTimersAsync();
+    const result = await pending;
+    vi.useRealTimers();
+
+    expect(result?.verdict).toBe('net_negative');
+    expect(result?.findings).toHaveLength(1);
+    expect(result?.findings[0]!.title).toBe('Too large');
+    expect(result?.notes).toEqual(['Rewrite skipped: judge returned no parseable JSON.']);
   });
 
   it('maps a server 429 to a clean "server-enforced" message (no raw status dump)', async () => {
@@ -191,8 +231,104 @@ describe('requestConfigRewrite egress (X-Install-Key + server cap)', () => {
       vi.fn(async () => ({ ok: false, status: 429, text: async () => 'rate limited' }) as unknown as Response),
     );
     await expect(
-      requestConfigRewrite(files, '2026-06-20-b', 'https://api.test', 'claude_code', 'KEY-123'),
+      requestConfigReview(files, '2026-06-20-b', 'https://api.test', 'claude_code', 'KEY-123'),
     ).rejects.toThrow(/server-enforced/);
+  });
+});
+
+describe('buildConfigTrimProposal (findings advisory)', () => {
+  const cwd0 = process.cwd();
+  const home0 = process.env.HOME;
+  let work: string;
+  let claudeMd: string;
+  beforeAll(() => {
+    work = mkdtempSync(join(tmpdir(), 'cc-audit-trim-'));
+    process.chdir(work); // review docs are written to ./.cc-audit relative to cwd
+    process.env.HOME = work; // isolate the backstop counter file
+    claudeMd = join(work, 'CLAUDE.md');
+    writeFileSync(claudeMd, '# project\n\nbuild: npm run build\n');
+  });
+  afterAll(() => {
+    process.chdir(cwd0);
+    if (home0 === undefined) delete process.env.HOME;
+    else process.env.HOME = home0;
+    rmSync(work, { recursive: true, force: true });
+  });
+  afterEach(() => vi.unstubAllGlobals());
+
+  const rec: Recommendation = {
+    kind: 'trim-config',
+    title: 'CLAUDE.md is heavy',
+    monthlyUsdSaved: 4.2,
+    file: '', // set per-test to the tmp path
+    action: 'Trim it',
+  };
+
+  function stubReview(report: unknown) {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string) => {
+        if (String(url).endsWith('/v1/public/config-review')) {
+          return { ok: true, status: 202, json: async () => ({ sessionId: 's1' }) } as unknown as Response;
+        }
+        return { ok: true, status: 200, json: async () => ({ status: 'completed', report }) } as unknown as Response;
+      }),
+    );
+  }
+
+  it('writes a .review.md advisory from the findings and never touches CLAUDE.md', async () => {
+    const before = readFileSync(claudeMd, 'utf8');
+    stubReview({
+      verdict: 'net_negative',
+      findings: [
+        { severity: 'low', path: 'CLAUDE.md', title: 'Minor nit', detail: 'x', suggestedChange: null },
+        { severity: 'high', path: 'CLAUDE.md', title: 'Way too big', detail: 'cut it', suggestedChange: 'drop persona' },
+      ],
+      meta: { notes: [] },
+    });
+    vi.useFakeTimers();
+    const pending = buildConfigTrimProposal({ ...rec, file: claudeMd }, '2026-06-21-a', 'https://api.test', 'KEY');
+    await vi.runAllTimersAsync();
+    const p = await pending;
+    vi.useRealTimers();
+
+    expect(p).not.toBeNull();
+    expect(p!.kind).toBe('config-trim');
+    expect(p!.safe).toBe(true);
+    expect(p!.monthlyUsdSaved).toBe(4.2); // local estimate carried from the rec
+    expect(p!.summary).toContain('net-NEGATIVE');
+    expect(p!.summary).toContain('1 high-severity');
+    expect(readFileSync(claudeMd, 'utf8')).toBe(before); // real file untouched
+    expect(p!.proposalFile.endsWith('.review.md')).toBe(true);
+    const doc = readFileSync(p!.proposalFile, 'utf8');
+    expect(doc).toContain('Way too big'); // high finding sorted first
+    expect(doc).toContain('**Suggested change:** drop persona');
+    expect(doc.indexOf('Way too big')).toBeLessThan(doc.indexOf('Minor nit')); // severity-ordered
+  });
+
+  it('returns null when the review completes with no findings (nothing to trim)', async () => {
+    stubReview({ verdict: 'net_positive', findings: [], meta: { notes: [] } });
+    vi.useFakeTimers();
+    const pending = buildConfigTrimProposal({ ...rec, file: claudeMd }, '2026-06-21-b', 'https://api.test', 'KEY');
+    await vi.runAllTimersAsync();
+    const p = await pending;
+    vi.useRealTimers();
+    expect(p).toBeNull();
+  });
+
+  it('surfaces a skipped row (not silence) when the judge was unavailable', async () => {
+    stubReview({
+      verdict: 'insufficient_evidence',
+      findings: [],
+      meta: { notes: ['Judge sample failed: upstream 503'] },
+    });
+    vi.useFakeTimers();
+    const pending = buildConfigTrimProposal({ ...rec, file: claudeMd }, '2026-06-21-c', 'https://api.test', 'KEY');
+    await vi.runAllTimersAsync();
+    const p = await pending;
+    vi.useRealTimers();
+    expect(p!.proposalFile).toBe('(skipped)');
+    expect(p!.caution).toContain('upstream 503');
   });
 });
 
@@ -201,7 +337,7 @@ describe('renderFix', () => {
     expect(renderFix([])).toContain('no reviewable patches');
   });
 
-  it('lists each patch with savings, the proposal path, and a safety caution', () => {
+  it('renders a model-pin as a git-diff patch and a config-trim as a hand-applied advisory', () => {
     const proposals: FixProposal[] = [
       {
         kind: 'model-pin',
@@ -217,17 +353,21 @@ describe('renderFix', () => {
         kind: 'config-trim',
         title: 'Project CLAUDE.md trim',
         realFile: '/p/CLAUDE.md',
-        proposalFile: '.cc-audit/p__CLAUDE.md.proposed',
+        proposalFile: '.cc-audit/p__CLAUDE.md.review.md',
         monthlyUsdSaved: 6,
-        safe: false,
-        caution: 'may drop: NEVER push to main',
-        summary: '4,751 → 2,100 tok',
+        safe: true,
+        caution: null,
+        summary: 'net-NEGATIVE · 3 finding(s) to apply by hand',
       },
     ];
     const out = renderFix(proposals);
     expect(out).toContain('~$12.50/mo');
+    // model-pin is a copy-over patch → git diff.
     expect(out).toContain('git diff --no-index /p/.claude/skills/myskill/SKILL.md .cc-audit/myskill__SKILL.md.proposed');
-    expect(out).toContain('⚠ SAFETY: may drop: NEVER push to main');
+    // config-trim is advisory → a review pointer, never a diff or a "copy over" instruction.
+    expect(out).toContain('open .cc-audit/p__CLAUDE.md.review.md');
+    expect(out).toContain('apply the findings by hand');
+    expect(out).not.toContain('git diff --no-index /p/CLAUDE.md');
   });
 });
 
