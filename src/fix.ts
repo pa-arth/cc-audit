@@ -1,9 +1,11 @@
-// `cc-audit fix` — turn recommendations into REVIEWABLE patches. Never touches a
-// real file: every proposed change is written to ./.cc-audit/<name>.proposed and
-// summarized with the projected $/mo + a safety verdict. The developer reviews the
-// diff and applies it themselves. Two patch sources:
-//   - model-pin: a purely LOCAL one-line frontmatter edit (no network, no spend).
-//   - config-trim: the hosted config-review rewrite engine (spends credits; capped).
+// `cc-audit fix` — turn recommendations into REVIEWABLE artifacts. Never touches a
+// real file: everything is written to ./.cc-audit/ for the developer to review and
+// apply themselves. Sources:
+//   - model-pin: a purely LOCAL one-line frontmatter edit → a <name>.proposed patch.
+//   - context-guardrail: a LOCAL settings.json patch + statusline script.
+//   - config-trim: the hosted config-review — the k=3 judge's net-value findings,
+//     written to a <name>.review.md advisory (spends credits; capped). NOT an
+//     auto-rewrite: the findings are applied by hand.
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
@@ -15,7 +17,7 @@ import {
   GUARD_SCRIPT_NAME,
   readUserSettings,
 } from './contextGuard.js';
-import { requestConfigRewrite } from './fixClient.js';
+import { requestConfigReview, type ConfigReview } from './fixClient.js';
 import { getInstallKey } from './installKey.js';
 import type { Recommendation } from './recommend.js';
 import { BOX_WIDTH, c, panel, wrap } from './theme.js';
@@ -28,7 +30,7 @@ export interface FixProposal {
   /** Where the proposed version was written for review. */
   proposalFile: string;
   monthlyUsdSaved: number;
-  /** false ⇒ the rewrite dropped a load-bearing instruction — present as a caution only. */
+  /** false ⇒ present as a caution only, don't apply blindly (e.g. unparseable settings.json). */
   safe: boolean;
   caution: string | null;
   summary: string;
@@ -68,6 +70,55 @@ function writeProposal(realFile: string, content: string): string {
   return out;
 }
 
+/** Config-review is advisory, not a patch — its findings go to a .review.md doc the
+ *  developer reads and applies by hand (distinct suffix so it never looks like a
+ *  copy-over-the-original .proposed patch). */
+function writeReviewDoc(realFile: string, content: string): string {
+  mkdirSync(PROPOSAL_DIR, { recursive: true });
+  const out = join(PROPOSAL_DIR, `${basename(dirname(realFile))}__${basename(realFile)}.review.md`);
+  writeFileSync(out, content);
+  return out;
+}
+
+const VERDICT_LABEL: Record<string, string> = {
+  net_positive: 'net-positive',
+  net_neutral: 'net-neutral',
+  net_negative: 'net-NEGATIVE',
+  insufficient_evidence: 'insufficient evidence',
+};
+const verdictLabel = (v: string): string => VERDICT_LABEL[v] ?? v;
+
+const SEVERITY_ORDER: Record<string, number> = { high: 0, medium: 1, low: 2 };
+
+/** Render the judge's findings as a human-readable review doc. Pure. */
+export function renderConfigReviewDoc(realFile: string, review: ConfigReview): string {
+  const lines: string[] = [
+    `# config-review — ${realFile}`,
+    '',
+    `Verdict: ${verdictLabel(review.verdict)}`,
+    '',
+    'Advisory — the hosted judge flagged the items below. Apply them by hand;',
+    'nothing here is auto-written to your config.',
+    '',
+    '---',
+    '',
+  ];
+  const sorted = [...review.findings].sort(
+    (a, b) => (SEVERITY_ORDER[a.severity] ?? 3) - (SEVERITY_ORDER[b.severity] ?? 3),
+  );
+  sorted.forEach((f, i) => {
+    lines.push(`## ${i + 1}. [${f.severity}] ${f.title}`, '');
+    if (f.detail) lines.push(f.detail, '');
+    if (f.suggestedChange) lines.push(`**Suggested change:** ${f.suggestedChange}`, '');
+  });
+  if (review.notes.length > 0) {
+    lines.push('---', '', '### engine notes', '');
+    for (const n of review.notes) lines.push(`- ${n}`);
+    lines.push('');
+  }
+  return lines.join('\n');
+}
+
 /** The hosted config-review only ever reviews a project CLAUDE.md. Other trim-config
  *  recs (dead-weight SKILL.md, plugin/MCP rows with no file) are local advice — their
  *  content must NOT be sent to the rewrite endpoint or burn daily-cap slots. */
@@ -97,7 +148,7 @@ export function buildModelPinProposals(recommendations: Recommendation[]): FixPr
   return proposals;
 }
 
-/** The hosted CLAUDE.md rewrite — the only network/spend step. A failure (offline,
+/** The hosted CLAUDE.md review — the only network/spend step. A failure (offline,
  *  cap hit, timeout) is returned as a `(skipped)` proposal, never thrown, so callers
  *  can't lose their local patches to it. Caller gates via isHostedTrimCandidate. */
 export async function buildConfigTrimProposal(
@@ -106,7 +157,7 @@ export async function buildConfigTrimProposal(
   apiBase?: string,
   installKey?: string,
 ): Promise<FixProposal | null> {
-  let rewrite;
+  let review;
   try {
     // Read inside the try: a filesystem error (perms, file removed after the
     // isHostedTrimCandidate check, symlink loop) must surface as a (skipped) proposal,
@@ -114,7 +165,7 @@ export async function buildConfigTrimProposal(
     const content = readFileSync(rec.file!, 'utf8');
     // Resolve the install key at the actual send site — this function is only reached
     // for a real hosted-trim candidate, so the key is generated/persisted only on egress.
-    rewrite = await requestConfigRewrite(
+    review = await requestConfigReview(
       [{ path: 'CLAUDE.md', content }],
       today,
       apiBase,
@@ -129,28 +180,44 @@ export async function buildConfigTrimProposal(
       proposalFile: '(skipped)',
       monthlyUsdSaved: 0,
       safe: true,
-      caution: `rewrite unavailable: ${err instanceof Error ? err.message : String(err)}`,
+      caution: `review unavailable: ${err instanceof Error ? err.message : String(err)}`,
       summary: 'config-review did not run',
     };
   }
-  if (!rewrite) return null; // engine produced no rewrite
-  const proposalFile = writeProposal(rec.file!, rewrite.after);
-  const saved = -rewrite.projectedMonthlyUsdDelta; // delta is after-before (negative = saving)
-  // safety may be absent (older artifact / skipped cross-check) — treat missing
-  // as UNVERIFIED so we never present an unchecked rewrite as safe.
-  const safety = rewrite.safety;
-  const safe = safety?.verified === true;
+  if (!review) return null; // no report from the server
+  if (review.findings.length === 0) {
+    // Completed but nothing flagged. If the judge itself was unavailable
+    // (insufficient evidence + engine notes), surface WHY rather than vanishing —
+    // that silent-null invisibility is exactly what hid the earlier breakage. A
+    // clean "nothing to trim" (a real verdict, no notes) just returns null.
+    if (review.verdict === 'insufficient_evidence' && review.notes.length > 0) {
+      return {
+        kind: 'config-trim',
+        title: rec.title,
+        realFile: rec.file!,
+        proposalFile: '(skipped)',
+        monthlyUsdSaved: 0,
+        safe: true,
+        caution: `review incomplete: ${review.notes[0]}`,
+        summary: 'config-review returned no findings',
+      };
+    }
+    return null;
+  }
+  const proposalFile = writeReviewDoc(rec.file!, renderConfigReviewDoc(rec.file!, review));
+  const highs = review.findings.filter((f) => f.severity === 'high').length;
+  const detail = highs > 0 ? `${highs} high-severity` : `${review.findings.length}`;
   return {
     kind: 'config-trim',
     title: rec.title,
     realFile: rec.file!,
     proposalFile,
-    monthlyUsdSaved: saved > 0 ? saved : 0,
-    safe,
-    caution: safe
-      ? null
-      : `may drop: ${safety?.droppedImperatives?.slice(0, 5).join(', ') || safety?.warnings?.[0] || 'safety not reported'}`,
-    summary: `${rewrite.beforeAlwaysOnTokens.toLocaleString()} → ${rewrite.afterAlwaysOnTokens.toLocaleString()} tok`,
+    // Local estimate from the rec (~40% of the CLAUDE.md always-on carry) — the
+    // potential saving if you act on the findings, not a rewrite-measured delta.
+    monthlyUsdSaved: rec.monthlyUsdSaved > 0 ? rec.monthlyUsdSaved : 0,
+    safe: true, // advisory — nothing is auto-applied
+    caution: null,
+    summary: `${verdictLabel(review.verdict)} · ${detail} finding(s) to apply by hand`,
   };
 }
 
@@ -218,8 +285,11 @@ export function renderFix(proposals: FixProposal[]): string {
     rows.push(`${c.bold(`${i}.`)} [${save}] ${c.bold(p.title)}`);
     for (const ln of wrap(p.summary, BOX_WIDTH - 5)) rows.push(c.dim(`   ${ln}`));
     if (p.proposalFile === '(skipped)') {
-      // Network/cap failure on the hosted trim — no artifact to diff; show why.
+      // Network/cap failure on the hosted review — no artifact to show; show why.
       for (const ln of wrap(`— ${p.caution}`, BOX_WIDTH - 5)) rows.push(c.amber(`   ${ln}`));
+    } else if (p.kind === 'config-trim') {
+      // Advisory findings, not a patch — point at the review doc; nothing to diff or copy.
+      rows.push(`   ${c.dim('review:')}  open ${c.cyan(p.proposalFile)} — apply the findings by hand`);
     } else {
       // Keep the ⚠ SAFETY prefix and the git-diff command contiguous (no color
       // mid-string) so they stay greppable in plain mode.
@@ -239,6 +309,10 @@ export function renderFix(proposals: FixProposal[]): string {
     }
     i += 1;
   }
-  rows.push(c.dim("apply by copying a .proposed file over the original once you've reviewed it."));
+  // Only the patch kinds (model-pin, context-guardrail) are copy-over-the-original;
+  // config-trim is a hand-applied advisory with its own "review:" pointer.
+  if (proposals.some((p) => p.proposalFile !== '(skipped)' && p.kind !== 'config-trim')) {
+    rows.push(c.dim("apply by copying a .proposed file over the original once you've reviewed it."));
+  }
   return ['', ...panel('REVIEWABLE PATCHES  ·  written to ./.cc-audit/ — nothing applied', rows, c.gold), ''].join('\n');
 }
