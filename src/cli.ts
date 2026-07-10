@@ -109,7 +109,7 @@ function parseArgs(argv: string[]): Args {
           '      Score your filled sheet vs the judge: precision (gate ≥90%), recall, confusion.\n' +
           '  cc-audit fix [--since-days N] [--root DIR]\n' +
           '      Turn recommendations into REVIEWABLE patches under ./.cc-audit/ (never applied):\n' +
-          '      local model-pin edits + a hosted CLAUDE.md trim (spends credits; usage-capped per install).\n' +
+          '      local model-pin edits + a hosted CLAUDE.md trim (spends credits).\n' +
           '  cc-audit statusline\n' +
           '      LIVE GUARDRAIL label provider for the claude-hud statusline. Prints JSON\n' +
           '      {"label":"…"}: past your PERSONAL context-degradation knee it warns (soft), and\n' +
@@ -311,7 +311,8 @@ async function maybeConfigSuggestions(interactive: boolean, result: AuditResult)
   if (!trim) return null;
   p.log.warn(
     "A hosted trim sends that CLAUDE.md's FULL CONTENT to our config-review service —\n" +
-      'more than --judge sends — and spends credits (daily-capped).',
+      'more than --judge sends — where it is retained to improve the service, and\n' +
+      'spends credits.',
   );
   const wantTrim = await p.confirm({ message: `Request a hosted rewrite of ${trim.file}?`, initialValue: false });
   return !p.isCancel(wantTrim) && wantTrim === true ? trim : null;
@@ -341,7 +342,8 @@ async function rightSizeConsent(
   if (!want && interactive && footprints.length > 0) {
     p.log.message(
       "Right-sizing sends each task's gist + metadata (model, tokens, turn shape)\n" +
-        'to our hosted model — never your code, prompts, or paths.' +
+        'to our hosted model, which retains them to improve right-sizing and the\n' +
+        'benchmark — never your code, prompts, or paths.' +
         (hygieneItems.length > 0
           ? `\nThe same call also refines your context-hygiene estimate from ${hygieneItems.length} episodes' task gists (no extra call).`
           : ''),
@@ -550,8 +552,9 @@ async function run(): Promise<void> {
     const settle = () =>
       Promise.allSettled([
         consent
-          ? // strip the local-only avoidableUsd before sending
-            judgeFootprints(consent.footprints, api, consent.hygieneItems.map((h) => h.item))
+          ? // strip the local-only avoidableUsd before sending; anonId lets the backend
+            // persist + attribute the judge call (benchmark cohort / dedup), never a path
+            judgeFootprints(consent.footprints, api, consent.hygieneItems.map((h) => h.item), machineAnonId())
           : Promise.resolve(undefined),
         trimRec ? buildConfigTrimProposal(trimRec, today, api) : Promise.resolve(null),
       ] as const);

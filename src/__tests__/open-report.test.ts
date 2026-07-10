@@ -4,7 +4,7 @@ const spawnMock = vi.hoisted(() => vi.fn(() => ({ unref: vi.fn() })));
 vi.mock('node:child_process', () => ({ spawn: spawnMock }));
 
 import { machineAnonId, openURL } from '../open.js';
-import { postReport } from '../judgeClient.js';
+import { judgeFootprints, postReport } from '../judgeClient.js';
 
 describe('machineAnonId', () => {
   it('is a stable 16-char hex hash (no raw hostname/path)', () => {
@@ -42,5 +42,45 @@ describe('postReport', () => {
   it('throws on a non-ok response', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => ({ ok: false, status: 503, text: async () => 'at capacity' })));
     await expect(postReport({ aggregate: {} }, 'http://localhost:3001')).rejects.toThrow(/503/);
+  });
+});
+
+describe('transient failure handling', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('retries a transient 502 and succeeds on a later attempt', async () => {
+    let n = 0;
+    const fetchMock = vi.fn(async () => {
+      n += 1;
+      if (n < 3) return { ok: false, status: 502, text: async () => '<!DOCTYPE html> gateway error' };
+      return { ok: true, json: async () => ({ verdicts: [], summary: {} }) };
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const r = await judgeFootprints([], 'http://localhost:3001');
+    expect(r.verdicts).toEqual([]);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
+  it('never surfaces raw gateway HTML — reports a clean 5xx message', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({ ok: false, status: 502, text: async () => '<!DOCTYPE html> <!--[if lt IE 7]>' })),
+    );
+    const err = await judgeFootprints([], 'http://localhost:3001').catch((e: unknown) => e as Error);
+    expect(err.message).toContain('502');
+    expect(err.message).not.toContain('<!DOCTYPE');
+    expect(err.message).not.toContain('IE 7');
+  });
+
+  it('surfaces a 4xx validation error verbatim (no retry, actionable)', async () => {
+    const fetchMock = vi.fn(async () => ({
+      ok: false,
+      status: 400,
+      text: async () => '{"error":"sessions: Array must contain at least 1 element(s)"}',
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+    const err = await judgeFootprints([], 'http://localhost:3001').catch((e: unknown) => e as Error);
+    expect(err.message).toContain('Array must contain at least 1 element');
+    expect(fetchMock).toHaveBeenCalledTimes(1); // 4xx is not retried
   });
 });
