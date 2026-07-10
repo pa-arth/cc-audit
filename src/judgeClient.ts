@@ -34,23 +34,86 @@ export interface RightSizingResult {
 
 const DEFAULT_API = 'https://api.promptster.ai';
 
+// The hosted judge runs a model pass behind a gateway (Cloudflare), so a transient
+// 502/503/504 or a dropped connection is expected background noise — one slow gpt-5.5
+// call in the batch can tip the origin over the proxy timeout. Without a retry, that
+// blip discards an entire consented right-sizing run. 5xx/429/408/network are retried;
+// 4xx (a real, actionable validation error) is not.
+const RETRYABLE_STATUS = new Set([408, 429, 500, 502, 503, 504]);
+const MAX_ATTEMPTS = 3;
+const RETRY_BASE_MS = 250;
+const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
+/** Pull a human-meaningful message out of an error body, discarding gateway HTML.
+ *  A Cloudflare 502 page (`<!DOCTYPE html>…`) carries no signal — never surface it. */
+function summarizeBody(body: string): string {
+  const t = body.trim();
+  if (!t || t.startsWith('<')) return ''; // gateway/HTML error page — nothing useful
+  try {
+    const j = JSON.parse(t) as { error?: unknown };
+    if (typeof j.error === 'string') return j.error;
+  } catch {
+    /* not JSON — fall through to a truncated snippet */
+  }
+  return t.slice(0, 200);
+}
+
+/** POST JSON to the hosted API with bounded retries on transient failures, and
+ *  clean (HTML-free) error messages. `service` labels the endpoint for the user.
+ *  `maxAttempts` caps retries: use 1 for a NON-idempotent write (a POST that
+ *  persists server-side), where a retry after a lost success would duplicate the
+ *  row; use >1 only for an idempotent call (the judge is a pure model pass). */
+async function postJson<T>(url: string, body: string, service: string, maxAttempts = MAX_ATTEMPTS): Promise<T> {
+  let lastDetail = '';
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    let res: Response;
+    try {
+      res = await fetch(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body });
+    } catch (e) {
+      // network / DNS / connection reset — transient
+      lastDetail = e instanceof Error ? e.message : String(e);
+      if (attempt < maxAttempts) {
+        await sleep(RETRY_BASE_MS * attempt);
+        continue;
+      }
+      throw new Error(`${service} unreachable: ${lastDetail}`);
+    }
+    if (res.ok) return (await res.json()) as T;
+
+    const text = await res.text().catch(() => '');
+    if (RETRYABLE_STATUS.has(res.status) && attempt < maxAttempts) {
+      lastDetail = `HTTP ${res.status}`;
+      await sleep(RETRY_BASE_MS * attempt);
+      continue;
+    }
+    // Out of retries, or a non-retryable status.
+    if (res.status >= 500) {
+      throw new Error(`${service} temporarily unavailable (${res.status}) — please try again in a moment.`);
+    }
+    const snippet = summarizeBody(text);
+    throw new Error(`${service} returned ${res.status}${snippet ? `: ${snippet}` : ''}`);
+  }
+  /* unreachable — the loop either returns or throws */
+  throw new Error(`${service} failed${lastDetail ? `: ${lastDetail}` : ''}`);
+}
+
 export async function judgeFootprints(
   footprints: SessionFootprint[],
   apiBase: string = process.env.CC_AUDIT_API ?? DEFAULT_API,
   hygiene: HygieneJudgeItem[] = [],
+  anonId?: string,
 ): Promise<RightSizingResult> {
-  const res = await fetch(`${apiBase.replace(/\/$/, '')}/v1/public/cost-audit`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    // `hygiene` rides in the SAME request — the judge scores both in one model pass; an
-    // older backend ignores the extra field and returns no `hygiene` verdicts.
-    body: JSON.stringify({ sessions: footprints, hygiene }),
-  });
-  if (!res.ok) {
-    const body = await res.text().catch(() => '');
-    throw new Error(`cost-audit endpoint returned ${res.status}: ${body.slice(0, 200)}`);
-  }
-  return (await res.json()) as RightSizingResult;
+  // `hygiene` rides in the SAME request — the judge scores both in one model pass; an
+  // older backend ignores the extra field and returns no `hygiene` verdicts.
+  // `anonId` (privacy-safe hash, no hostname/path) lets the backend persist + attribute
+  // every judge call to an install for the benchmark cohort / dedup — the model pass is
+  // paid for whether or not the user later shares, so the corpus should capture it. An
+  // older backend ignores the field.
+  return postJson<RightSizingResult>(
+    `${apiBase.replace(/\/$/, '')}/v1/public/cost-audit`,
+    JSON.stringify({ sessions: footprints, hygiene, anonId }),
+    'right-sizing service',
+  );
 }
 
 export interface PostReportResult {
@@ -80,14 +143,14 @@ export async function postReport(
   body: { aggregate: unknown; rightSizing?: unknown; hygieneRefinement?: unknown; anonId?: string },
   apiBase: string = process.env.CC_AUDIT_API ?? DEFAULT_API,
 ): Promise<PostReportResult> {
-  const res = await fetch(`${apiBase.replace(/\/$/, '')}/v1/public/cost-audit-report`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(body),
-  });
-  if (!res.ok) {
-    const text = await res.text().catch(() => '');
-    throw new Error(`cost-audit-report endpoint returned ${res.status}: ${text.slice(0, 200)}`);
-  }
-  return (await res.json()) as PostReportResult;
+  // SINGLE attempt: creating a report is a non-idempotent write. Retrying after a
+  // lost-but-successful response would mint a SECOND report with a different share
+  // URL. The clean-error handling in postJson still applies; only the retry is off.
+  // (--open is trivially re-run by the user, so resilience isn't worth a duplicate.)
+  return postJson<PostReportResult>(
+    `${apiBase.replace(/\/$/, '')}/v1/public/cost-audit-report`,
+    JSON.stringify(body),
+    'report service',
+    1,
+  );
 }
