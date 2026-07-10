@@ -357,9 +357,14 @@ async function rightSizeConsent(
     return undefined;
   }
   // Explicit flag in a non-interactive run: print the receipt of what's being sent.
+  // The flag IS the consent here (no interactive prompt runs), so this receipt must
+  // carry the SAME disclosure the interactive prompt does — including that the call
+  // is retained and attributed by an install id (anonId). Route to stderr so --json
+  // stdout stays pure.
   if (args.judge && !interactive) {
     process.stderr.write(
-      `Right-sizing ${footprints.length} sessions via the hosted model (task gist + metadata, never code)` +
+      `Right-sizing ${footprints.length} sessions via the hosted model (task gist + metadata, never code), ` +
+        'retained + attributed by an anonymous install id to improve right-sizing and the benchmark' +
         (hygieneItems.length > 0 ? ` + refining ${hygieneItems.length} context-hygiene episodes (same call)` : '') +
         '…\n',
     );
