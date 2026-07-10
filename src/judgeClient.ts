@@ -59,17 +59,20 @@ function summarizeBody(body: string): string {
 }
 
 /** POST JSON to the hosted API with bounded retries on transient failures, and
- *  clean (HTML-free) error messages. `service` labels the endpoint for the user. */
-async function postJson<T>(url: string, body: string, service: string): Promise<T> {
+ *  clean (HTML-free) error messages. `service` labels the endpoint for the user.
+ *  `maxAttempts` caps retries: use 1 for a NON-idempotent write (a POST that
+ *  persists server-side), where a retry after a lost success would duplicate the
+ *  row; use >1 only for an idempotent call (the judge is a pure model pass). */
+async function postJson<T>(url: string, body: string, service: string, maxAttempts = MAX_ATTEMPTS): Promise<T> {
   let lastDetail = '';
-  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     let res: Response;
     try {
       res = await fetch(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body });
     } catch (e) {
       // network / DNS / connection reset — transient
       lastDetail = e instanceof Error ? e.message : String(e);
-      if (attempt < MAX_ATTEMPTS) {
+      if (attempt < maxAttempts) {
         await sleep(RETRY_BASE_MS * attempt);
         continue;
       }
@@ -78,7 +81,7 @@ async function postJson<T>(url: string, body: string, service: string): Promise<
     if (res.ok) return (await res.json()) as T;
 
     const text = await res.text().catch(() => '');
-    if (RETRYABLE_STATUS.has(res.status) && attempt < MAX_ATTEMPTS) {
+    if (RETRYABLE_STATUS.has(res.status) && attempt < maxAttempts) {
       lastDetail = `HTTP ${res.status}`;
       await sleep(RETRY_BASE_MS * attempt);
       continue;
@@ -140,9 +143,14 @@ export async function postReport(
   body: { aggregate: unknown; rightSizing?: unknown; hygieneRefinement?: unknown; anonId?: string },
   apiBase: string = process.env.CC_AUDIT_API ?? DEFAULT_API,
 ): Promise<PostReportResult> {
+  // SINGLE attempt: creating a report is a non-idempotent write. Retrying after a
+  // lost-but-successful response would mint a SECOND report with a different share
+  // URL. The clean-error handling in postJson still applies; only the retry is off.
+  // (--open is trivially re-run by the user, so resilience isn't worth a duplicate.)
   return postJson<PostReportResult>(
     `${apiBase.replace(/\/$/, '')}/v1/public/cost-audit-report`,
     JSON.stringify(body),
     'report service',
+    1,
   );
 }
