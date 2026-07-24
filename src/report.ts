@@ -104,8 +104,25 @@ export function renderReport(r: AuditResult, opts: { rows?: number; delta?: Hist
         `${c.dim('run-rate')} ${usd(Math.min(...range))}–${usd(Math.max(...range))}${c.dim('/wk — the /mo figure extrapolates this')}`,
     );
   }
+  // Name every unpriced model id, whatever its share. A small share is NOT evidence
+  // the number is fine — it only bounds the error on the TOTAL. The per-model figure
+  // can still be badly wrong (claude-opus-5 ran 40% low at a 0.47% share), and the id
+  // is the only part of this the reader can act on: it says which table row is missing.
+  if (s.unpricedModels.length > 0) {
+    const shown = s.unpricedModels.slice(0, 3);
+    const named = shown
+      .map((m) => `${m.model} (${usd((m.costUsd / s.windowDays) * 30.44)}/mo, ${m.turns} turns)`)
+      .join(', ');
+    const more = s.unpricedModels.length - shown.length;
+    spendRows.push(
+      c.amber(
+        `⚠ no pricing-table entry: ${named}${more > 0 ? ` +${more} more` : ''} — ` +
+          `billed at the Sonnet fallback, so these are estimates, not prices`,
+      ),
+    );
+  }
   if (s.unpricedShare > 0.02) {
-    spendRows.push(c.amber(`⚠ ${pct(s.unpricedShare)} of spend used a fallback price (unknown model id)`));
+    spendRows.push(c.amber(`⚠ ${pct(s.unpricedShare)} of total spend used a fallback price`));
   }
   blank();
   out.push(...card('ESTIMATED SPEND', spendRows, c.gold));

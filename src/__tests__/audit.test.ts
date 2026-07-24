@@ -824,8 +824,10 @@ describe('aggregate record (privacy)', () => {
     expect(JSON.stringify(shared)).not.toContain('fix the thing');
   });
 
-  it('is schema v8 with roiLedger/temporal/friction blocks and spawn economics present', () => {
-    expect(aggregate.schemaVersion).toBe(8);
+  it('is schema v9 with roiLedger/temporal/friction blocks and spawn economics present', () => {
+    expect(aggregate.schemaVersion).toBe(9);
+    // v9: which dollar figures are estimates, not just how much of the total is.
+    expect(Array.isArray(aggregate.dataQuality.unpricedModels)).toBe(true);
     expect(aggregate.roiLedger).toBeTruthy();
     expect(aggregate.temporal.hourHistogram).toHaveLength(24);
     expect(Array.isArray(aggregate.friction.bySkill)).toBe(true);

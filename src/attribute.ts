@@ -67,6 +67,15 @@ export interface SpendBreakdown {
   perMonthUsd: number;
   /** Fraction of total $ that hit the unknown-model fallback price (data-quality flag). */
   unpricedShare: number;
+  /**
+   * Every model id that hit the fallback rate, with what it cost. Reported
+   * REGARDLESS of share: a model can be a rounding error of the bill and still be
+   * mispriced by tens of percent, which is exactly how `claude-opus-5` sat at the
+   * Sonnet fallback (-40% on that model) behind a 0.47% unpriced share. A share
+   * threshold answers "is the total roughly right"; this answers "which number is
+   * a guess" — only the second one is actionable.
+   */
+  unpricedModels: Array<{ model: string; costUsd: number; turns: number }>;
   byModel: ModelSpend[];
   byProject: Array<{ project: string; costUsd: number }>;
   commandLeakBoard: CommandSpend[];
@@ -113,6 +122,7 @@ export function attributeSpend(sessions: Session[]): SpendBreakdown {
   const modelInvoked = new Map<string, { invocations: number; usd: number }>();
   let total = 0;
   let unpriced = 0;
+  const unpricedByModel = new Map<string, { cost: number; turns: number }>();
   let commandTotal = 0;
   let subagentTotal = 0;
   let nonCommand = 0;
@@ -130,8 +140,14 @@ export function attributeSpend(sessions: Session[]): SpendBreakdown {
         const { usd, priced } = turnCostUsd(turn.model, turn.usage, turn.ts);
         spanCost += usd;
         total += usd;
-        if (!priced) unpriced += usd;
         const m = turn.model ?? 'unknown';
+        if (!priced) {
+          unpriced += usd;
+          const up = unpricedByModel.get(m) ?? { cost: 0, turns: 0 };
+          up.cost += usd;
+          up.turns += 1;
+          unpricedByModel.set(m, up);
+        }
         const mm = byModel.get(m) ?? { cost: 0, turns: 0, tokens: 0 };
         mm.cost += usd;
         mm.turns += 1;
@@ -199,6 +215,9 @@ export function attributeSpend(sessions: Session[]): SpendBreakdown {
     windowDays,
     perMonthUsd: (total / windowDays) * 30.44,
     unpricedShare: unpriced / safeTotal,
+    unpricedModels: [...unpricedByModel.entries()]
+      .map(([model, v]) => ({ model, costUsd: v.cost, turns: v.turns }))
+      .sort((a, b) => b.costUsd - a.costUsd),
     byModel: [...byModel.entries()]
       .map(([model, v]) => ({ model, costUsd: v.cost, turns: v.turns, tokens: v.tokens, share: v.cost / safeTotal }))
       .sort((a, b) => b.costUsd - a.costUsd),

@@ -1,6 +1,6 @@
 // ---------------------------------------------------------------------------
 // VENDORED from @promptster/config-cost (packages/config-cost/src/pricing.ts).
-// Last synced: 2026-07-02 via scripts/sync-pricing.mjs — do not hand-edit; re-run
+// Last synced: 2026-07-24 via scripts/sync-pricing.mjs — do not hand-edit; re-run
 // the script against a fresh backend checkout instead.
 //
 // ⚠️  DRIFT RISK — this is a hand-copied mirror, not a package dependency.
@@ -19,7 +19,11 @@
 //   - scripts/sync-pricing.mjs — re-copies this file from a sibling backend
 //     checkout (see MAINTAINING.md "Vendored pricing").
 //
-// Mirrored verbatim (no edits) so a future re-sync is a straight file copy.
+// Mirrored verbatim (no edits) so a future re-sync is a straight file copy. The
+// sha256 below is of the upstream body as copied; sync-pricing.mjs re-checks it and
+// refuses to overwrite a hand-edited mirror. Fix pricing bugs UPSTREAM in config-cost
+// and re-sync — an edit made only here is reverted by the next sync.
+// Upstream-body-sha256: b4aec689142ba072ba444d34cc5c4e4585b0d593a01496c92100217d808b8158
 // ---------------------------------------------------------------------------
 
 // ── Anthropic ──────────────────────────────────────────────────────────────
@@ -63,6 +67,20 @@ export const ANTHROPIC_PRICING: Record<string, AnthropicModelPricing> = {
     cacheRead: 1,
     cacheWrite5min: 12.5,
     cacheWrite1hr: 20,
+  },
+  // ── Claude Opus 5 (verified July 2026: $5/$25, standard cache multipliers —
+  // same rates as the 4.x Opus line). NOTE: Opus 5 (and 4.8) support a "fast
+  // mode" request flag billed at the Fable tier ($10/$50). That is a per-request
+  // parameter, not a distinct model id, and our usage telemetry carries no speed
+  // field — a fast-mode turn arrives as plain "claude-opus-5" and is priced here
+  // at the standard rate. Under-counts fast-mode spend by 2×; needs a capture-
+  // side field before it can be priced. ──
+  'claude-opus-5': {
+    input: 5,
+    output: 25,
+    cacheRead: 0.5,
+    cacheWrite5min: 6.25,
+    cacheWrite1hr: 10,
   },
   // ── Claude 4.8 / 4.7 (verified June 2026: $5/$25, standard cache multipliers) ──
   'claude-opus-4-8': {
@@ -205,9 +223,8 @@ export function getAnthropicPricing(model: string, at?: Date): AnthropicModelPri
     base = ANTHROPIC_PRICING[stripped]!;
     matchedKey = stripped;
   } else {
-    // Prefix match — handle dated variants (e.g. "claude-opus-4-6-20260301").
-    // Longest key first so the most specific prefix wins (mirrors getOpenAIPricing).
-    for (const key of Object.keys(ANTHROPIC_PRICING).sort((a, b) => b.length - a.length)) {
+    // Prefix match — handle dated variants (e.g. "claude-opus-4-6-20260301")
+    for (const key of Object.keys(ANTHROPIC_PRICING)) {
       if (stripped.startsWith(key)) {
         base = ANTHROPIC_PRICING[key] ?? null;
         matchedKey = key;
@@ -234,19 +251,63 @@ export function getAnthropicPricing(model: string, at?: Date): AnthropicModelPri
 }
 
 /**
- * Compute the USD cost for an Anthropic API call.
- * Synchronous — uses the static pricing table with Sonnet-tier fallback.
- * Cache write tokens use the 5-minute rate by default.
+ * A cost figure plus whether it was actually PRICED or merely estimated from a
+ * fallback rate.
+ *
+ * The two are not interchangeable and the codebase already knows it in one half:
+ * `turnCostUsd` (fleet telemetry) returns exactly this shape and reports
+ * `priced: false` rather than invent a rate. The other half — our OWN judge
+ * spend — flows through `computeCost`/`computeOpenAICost`, which silently
+ * substitute a fallback and hand back a bare number that reads as fact.
+ *
+ * That asymmetry is the dangerous direction. An unpriced FLEET turn collapses to
+ * $0 and disappears, which is at least detectable by absence. An unpriced JUDGE
+ * call gets a plausible, specific, wrong dollar figure emitted to PostHog
+ * `$ai_generation` — and a number that looks right is never questioned. It is
+ * the same failure that let `gpt-5-pro` bill at `gpt-5` rates: not a crash, not a
+ * zero, just a confident lie.
  */
-export function computeCost(params: ComputeCostParams): number {
-  const p = getAnthropicPricing(params.model, params.at) ?? SONNET_FALLBACK;
-  return (
+export interface PricedCost {
+  usd: number;
+  /** False when no table entry matched and a fallback rate was substituted. */
+  priced: boolean;
+  /** The fallback's model id when `priced` is false — for logging. */
+  fallbackModel?: string;
+}
+
+/** The model whose rates stand in for an unrecognized Anthropic id. */
+export const ANTHROPIC_FALLBACK_MODEL = 'claude-sonnet-4-6';
+
+/**
+ * Compute the USD cost for an Anthropic API call, reporting whether the rate was
+ * real. Prefer this over {@link computeCost} anywhere the figure is published,
+ * billed against, or shown to a human — it is the same math, and the only
+ * difference is that it admits when it is guessing.
+ */
+export function computeCostPriced(params: ComputeCostParams): PricedCost {
+  const matched = getAnthropicPricing(params.model, params.at);
+  const p = matched ?? SONNET_FALLBACK;
+  const usd =
     (params.inputTokens * p.input +
       params.outputTokens * p.output +
       (params.cacheReadTokens ?? 0) * p.cacheRead +
       (params.cacheWriteTokens ?? 0) * p.cacheWrite5min) /
-    1_000_000
-  );
+    1_000_000;
+  return matched
+    ? { usd, priced: true }
+    : { usd, priced: false, fallbackModel: ANTHROPIC_FALLBACK_MODEL };
+}
+
+/**
+ * Compute the USD cost for an Anthropic API call.
+ * Synchronous — uses the static pricing table with Sonnet-tier fallback.
+ * Cache write tokens use the 5-minute rate by default.
+ *
+ * Returns a bare number, so an unpriced model is indistinguishable from a priced
+ * one. Use {@link computeCostPriced} when that distinction matters.
+ */
+export function computeCost(params: ComputeCostParams): number {
+  return computeCostPriced(params).usd;
 }
 
 /**
@@ -285,33 +346,81 @@ export interface ComputeOpenAICostParams {
   outputTokens: number;
 }
 
-// Static OpenAI pricing table (verified June 2026).
+// Static OpenAI pricing table (verified July 2026).
 // Source: https://openai.com/api/pricing/ and https://developers.openai.com/codex/pricing
 // Cached input is 10% of the standard input rate across the GPT-5 family.
 // Codex variants (e.g. gpt-5.2-codex) are priced identically to their base model.
+// The `pro` tiers publish no cached-input rate in either registry (they do not
+// support prompt caching). cachedInput is set EQUAL to input for those so that a
+// stray cached-token count can never under-bill them — the discount has to be
+// published before we apply it.
 export const OPENAI_PRICING: Record<string, OpenAIModelPricing> = {
+  // ── GPT-5.6 (GA 2026-07-09; rates unchanged from the 2026-06-25 preview) ──
+  // Sol matches the GPT-5.5 tier, Terra the GPT-5.4 tier, Luna a new $1/$6 tier.
+  'gpt-5.6': { input: 5, cachedInput: 0.5, output: 30 },
+  'gpt-5.6-sol': { input: 5, cachedInput: 0.5, output: 30 },
+  'gpt-5.6-terra': { input: 2.5, cachedInput: 0.25, output: 15 },
+  'gpt-5.6-luna': { input: 1, cachedInput: 0.1, output: 6 },
   // ── GPT-5.5 ──
   'gpt-5.5': { input: 5, cachedInput: 0.5, output: 30 },
   'gpt-5.5-codex': { input: 5, cachedInput: 0.5, output: 30 },
+  'gpt-5.5-pro': { input: 30, cachedInput: 3, output: 180 },
   // ── GPT-5.4 ──
   'gpt-5.4': { input: 2.5, cachedInput: 0.25, output: 15 },
   'gpt-5.4-codex': { input: 2.5, cachedInput: 0.25, output: 15 },
   'gpt-5.4-mini': { input: 0.75, cachedInput: 0.075, output: 4.5 },
+  'gpt-5.4-nano': { input: 0.2, cachedInput: 0.02, output: 1.25 },
+  'gpt-5.4-pro': { input: 30, cachedInput: 3, output: 180 },
+  // ── GPT-5.3 (Codex line; `spark` is the low-latency variant, same rates) ──
+  'gpt-5.3-codex': { input: 1.75, cachedInput: 0.175, output: 14 },
+  'gpt-5.3-codex-spark': { input: 1.75, cachedInput: 0.175, output: 14 },
+  'gpt-5.3-chat-latest': { input: 1.75, cachedInput: 0.175, output: 14 },
   // ── GPT-5.2 ──
   'gpt-5.2': { input: 1.75, cachedInput: 0.175, output: 14 },
   'gpt-5.2-codex': { input: 1.75, cachedInput: 0.175, output: 14 },
+  'gpt-5.2-chat-latest': { input: 1.75, cachedInput: 0.175, output: 14 },
+  'gpt-5.2-pro': { input: 21, cachedInput: 21, output: 168 },
+  // ── GPT-5.1 ──
+  'gpt-5.1': { input: 1.25, cachedInput: 0.125, output: 10 },
+  'gpt-5.1-codex': { input: 1.25, cachedInput: 0.125, output: 10 },
+  'gpt-5.1-codex-max': { input: 1.25, cachedInput: 0.125, output: 10 },
+  'gpt-5.1-codex-mini': { input: 0.25, cachedInput: 0.025, output: 2 },
   // ── GPT-5 (legacy) ──
   'gpt-5': { input: 1.25, cachedInput: 0.125, output: 10 },
   'gpt-5-codex': { input: 1.25, cachedInput: 0.125, output: 10 },
   'gpt-5-mini': { input: 0.25, cachedInput: 0.025, output: 2 },
+  'gpt-5-nano': { input: 0.05, cachedInput: 0.005, output: 0.4 },
+  'gpt-5-pro': { input: 15, cachedInput: 15, output: 120 },
+  // Codex CLI's own bundled mini model. Its cached rate is 0.25x input, NOT the
+  // 0.1x that holds across the rest of the family — copied from the registry, not
+  // derived.
+  'codex-mini-latest': { input: 1.5, cachedInput: 0.375, output: 6 },
 };
 
 // Mid-tier fallback for an unrecognized OpenAI model id.
 const OPENAI_FALLBACK = OPENAI_PRICING['gpt-5.2-codex']!;
 
 /**
+ * A prefix match is only legitimate for a DATE suffix — that is the entire
+ * reason the prefix leg exists ("gpt-5.2-codex-2026-05-01" is gpt-5.2-codex).
+ *
+ * A bare `startsWith` is far broader than that, and the difference is not
+ * academic: every unrecognized member of a family silently inherits the price of
+ * whichever shorter key it happens to begin with. "gpt-5-pro" ($15/$120) matched
+ * "gpt-5" and billed at $1.25/$10 — 12x under. "gpt-5-nano" ($0.05/$0.40) matched
+ * the same key and billed 25x OVER. "gpt-5.6" ($5/$30) fell to "gpt-5" at 3x
+ * under. None of them produced a null, a warning, or any other signal: the number
+ * was simply, confidently wrong, which is strictly worse than no number at all.
+ *
+ * Requiring a date suffix means an unknown model now falls through to null and
+ * then to the declared fallback — still an estimate, but an honest and uniform
+ * one that a coverage check can actually detect.
+ */
+const DATE_SUFFIX_RE = /^-(\d{4}-\d{2}-\d{2}|\d{8})$/;
+
+/**
  * Look up static OpenAI pricing for a model id.
- * Tries: exact match → strip vendor prefix → prefix match (ignore date suffix).
+ * Tries: exact match → strip vendor prefix → dated-variant match.
  * Returns null if not a recognized OpenAI model.
  */
 export function getOpenAIPricing(model: string): OpenAIModelPricing | null {
@@ -320,25 +429,49 @@ export function getOpenAIPricing(model: string): OpenAIModelPricing | null {
   const stripped = model.replace(/^[^/]+\//, '');
   if (stripped !== model && OPENAI_PRICING[stripped]) return OPENAI_PRICING[stripped];
 
-  // Prefix match — handle dated variants (e.g. "gpt-5.2-codex-2026-05-01").
-  // Longest key first so "gpt-5.2-codex" wins over "gpt-5.2" / "gpt-5".
+  // Dated variants only. Longest key first so "gpt-5.2-codex-2026-05-01" resolves
+  // against "gpt-5.2-codex" rather than being tested against "gpt-5.2" first.
   for (const key of Object.keys(OPENAI_PRICING).sort((a, b) => b.length - a.length)) {
-    if (stripped.startsWith(key)) return OPENAI_PRICING[key] ?? null;
+    if (stripped.startsWith(key) && DATE_SUFFIX_RE.test(stripped.slice(key.length))) {
+      return OPENAI_PRICING[key] ?? null;
+    }
   }
 
   return null;
+}
+
+/** The model whose rates stand in for an unrecognized OpenAI id. */
+export const OPENAI_FALLBACK_MODEL = 'gpt-5.2-codex';
+
+/**
+ * Compute the USD cost for an OpenAI Responses API call, reporting whether the
+ * rate was real. See {@link PricedCost} for why the distinction matters.
+ *
+ * The OpenAI fallback is the more treacherous of the two: the family spans
+ * $0.05/MTok (nano) to $30/MTok (pro), so substituting a mid-tier rate for an
+ * unknown sibling can be wrong by 25x in EITHER direction — and it will not look
+ * wrong.
+ */
+export function computeOpenAICostPriced(params: ComputeOpenAICostParams): PricedCost {
+  const matched = getOpenAIPricing(params.model);
+  const p = matched ?? OPENAI_FALLBACK;
+  const cached = Math.min(params.cachedTokens ?? 0, params.inputTokens);
+  const uncachedInput = params.inputTokens - cached;
+  const usd =
+    (uncachedInput * p.input + cached * p.cachedInput + params.outputTokens * p.output) / 1_000_000;
+  return matched
+    ? { usd, priced: true }
+    : { usd, priced: false, fallbackModel: OPENAI_FALLBACK_MODEL };
 }
 
 /**
  * Compute the USD cost for an OpenAI Responses API call.
  * Synchronous — uses the static pricing table with a mid-tier fallback.
  * Cached tokens are subtracted from the input total and billed at the cached rate.
+ *
+ * Returns a bare number; use {@link computeOpenAICostPriced} when you need to
+ * know whether the rate was real.
  */
 export function computeOpenAICost(params: ComputeOpenAICostParams): number {
-  const p = getOpenAIPricing(params.model) ?? OPENAI_FALLBACK;
-  const cached = Math.min(params.cachedTokens ?? 0, params.inputTokens);
-  const uncachedInput = params.inputTokens - cached;
-  return (
-    (uncachedInput * p.input + cached * p.cachedInput + params.outputTokens * p.output) / 1_000_000
-  );
+  return computeOpenAICostPriced(params).usd;
 }

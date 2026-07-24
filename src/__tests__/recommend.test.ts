@@ -45,6 +45,7 @@ function spendStub(over: Partial<SpendBreakdown> = {}): SpendBreakdown {
     windowDays: 15,
     perMonthUsd: 0,
     unpricedShare: 0,
+    unpricedModels: [],
     byModel: [],
     byProject: [],
     commandLeakBoard: [],
