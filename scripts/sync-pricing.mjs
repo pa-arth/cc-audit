@@ -6,11 +6,21 @@
 // Usage:
 //   node scripts/sync-pricing.mjs                 # probe ../promptster-backend sibling
 //   node scripts/sync-pricing.mjs --from <path>   # explicit path to config-cost pricing.ts
+//   node scripts/sync-pricing.mjs --force         # overwrite local hand-edits anyway
+//
+// The header records a sha256 of the upstream body it copied. On the next run the
+// script re-hashes the vendored body and REFUSES to write if it no longer matches —
+// i.e. someone hand-edited the mirror. Without that check the copy silently reverts
+// local fixes, which is not hypothetical: the vendored Anthropic lookup carried a
+// longest-key-first prefix sort that upstream lacked, and a plain re-copy would have
+// dropped it with no diff to notice. A fix that matters belongs upstream; this makes
+// the script say so instead of quietly undoing it.
 //
 // After running: review the diff, run `npm test` (the litellm drift guard in
 // src/__tests__/pricingDrift.test.ts cross-checks the new table), and update the
 // offline regression pins there if models were added/removed.
 
+import { createHash } from 'node:crypto';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -58,6 +68,7 @@ if (isRule(lines[0] ?? '')) {
 }
 const body = lines.slice(bodyStart).join('\n');
 
+const sha = (s) => createHash('sha256').update(s).digest('hex');
 const today = new Date().toISOString().slice(0, 10);
 const header = `// ---------------------------------------------------------------------------
 // VENDORED from @promptster/config-cost (packages/config-cost/src/pricing.ts).
@@ -80,7 +91,11 @@ const header = `// -------------------------------------------------------------
 //   - scripts/sync-pricing.mjs — re-copies this file from a sibling backend
 //     checkout (see MAINTAINING.md "Vendored pricing").
 //
-// Mirrored verbatim (no edits) so a future re-sync is a straight file copy.
+// Mirrored verbatim (no edits) so a future re-sync is a straight file copy. The
+// sha256 below is of the upstream body as copied; sync-pricing.mjs re-checks it and
+// refuses to overwrite a hand-edited mirror. Fix pricing bugs UPSTREAM in config-cost
+// and re-sync — an edit made only here is reverted by the next sync.
+// Upstream-body-sha256: ${sha(body)}
 // ---------------------------------------------------------------------------
 
 `;
@@ -100,9 +115,37 @@ const modelKeys = (s, table) => {
   return new Set([...m[1].matchAll(/^\s{2}'([^']+)':/gm)].map((x) => x[1]));
 };
 
-if (stripHeader(prev) === stripHeader(next)) {
+const prevRecorded = prev.match(/^\/\/ Upstream-body-sha256: ([0-9a-f]{64})$/m)?.[1];
+// In sync only when the body matches AND the provenance hash is already recorded —
+// otherwise fall through and rewrite so the guard below has something to check next
+// time (this is what re-stamps a mirror that pre-dates the hash line).
+if (stripHeader(prev) === stripHeader(next) && prevRecorded === sha(body)) {
   console.log(`sync-pricing: already in sync with ${src} — nothing to do`);
   process.exit(0);
+}
+
+// ── Refuse to clobber hand-edits ────────────────────────────────────────────
+// The recorded hash is of the upstream body at the LAST sync. If the current
+// vendored body no longer hashes to it, someone edited the mirror in place and a
+// straight copy would delete that work silently.
+const recorded = prevRecorded;
+if (recorded && !args.includes('--force')) {
+  const actual = sha(stripHeader(prev));
+  if (actual !== recorded) {
+    fail(
+      'the vendored file has been hand-edited since the last sync — refusing to overwrite.\n' +
+        `  recorded upstream body: ${recorded.slice(0, 12)}…\n` +
+        `  current vendored body:  ${actual.slice(0, 12)}…\n` +
+        '  Inspect with: git log -p -- src/vendor/pricing.ts\n' +
+        '  Land the local change in @promptster/config-cost upstream, then re-sync.\n' +
+        '  To discard the local edit anyway: node scripts/sync-pricing.mjs --force',
+    );
+  }
+} else if (!recorded) {
+  console.warn(
+    'sync-pricing: no Upstream-body-sha256 in the current vendored file (pre-dates the\n' +
+      '  hand-edit guard) — cannot verify it is unmodified. Review the diff carefully.',
+  );
 }
 
 writeFileSync(DEST, next);

@@ -35,6 +35,7 @@ function spend(over: Partial<SpendBreakdown> = {}): SpendBreakdown {
     windowDays: 30,
     perMonthUsd: 0,
     unpricedShare: 0,
+    unpricedModels: [],
     byModel: [],
     byProject: [],
     commandLeakBoard: [],

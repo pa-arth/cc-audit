@@ -42,7 +42,13 @@ import type { AnonTopSession } from './topSessions.js';
 // turn-1 prefix), spawnTaxMonthlyUsd (the standing block re-WRITTEN at cache-write
 // prices on every subagent spawn). COUNTS + TOKENS + $ only; the blended rate fields
 // on AlwaysOnTax stay LOCAL (derivable from public pricing anyway).
-export const AGGREGATE_SCHEMA_VERSION = 8;
+// v9: dataQuality.unpricedModels — the model ids that hit the fallback rate, with
+// per-model $ and turn counts. Model ids are already in the spend.byModel breakdown,
+// so nothing new about the USER leaves; what's new is that the record now says which
+// of its own dollar figures are estimates. A bare unpricedShare could not: a mispriced
+// model that is a small slice of one user's bill is the SAME missing table row for
+// everyone, and the aggregate is where that shows up as a pattern rather than a blip.
+export const AGGREGATE_SCHEMA_VERSION = 9;
 
 // Well-known public command/skill names kept verbatim; everything else is hashed
 // so a custom name like `acme-deploy` can't leak project/company info.
@@ -247,7 +253,12 @@ export const AggregateRecordSchema = z.object({
       }),
     ),
   }),
-  dataQuality: z.object({ unpricedShare: z.number() }),
+  dataQuality: z.object({
+    unpricedShare: z.number(),
+    unpricedModels: z.array(
+      z.object({ model: z.string(), costUsd: z.number(), turns: z.number() }),
+    ),
+  }),
 });
 export type AggregateRecord = z.infer<typeof AggregateRecordSchema>;
 
@@ -363,6 +374,9 @@ export function buildAggregateRecord(
         frictionRate: f.frictionRate,
       })),
     },
-    dataQuality: { unpricedShare: spend.unpricedShare },
+    dataQuality: {
+      unpricedShare: spend.unpricedShare,
+      unpricedModels: spend.unpricedModels,
+    },
   });
 }
