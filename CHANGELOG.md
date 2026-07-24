@@ -3,6 +3,44 @@
 Notable changes to `@promptster/cc-audit`. GitHub Releases carry the same notes
 (the publish workflow attaches binaries per `v*` tag — see MAINTAINING.md).
 
+## 0.5.1 — 2026-07-24
+
+### Fixed
+
+- **`claude-opus-5` was priced at the Sonnet-tier fallback** — 40% low on every
+  Opus 5 turn. The vendored pricing table had drifted 4 commits behind upstream
+  `@promptster/config-cost` and had no row for it, so `getAnthropicPricing()`
+  returned null and `turnCostUsd()` substituted $3/$15 for the real $5/$25.
+  Measured on a 1,528-turn corpus: **$121.51 reported vs $202.52 actual**.
+  Re-synced from upstream `main`, which also brings `computeCostPriced` and the
+  gpt-5.6 / 5.3 / 5.1 families, `pro`+`nano` tiers, `codex-mini-latest`, and the
+  date-suffix-only OpenAI matcher. (The OpenAI half is unreachable until a Codex
+  adapter exists — `claudeCode.ts` is still the only ingest — but the mirror is
+  kept byte-for-byte so the next sync stays a clean diff.)
+- **This is the second time this exact bug shipped.** 0.4.1 fixed it for
+  `claude-sonnet-5` / `claude-mythos-5`; the drift guard added then cannot catch
+  it, because a *missing* model is a WARN (and the whole test degrades to pass
+  offline) while only a *wrong rate on an existing row* hard-fails. The two
+  additions below are aimed at the recurrence, not the instance.
+
+### Added
+
+- **Unpriced models are now named in the report, whatever their share.** The old
+  warning fired only above a 2% fallback share, which is the wrong measurement:
+  a share bounds the error on the *total* and says nothing about any single
+  model. Opus 5 was 40% wrong at a **0.47%** share, so the report stayed silent.
+  `SpendBreakdown.unpricedModels` carries the model id, dollars, and turn count;
+  the report prints the ids, because the id is the only part a reader can act on.
+- **Aggregate schema v9** — `dataQuality.unpricedModels`. Model ids already
+  travel in `spend.byModel`, so nothing new about the user leaves the machine;
+  what is new is that the record states which of its own figures are estimates.
+- **`scripts/sync-pricing.mjs` refuses to overwrite a hand-edited mirror.** It
+  records a sha256 of the upstream body it copied and fails if the vendored file
+  no longer matches (`--force` to override). Not hypothetical: the vendored
+  Anthropic lookup carried a longest-key-first prefix sort that upstream lacked,
+  and a plain re-copy reverted it with no diff to notice. That fix now lives
+  upstream instead (promptster-backend#535).
+
 ## 0.4.1 — 2026-07-02
 
 ### Fixed
