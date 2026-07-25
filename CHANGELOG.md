@@ -3,6 +3,54 @@
 Notable changes to `@promptster/cc-audit`. GitHub Releases carry the same notes
 (the publish workflow attaches binaries per `v*` tag — see MAINTAINING.md).
 
+## Unreleased
+
+### Fixed
+
+- **Output tokens were undercounted on every streamed message — the bill ran
+  ~3.5% low overall, and 19% low on output alone.** Claude Code logs one
+  assistant message across several JSONL rows sharing a `message.id`. The merge
+  in `adapters/claudeCode.ts` folded each row's content blocks together but kept
+  the *first* row's `usage`, on the documented premise that usage is "repeated
+  identically" across rows. That premise holds for `input_tokens`,
+  `cache_read_input_tokens`, and `cache_creation_input_tokens` — all fixed when
+  the request is sent — but **`output_tokens` is a running total that grows as
+  the stream emits**, so the first row carries a partial count. Now merged with
+  a per-field max.
+
+  The signature made it hard to spot: because only one of five buckets was
+  affected, totals looked plausible and the three input-side buckets reconciled
+  perfectly against an independent implementation. Measured on a 1,637-session
+  corpus, 13,763 message ids carried a varying output count across their rows;
+  `claude-opus-4-8` alone was short 12,527,810 output tokens (**$313.20**).
+
+  Verified against `ccusage` on the same transcripts: **$11,113.75 vs $11,113.80
+  — a $0.05 spread on $11k (0.0004%)**, previously $383 (3.5%). Every model
+  except `opus-4-8` now matches to the cent.
+
+  Known residual, the same $0.05: when a resumed session replays a message into
+  a second transcript, the global `seen` set lets the *earlier* file own it, so a
+  mid-stream truncation there keeps its partial count. 2,114 tokens across the
+  corpus; not worth coupling the cross-file dedup to usage to recover.
+
+### Changed
+
+- **The report no longer says "window".** `Nd window` and `$X over window` were
+  its most-asked-about strings — nothing on screen said what the window *was*,
+  so the `/mo` figure read like it should match a monthly bill. The spend card
+  now names both figures: `actual $X` over an explicit date range, then
+  `projected $Y/mo` as that rate scaled to a month, with a note that only
+  sessions still on disk are counted (Claude Code prunes per `cleanupPeriodDays`).
+- **`SpendBreakdown.windowDays` spans turn timestamps, not session file mtimes**,
+  and `firstDay`/`lastDay` are new. mtime was a proxy for when work happened and
+  skewed both ways — an untouched project dir stretches the span and understates
+  `/mo`; a bulk touch collapses it. ~2% on real data (30.31d vs 30.99d). Falls
+  back to mtimes when no turn carries a timestamp.
+- The unpriced-model warning no longer fires on models with **$0.00** of spend
+  (Claude Code's locally-generated `<synthetic>` turns). A fallback rate applied
+  to zero tokens is wrong by zero dollars. It also overflowed `BOX_WIDTH`, since
+  `card()` pads but never wraps; now split across two lines.
+
 ## 0.5.1 — 2026-07-24
 
 ### Fixed
