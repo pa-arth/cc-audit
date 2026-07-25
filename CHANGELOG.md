@@ -3,7 +3,7 @@
 Notable changes to `@promptster/cc-audit`. GitHub Releases carry the same notes
 (the publish workflow attaches binaries per `v*` tag — see MAINTAINING.md).
 
-## Unreleased
+## 0.5.2 — 2026-07-25
 
 ### Fixed
 
