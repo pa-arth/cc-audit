@@ -163,14 +163,31 @@ describe('renderReport — run-over-run delta + weekly run-rate', () => {
 
   it('first-run shows the explainer instead of a delta', () => {
     const out = renderReport(result(), { delta: 'first-run' });
-    expect(out).toContain('first audit at this window');
+    expect(out).toContain('first audit on this machine');
     expect(out).not.toContain('vs your');
   });
 
   it('no delta opt (history disabled) renders neither', () => {
     const out = renderReport(result(), {});
-    expect(out).not.toContain('first audit at this window');
+    expect(out).not.toContain('first audit on this machine');
     expect(out).not.toContain('vs your');
+  });
+
+  // "Nd window" and "$X over window" were the report's most-asked-about strings —
+  // nothing on screen said what the window WAS, so the /mo figure looked like it
+  // should match a monthly bill. Both figures are now labelled and dated.
+  it('names the actual spend and the dates it covers, then the projection', () => {
+    const out = renderReport(result(), {});
+    // Turns span exactly 7 days; the date labels are local-zone, the count is not.
+    expect(out).toMatch(/actual\s+\$[\d.,]+\s+\w{3} \d+ – \w{3} \d+ · 7 days/);
+    expect(out).toMatch(/projected\s+\$[\d.,]+\/mo\s+— the rate above, scaled to a month/);
+    expect(out).toContain('only sessions still on disk');
+  });
+
+  it('never says "window" — the word the report could not define', () => {
+    const out = renderReport(result(), { delta: 'first-run' });
+    // The one legitimate use is the model's CONTEXT window, which is a different thing.
+    expect(out.replace(/context-window/g, '')).not.toMatch(/window/i);
   });
 
   it('renders the weekly run-rate sparkline from timestamped turns', () => {

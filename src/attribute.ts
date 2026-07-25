@@ -63,7 +63,15 @@ export interface SubagentSpend {
 
 export interface SpendBreakdown {
   totalUsd: number;
+  /** Days spanned by the transcripts actually read — the divisor behind every `/mo`
+   *  figure in the report. Derived from TURN timestamps when present (the real
+   *  activity span), falling back to session file mtimes when they aren't. */
   windowDays: number;
+  /** Local calendar day (`YYYY-MM-DD`) of the first/last billed turn, so the report
+   *  can name the range instead of printing a bare day count. Null when no turn
+   *  carried a timestamp (mtime-only fallback). */
+  firstDay: string | null;
+  lastDay: string | null;
   perMonthUsd: number;
   /** Fraction of total $ that hit the unknown-model fallback price (data-quality flag). */
   unpricedShare: number;
@@ -100,6 +108,14 @@ const CONTEXT_TAX_RATIO_THRESHOLD = 120;
 // not the user, so "pin a cheaper model" is non-actionable advice for them.
 const SYSTEM_COMMANDS = new Set(['compact', 'clear']);
 
+/** `YYYY-MM-DD` in the LOCAL zone — the reader's calendar is the one they'd compare
+ *  against a bill, so a UTC day would be off by one for anyone west of Greenwich. */
+function localDay(ms: number): string {
+  const d = new Date(ms);
+  const p = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+}
+
 export function attributeSpend(sessions: Session[]): SpendBreakdown {
   const byModel = new Map<string, { cost: number; turns: number; tokens: number }>();
   const byProject = new Map<string, number>();
@@ -128,6 +144,8 @@ export function attributeSpend(sessions: Session[]): SpendBreakdown {
   let nonCommand = 0;
   let minMtime = Infinity;
   let maxMtime = 0;
+  let minTs = Infinity;
+  let maxTs = 0;
 
   for (const session of sessions) {
     if (session.mtime) {
@@ -137,6 +155,10 @@ export function attributeSpend(sessions: Session[]): SpendBreakdown {
     for (const span of session.spans) {
       let spanCost = 0;
       for (const turn of span.turns) {
+        if (turn.ts != null) {
+          minTs = Math.min(minTs, turn.ts);
+          maxTs = Math.max(maxTs, turn.ts);
+        }
         const { usd, priced } = turnCostUsd(turn.model, turn.usage, turn.ts);
         spanCost += usd;
         total += usd;
@@ -207,12 +229,21 @@ export function attributeSpend(sessions: Session[]): SpendBreakdown {
     }
   }
 
-  const windowDays = maxMtime > minMtime ? Math.max(1, (maxMtime - minMtime) / 86_400_000) : 1;
+  // Prefer the TURN-timestamp span: it's when work actually happened. Session file
+  // mtime is only a proxy for that, and it skews both ways — a project dir left
+  // untouched stretches the span (understating /mo), while a bulk touch/copy
+  // collapses it (overstating). On real data the two differ by ~2%.
+  const tsSpan = maxTs > minTs ? maxTs - minTs : 0;
+  const mtimeSpan = maxMtime > minMtime ? maxMtime - minMtime : 0;
+  const span = tsSpan || mtimeSpan;
+  const windowDays = span > 0 ? Math.max(1, span / 86_400_000) : 1;
   const safeTotal = total || 1;
 
   return {
     totalUsd: total,
     windowDays,
+    firstDay: maxTs > 0 ? localDay(minTs) : null,
+    lastDay: maxTs > 0 ? localDay(maxTs) : null,
     perMonthUsd: (total / windowDays) * 30.44,
     unpricedShare: unpriced / safeTotal,
     unpricedModels: [...unpricedByModel.entries()]
