@@ -74,7 +74,7 @@ export function renderReport(r: AuditResult, opts: { rows?: number; delta?: Hist
   // ── Header ───────────────────────────────────────────────────────────────
   const headerRows = [
     c.dim(
-      `${r.sessionCount} sessions · ${Math.round(s.windowDays)}d window · ` +
+      `${r.sessionCount} sessions · ` +
         `judge layer: run with ${c.cyan('--judge')}${c.dim(' (hosted)')}`,
     ),
   ];
@@ -84,14 +84,25 @@ export function renderReport(r: AuditResult, opts: { rows?: number; delta?: Hist
       `${c.dim('premium share')} ${rateDelta(delta.premiumTurnShare)} ${c.dim('· redundant reads')} ${rateDelta(delta.redundantReadRate)}`,
     );
   } else if (opts.delta === 'first-run') {
-    headerRows.push(c.dim('first audit at this window — deltas appear on your next run'));
+    headerRows.push(c.dim('first audit on this machine — deltas appear on your next run'));
   }
   blank();
   out.push(...card('CLAUDE CODE · SPEND & FLUENCY AUDIT', headerRows, c.orange));
 
-  // ── Estimated spend (the headline number, in gold) ─────────────────────────
+  // ── Spend (the headline number, in gold) ───────────────────────────────────
+  // Two figures, both named: what the transcripts on disk actually cost over an
+  // explicit date range, and that rate scaled to a month. Reporting only the
+  // scaled number invited "why doesn't this match my bill" — the actual line and
+  // its date range are what let a reader reconcile against the console.
+  const days = Math.round(s.windowDays);
+  const range =
+    s.firstDay && s.lastDay
+      ? `${fmtDay(s.firstDay)} – ${fmtDay(s.lastDay)} · ${days} day${days === 1 ? '' : 's'}`
+      : `${days} day${days === 1 ? '' : 's'} of transcripts`;
   const spendRows = [
-    `${c.dim('estimated')}  ${c.bold(money(usd(s.perMonthUsd) + '/mo'))}   ${c.dim(`(${usd(s.totalUsd)} over window)`)}`,
+    `${c.dim(pad('actual', 10))}${c.bold(money(usd(s.totalUsd)))}   ${c.dim(range)}`,
+    c.dim(`${pad('', 10)}only sessions still on disk — Claude Code prunes older transcripts`),
+    `${c.dim(pad('projected', 10))}${c.bold(money(usd(s.perMonthUsd) + '/mo'))}   ${c.dim('— the rate above, scaled to a month')}`,
   ];
   if (delta) {
     spendRows.push(`${c.dim(`vs ${fmtDay(delta.baselineDate)}:`)} ${usdDelta(delta.spendPerMonthUsd)}`);
@@ -108,24 +119,28 @@ export function renderReport(r: AuditResult, opts: { rows?: number; delta?: Hist
   // the number is fine — it only bounds the error on the TOTAL. The per-model figure
   // can still be badly wrong (claude-opus-5 ran 40% low at a 0.47% share), and the id
   // is the only part of this the reader can act on: it says which table row is missing.
-  if (s.unpricedModels.length > 0) {
-    const shown = s.unpricedModels.slice(0, 3);
+  // ...but a model that cost $0 is exempt: a fallback rate applied to zero tokens is
+  // wrong by zero dollars, so naming it is pure noise. Claude Code's `<synthetic>`
+  // turns (locally-generated, never billed) are the ones that hit this.
+  const unpriced = s.unpricedModels.filter((m) => m.costUsd > 0);
+  if (unpriced.length > 0) {
+    const shown = unpriced.slice(0, 3);
     const named = shown
       .map((m) => `${m.model} (${usd((m.costUsd / s.windowDays) * 30.44)}/mo, ${m.turns} turns)`)
       .join(', ');
-    const more = s.unpricedModels.length - shown.length;
+    const more = unpriced.length - shown.length;
+    // Two lines, not one: the ids alone can exceed BOX_WIDTH, and card() pads but
+    // never wraps — a single line blows out the frame.
     spendRows.push(
-      c.amber(
-        `⚠ no pricing-table entry: ${named}${more > 0 ? ` +${more} more` : ''} — ` +
-          `billed at the Sonnet fallback, so these are estimates, not prices`,
-      ),
+      c.amber(`⚠ no pricing-table entry: ${named}${more > 0 ? ` +${more} more` : ''}`),
+      c.dim('  billed at the Sonnet fallback — those are estimates, not prices'),
     );
   }
   if (s.unpricedShare > 0.02) {
     spendRows.push(c.amber(`⚠ ${pct(s.unpricedShare)} of total spend used a fallback price`));
   }
   blank();
-  out.push(...card('ESTIMATED SPEND', spendRows, c.gold));
+  out.push(...card('SPEND', spendRows, c.gold));
 
   // ── By model ───────────────────────────────────────────────────────────────
   const modelRows = s.byModel.slice(0, 6).map(

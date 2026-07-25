@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { describe, it, expect } from 'vitest';
 import { parseTranscript } from '../adapters/claudeCode.js';
 import { attributeSpend } from '../attribute.js';
+import type { AssistantTurn, Session } from '../model.js';
 import { computeAlwaysOn } from '../alwaysOn.js';
 import { computeFluency } from '../fluency.js';
 import { buildRecommendations } from '../recommend.js';
@@ -104,6 +105,81 @@ describe('attributeSpend (trust gate)', () => {
 
   it('flags nothing as unpriced for known models', () => {
     expect(spend.unpricedShare).toBe(0);
+  });
+});
+
+describe('spend window (the /mo divisor and the range the report names)', () => {
+  // Turn timestamps are when work actually happened; session file mtime is only a
+  // proxy for that and skews both ways (an untouched project dir stretches the span
+  // and understates /mo; a bulk touch collapses it and overstates). These fixtures
+  // set the two DELIBERATELY far apart so a regression back to mtime is unmissable.
+  const turn = (ts: number | null): AssistantTurn => ({
+    model: 'claude-sonnet-4-6',
+    usage: { input: 1_000_000, output: 0, cacheRead: 0, cacheWrite5m: 0, cacheWrite1h: 0 },
+    tools: [],
+    reads: [],
+    thinkingChars: 0,
+    textChars: 0,
+    ts,
+    mode: null,
+  });
+  const sess = (mtime: number, turns: AssistantTurn[]): Session => ({
+    sessionId: `s${mtime}`,
+    project: 'p',
+    cwd: null,
+    mtime,
+    modes: [],
+    spans: [
+      {
+        promptId: 'p1',
+        command: null,
+        invokedSkills: [],
+        firstUserText: '',
+        turns,
+        isSidechain: false,
+        autoCompacted: false,
+        attributionSkill: null,
+        attributionAgent: null,
+        userTs: null,
+      },
+    ],
+  });
+  // Spans are measured in elapsed ms, so they're built from epoch offsets — deriving
+  // them from local calendar dates would make these assertions off-by-an-hour in any
+  // zone whose DST boundary falls inside the range (a real 9.958-day "10-day" span).
+  const T0 = Date.UTC(2026, 2, 1, 12);
+  const at = (days: number) => T0 + days * 86_400_000;
+  const day = (iso: string) => new Date(`${iso}T12:00:00`).getTime(); // local noon
+
+  it('spans the TURN timestamps, not the session file mtimes', () => {
+    // mtimes claim a 1-day span; the turns actually cover 10 days.
+    const s = attributeSpend([
+      sess(at(20), [turn(at(0))]),
+      sess(at(21), [turn(at(10))]),
+    ]);
+    expect(s.windowDays).toBeCloseTo(10, 6);
+    // $3/MTok input × 2 turns = $6 over 10 days → $6/10×30.44.
+    expect(s.perMonthUsd).toBeCloseTo((6 / 10) * 30.44, 6);
+  });
+
+  it('names the first and last day as LOCAL calendar days', () => {
+    const s = attributeSpend([sess(day('2026-03-20'), [turn(day('2026-03-01')), turn(day('2026-03-11'))])]);
+    expect(s.firstDay).toBe('2026-03-01');
+    expect(s.lastDay).toBe('2026-03-11');
+  });
+
+  it('names a single day of activity (span 0 must not read as "no timestamps")', () => {
+    const s = attributeSpend([sess(day('2026-03-20'), [turn(day('2026-03-05'))])]);
+    expect(s.firstDay).toBe('2026-03-05');
+    expect(s.lastDay).toBe('2026-03-05');
+    expect(s.windowDays).toBe(1); // clamped — never divide a month by zero days
+  });
+
+  it('falls back to mtimes, and reports no range, when no turn carries a timestamp', () => {
+    const s = attributeSpend([sess(at(0), [turn(null)]), sess(at(4), [turn(null)])]);
+    expect(s.windowDays).toBeCloseTo(4, 6);
+    expect(s.firstDay).toBeNull();
+    expect(s.lastDay).toBeNull();
   });
 });
 
