@@ -3,11 +3,15 @@ import { parseTranscript } from '../adapters/claudeCode.js';
 import { sessionRedundancy } from '../fluency.js';
 
 // Claude Code logs ONE streamed assistant message across MULTIPLE JSONL rows that share a
-// single message.id: usage is repeated verbatim on every row, but the content blocks are
-// PARTITIONED across them (thinking on one row, text on the next, the tool_use on a third).
+// single message.id, with the content blocks PARTITIONED across them (thinking on one row,
+// text on the next, the tool_use on a third).
 // The old first-row-wins dedup kept only the first row's blocks and silently dropped every
 // tool_use that arrived on a later row — measured ~60% of all file reads on real transcripts.
 // These tests pin the fix: same-id rows MERGE (union blocks) while usage counts once.
+//
+// "Usage counts once" ≠ "the first row's usage". The input-side buckets are repeated
+// verbatim (fixed when the request is sent), but output_tokens is a RUNNING total that
+// grows as the stream emits. Billing row 1 undercounted output by 19% of the real bill.
 
 const raw = (e: unknown[]) => e.map((x) => JSON.stringify(x)).join('\n');
 
@@ -118,5 +122,57 @@ describe('streamed-row merge (same message.id spread across rows)', () => {
     expect(s1.spans.flatMap((sp) => sp.turns)).toHaveLength(1);
     expect(s1.spans.flatMap((sp) => sp.turns)[0]!.fileOps).toHaveLength(2);
     expect(s2).toBeNull();
+  });
+});
+
+describe('streamed-row usage merge (output_tokens is a running total)', () => {
+  // Row-by-row usage for one logical message. input/cache are restated verbatim on
+  // every row (fixed at request time); output climbs as the stream emits.
+  const rows = (outs: number[]) =>
+    outs.map((output_tokens, i) => ({
+      type: 'assistant',
+      message: {
+        id: 'msg_stream',
+        model: 'claude-opus-4-8',
+        usage: {
+          input_tokens: 100,
+          output_tokens,
+          cache_read_input_tokens: 40_000,
+          cache_creation_input_tokens: 0,
+        },
+        content: [{ type: 'text', text: `chunk ${i}` }],
+      },
+    }));
+  const parse = (outs: number[]) =>
+    parseTranscript(
+      '/tmp/stream.jsonl',
+      raw([{ type: 'user', promptId: 'p1', message: { content: 'write something long' } }, ...rows(outs)]),
+      'p',
+      new Set(),
+    )!;
+
+  it('bills the FINAL output count, not the first row partial', () => {
+    const turns = parse([120, 3400, 9871]).spans.flatMap((sp) => sp.turns);
+    expect(turns).toHaveLength(1);
+    expect(turns[0]!.usage.output).toBe(9871);
+  });
+
+  it('does not SUM the restated rows (that would multiply the bill by row count)', () => {
+    const turns = parse([120, 3400, 9871]).spans.flatMap((sp) => sp.turns);
+    // 120+3400+9871 = 13,391 would be the summing bug; input/cache must not triple either.
+    expect(turns[0]!.usage.output).not.toBe(13_391);
+    expect(turns[0]!.usage.input).toBe(100);
+    expect(turns[0]!.usage.cacheRead).toBe(40_000);
+  });
+
+  it('is order-independent — a non-monotonic row cannot lower the count', () => {
+    // Rows are not guaranteed monotonic on disk; last-wins would bill 3400 here.
+    const turns = parse([120, 9871, 3400]).spans.flatMap((sp) => sp.turns);
+    expect(turns[0]!.usage.output).toBe(9871);
+  });
+
+  it('leaves a genuinely-repeated usage block untouched (the old fixture case)', () => {
+    const turns = parse([50, 50, 50]).spans.flatMap((sp) => sp.turns);
+    expect(turns[0]!.usage.output).toBe(50);
   });
 });

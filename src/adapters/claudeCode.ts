@@ -39,6 +39,24 @@ function parseUsage(u: RawUsage): TurnUsage {
   };
 }
 
+/**
+ * Fold a later row of the SAME streamed message into the usage already recorded.
+ * Per-field max, not sum: every row restates the whole running total, so summing
+ * would multiply the bill by the row count. Max (rather than last-wins) is also
+ * order-independent, which matters because rows are not guaranteed monotonic —
+ * on real data max matched an independent implementation to the token while
+ * last-wins was 2,114 tokens short.
+ */
+function mergeUsage(a: TurnUsage, b: TurnUsage): TurnUsage {
+  return {
+    input: Math.max(a.input, b.input),
+    output: Math.max(a.output, b.output),
+    cacheRead: Math.max(a.cacheRead, b.cacheRead),
+    cacheWrite5m: Math.max(a.cacheWrite5m, b.cacheWrite5m),
+    cacheWrite1h: Math.max(a.cacheWrite1h, b.cacheWrite1h),
+  };
+}
+
 interface ContentBlock {
   type?: string;
   text?: string;
@@ -303,14 +321,20 @@ export function parseTranscript(
       const blocks = Array.isArray(msg.content) ? (msg.content as ContentBlock[]) : [];
 
       // A single streamed assistant message is logged across MULTIPLE rows sharing
-      // one message.id — usage repeated identically, content blocks PARTITIONED
-      // across rows (row1 thinking, row2 text, row3 the tool_use). Merge same-id
-      // rows into ONE turn: fold their blocks in (so tool_use/fileOps/reads on
-      // later rows aren't dropped — first-row-wins lost ~60% of file reads), but
-      // count usage ONCE. `turnById` is per-transcript; the global `seen` set owns
-      // cross-transcript dedup (a resumed session replays prior ids — skip those).
+      // one message.id, with content blocks PARTITIONED across rows (row1 thinking,
+      // row2 text, row3 the tool_use). Merge same-id rows into ONE turn: fold their
+      // blocks in (so tool_use/fileOps/reads on later rows aren't dropped —
+      // first-row-wins lost ~60% of file reads), and count usage ONCE.
+      //
+      // "Once" is NOT "the first row's copy". The input-side buckets really are
+      // repeated identically (they're fixed when the request is sent), but
+      // output_tokens is a RUNNING total that grows as the stream emits — the first
+      // row carries a partial count and only the last carries the final one.
+      // Taking row 1 undercounted output by 19% of the bill on real data. `seen`
+      // (global, cross-transcript) owns the resumed-replay case; this is per-file.
       const existing = key ? turnById.get(key) : undefined;
       if (existing) {
+        existing.usage = mergeUsage(existing.usage, parseUsage(msg.usage));
         foldBlocksIntoTurn(existing, blocks, turnByToolId);
         if (existing.tools.includes('ExitPlanMode')) curMode = 'normal';
         // A Skill tool_use landing on a merged (later) row still needs recording.
