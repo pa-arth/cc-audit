@@ -95,7 +95,11 @@ export function computeWeeklySpend(sessions: Session[], nowMs: number): WeeklySp
         const ts = t.ts ?? span.userTs ?? s.mtime;
         if (!ts) continue;
         const fromNewest = Math.min(count - 1, Math.max(0, Math.ceil((nowMs - ts) / WEEK_MS) - 1));
-        buckets[count - 1 - fromNewest]!.usd += turnCostUsd(t.model, t.usage).usd;
+        // `ts` is required, not optional: without it a model inside a dated
+        // introductory window prices at its steady-state rate here while the SPEND
+        // headline prices it at the intro rate — putting two figures 1.5x apart in
+        // the SAME card off the same turns (Sonnet 5: $2/$10 vs $3/$15).
+        buckets[count - 1 - fromNewest]!.usd += turnCostUsd(t.model, t.usage, ts).usd;
       }
     }
   }

@@ -4,7 +4,7 @@
 // wrong during exploration; spans are the correct, regression-locked unit.
 
 import type { Session } from './model.js';
-import { isPremiumModel, turnCostUsd, turnTokens } from './pricing.js';
+import { isPremiumModel, turnCostTariffs, turnTokens } from './pricing.js';
 
 export interface ModelSpend {
   model: string;
@@ -84,6 +84,24 @@ export interface SpendBreakdown {
    * a guess" — only the second one is actionable.
    */
   unpricedModels: Array<{ model: string; costUsd: number; turns: number }>;
+  /**
+   * Models whose spend in this window was billed at a dated INTRODUCTORY rate that
+   * differs from their steady-state rate, with both figures.
+   *
+   * Neither number is a guess — `costUsd` is what Anthropic charges inside the
+   * window, and it is what our table, the published rate card, and the LiteLLM DB
+   * (`ccusage`'s source) all agree on. `steadyStateCostUsd` is here because Claude
+   * Code's own cost figure prices Sonnet 5 at the steady-state sticker rather than
+   * the intro rate, so a reader comparing cc-audit to `/cost` sees a 1.5x gap with
+   * no explanation on screen. Naming the second figure turns that into a
+   * reconcilable fact instead of a suspected bug.
+   */
+  introPricedModels: Array<{
+    model: string;
+    costUsd: number;
+    steadyStateCostUsd: number;
+    turns: number;
+  }>;
   byModel: ModelSpend[];
   byProject: Array<{ project: string; costUsd: number }>;
   commandLeakBoard: CommandSpend[];
@@ -139,6 +157,7 @@ export function attributeSpend(sessions: Session[]): SpendBreakdown {
   let total = 0;
   let unpriced = 0;
   const unpricedByModel = new Map<string, { cost: number; turns: number }>();
+  const introByModel = new Map<string, { cost: number; steady: number; turns: number }>();
   let commandTotal = 0;
   let subagentTotal = 0;
   let nonCommand = 0;
@@ -159,10 +178,20 @@ export function attributeSpend(sessions: Session[]): SpendBreakdown {
           minTs = Math.min(minTs, turn.ts);
           maxTs = Math.max(maxTs, turn.ts);
         }
-        const { usd, priced } = turnCostUsd(turn.model, turn.usage, turn.ts);
+        const { usd, priced, steadyStateUsd } = turnCostTariffs(turn.model, turn.usage, turn.ts);
         spanCost += usd;
         total += usd;
         const m = turn.model ?? 'unknown';
+        // Only accumulate when the two tariffs actually differ — outside every intro
+        // window they are equal and this map stays empty, so the disclosure it feeds
+        // disappears on its own once the last window closes. No date to maintain.
+        if (steadyStateUsd !== usd) {
+          const ip = introByModel.get(m) ?? { cost: 0, steady: 0, turns: 0 };
+          ip.cost += usd;
+          ip.steady += steadyStateUsd;
+          ip.turns += 1;
+          introByModel.set(m, ip);
+        }
         if (!priced) {
           unpriced += usd;
           const up = unpricedByModel.get(m) ?? { cost: 0, turns: 0 };
@@ -248,6 +277,14 @@ export function attributeSpend(sessions: Session[]): SpendBreakdown {
     unpricedShare: unpriced / safeTotal,
     unpricedModels: [...unpricedByModel.entries()]
       .map(([model, v]) => ({ model, costUsd: v.cost, turns: v.turns }))
+      .sort((a, b) => b.costUsd - a.costUsd),
+    introPricedModels: [...introByModel.entries()]
+      .map(([model, v]) => ({
+        model,
+        costUsd: v.cost,
+        steadyStateCostUsd: v.steady,
+        turns: v.turns,
+      }))
       .sort((a, b) => b.costUsd - a.costUsd),
     byModel: [...byModel.entries()]
       .map(([model, v]) => ({ model, costUsd: v.cost, turns: v.turns, tokens: v.tokens, share: v.cost / safeTotal }))

@@ -139,6 +139,36 @@ export function renderReport(r: AuditResult, opts: { rows?: number; delta?: Hist
   if (s.unpricedShare > 0.02) {
     spendRows.push(c.amber(`⚠ ${pct(s.unpricedShare)} of total spend used a fallback price`));
   }
+  // Introductory-rate disclosure. NOT a data-quality warning like the two above — the
+  // figure is correct, and it agrees with Anthropic's published rate card and with the
+  // LiteLLM DB that `ccusage` reads. It is here because Claude Code's own cost figure
+  // prices a model inside its introductory window at the steady-state sticker instead,
+  // so a reader comparing this card to `/cost` sees a large gap and reasonably concludes
+  // we are broken. Naming both numbers makes it reconcilable rather than suspicious.
+  //
+  // Self-retiring: attributeSpend populates this only when the two tariffs actually
+  // differ for a turn's timestamp, so the block disappears once the last intro window
+  // closes. No date is maintained here.
+  const intro = s.introPricedModels.filter((m) => m.costUsd > 0);
+  if (intro.length > 0) {
+    const introUsd = intro.reduce((n, m) => n + m.costUsd, 0);
+    const steadyUsd = intro.reduce((n, m) => n + m.steadyStateCostUsd, 0);
+    const ratio = introUsd > 0 ? steadyUsd / introUsd : 1;
+    spendRows.push(
+      c.dim(
+        `${pad('intro', 10)}${usd(introUsd)} of the above bills at an introductory rate ` +
+          `(${intro.map((m) => m.model.replace('claude-', '')).join(', ')})`,
+      ),
+    );
+    for (const ln of wrap(
+      `the same turns at the steady-state rate would be ${usd(steadyUsd)} — ${ratio.toFixed(2)}x. ` +
+        `Claude Code's own cost figure uses the steady-state rate, so /cost reads higher than ` +
+        `this card by roughly that much. The billed figure above is the one that matches the console.`,
+      BOX_WIDTH - 14,
+    )) {
+      spendRows.push(c.dim(`${pad('', 10)}${ln}`));
+    }
+  }
   blank();
   out.push(...card('SPEND', spendRows, c.gold));
 
