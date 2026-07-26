@@ -3,6 +3,68 @@
 Notable changes to `@promptster/cc-audit`. GitHub Releases carry the same notes
 (the publish workflow attaches binaries per `v*` tag — see MAINTAINING.md).
 
+## Unreleased
+
+### Fixed
+
+- **The weekly run-rate row priced Sonnet 5 at a different tariff than the
+  headline above it.** `computeWeeklySpend` called `turnCostUsd` without the turn
+  timestamp, so it always resolved the steady-state rate while every other call
+  site passed `t.ts` and got the dated introductory rate. For a Sonnet 5 corpus
+  that put two figures **1.50x apart inside the same SPEND card**, off the same
+  turns. One missing argument, and no type error — the parameter is optional.
+
+### Added
+
+- **The SPEND card now discloses introductory-rate pricing.** cc-audit was
+  reported as running "40% below Claude Code's own cost figure" on Sonnet 5. It is
+  not. Anthropic's published card lists Sonnet 5 twice — $2/$10 per MTok through
+  2026-08-31, $3/$15 from 2026-09-01 — and our vendored table transcribes both rows
+  exactly, cache tiers included. The LiteLLM DB that `ccusage` reads publishes
+  $2/$10 as well. **Claude Code's own cost figure uses $3/$15**, which is the
+  entire 1.5x: on a measured two-session corpus the same tokens price to
+  $0.49971950 (intro — matching cc-audit to seven decimal places) versus
+  $0.74957925 (steady-state).
+
+  We keep the rate that matches the console and the rate card, and *name* the other
+  one rather than adopt it — a reader comparing this card to `/cost` now sees both
+  figures and the multiple between them instead of an unexplained gap.
+  `attributeSpend` populates the disclosure only when the two tariffs actually
+  differ for a turn's timestamp, so it self-retires when the last introductory
+  window closes. There is no date to maintain.
+
+  Dropping the introductory entry instead would have been wrong three ways: it
+  reprices *history* (the override exists precisely so old usage keeps the rate it
+  was billed at), it overstates the invoice by 1.5x for anyone on an API key, and it
+  fails `pricingDrift.test.ts`, which cross-checks the time-aware rate against
+  LiteLLM. That last one is not an argument — it was verified by deleting the entry
+  and watching the guard fail.
+
+- `src/__tests__/pricingSonnet5Tariff.test.ts` pins the tariff so the next change
+  fails loudly instead of silently repricing history: both dollar figures for the
+  measured corpus, the cutover across a single millisecond, no-timestamp falling
+  back to steady-state, a dated `-20260901` variant staying inside the window, and
+  the weekly-bucket regression above. Every assertion was confirmed to fail against
+  the unfixed code.
+
+### Known
+
+- **A ~10% undercount survives at steady-state rates and is NOT fixed here.** The
+  measured corpus recomputes to $0.74957925 against Claude Code's own $0.83613360 —
+  10.35% low at the *same* tariff — and one of its sessions reads 2933 output tokens
+  off the transcript against 3845 on Claude Code's OTel wire, a 912-token gap on
+  output alone *after* the 0.5.2 per-field max-merge. Two candidate causes were
+  measured and ruled out on a 1,614-file corpus: no assistant row is missing a
+  `usage` block (0 of 187,657), and the documented cross-file `seen` residual is
+  exactly 2,114 tokens — 0.003% of output, three orders of magnitude too small. The
+  remaining lead is that the transcript's highest observed `output_tokens` for a
+  message is *itself* sometimes partial: 3,356 message ids carry
+  `stop_reason: null` on their max-output row, meaning the last row logged was not
+  the stream's final chunk. That population averages 12.4 output tokens, so it
+  disappears into a 69.9M-token corpus while plausibly dominating a short scripted
+  session. Unconfirmed — it needs a wire capture alongside the transcript, which is
+  its own investigation.
+
 ## 0.5.2 — 2026-07-25
 
 ### Fixed
