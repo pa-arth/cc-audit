@@ -1,0 +1,10 @@
+{"cacheRead": 23684, "cacheWrite1h": 24696, "cacheWrite5m": 0, "input": 2, "output": 1346, "requestId": "req_011CdR7YjQk45TUwLFdaTPkf", "rows": 1, "sidechain": false, "stopReason": "end_turn"}
+{"cacheRead": 25390, "cacheWrite1h": 24683, "cacheWrite5m": 0, "input": 2, "output": 163, "requestId": "req_011CdR7gKzp7rhCViR2Ex2LJ", "rows": 2, "sidechain": false, "stopReason": "tool_use"}
+{"cacheRead": 50073, "cacheWrite1h": 187, "cacheWrite5m": 0, "input": 2, "output": 330, "requestId": "req_011CdR7gcfArte7qj4rt2rWi", "rows": 2, "sidechain": false, "stopReason": "tool_use"}
+{"cacheRead": 0, "cacheWrite1h": 0, "cacheWrite5m": 19743, "input": 2, "output": 172, "requestId": "req_011CdR7h1MuyVbDi9yVokHCe", "rows": 2, "sidechain": true, "stopReason": "tool_use"}
+{"cacheRead": 19743, "cacheWrite1h": 0, "cacheWrite5m": 2038, "input": 2, "output": 150, "requestId": "req_011CdR7hMJDwZzAQsysUeKFj", "rows": 1, "sidechain": true, "stopReason": "end_turn"}
+{"cacheRead": 50260, "cacheWrite1h": 2313, "cacheWrite5m": 0, "input": 2, "output": 315, "requestId": "req_011CdR7hjWhNtaxktSQRTRhL", "rows": 1, "sidechain": false, "stopReason": "end_turn"}
+{"cacheRead": 25390, "cacheWrite1h": 23966, "cacheWrite5m": 0, "input": 2, "output": 348, "requestId": "req_011CdR7qSHprBBaYC4CdWDF6", "rows": 2, "sidechain": false, "stopReason": "tool_use"}
+{"cacheRead": 9125, "cacheWrite1h": 0, "cacheWrite5m": 10626, "input": 2, "output": 183, "requestId": "req_011CdR7qz62Esn473dG4cp4d", "rows": 2, "sidechain": true, "stopReason": "tool_use"}
+{"cacheRead": 19751, "cacheWrite1h": 0, "cacheWrite5m": 1004, "input": 2, "output": 297, "requestId": "req_011CdR7rU7k3m7JA7VP8gZWQ", "rows": 1, "sidechain": true, "stopReason": "end_turn"}
+{"cacheRead": 49356, "cacheWrite1h": 647, "cacheWrite5m": 0, "input": 2, "output": 277, "requestId": "req_011CdR7rs4NwKv1FkfnLK87N", "rows": 1, "sidechain": false, "stopReason": "end_turn"}

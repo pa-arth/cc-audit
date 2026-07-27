@@ -5,6 +5,40 @@ Notable changes to `@promptster/cc-audit`. GitHub Releases carry the same notes
 
 ## Unreleased
 
+### Added
+
+- **An external check on our cost math: reconciliation against Claude Code's own
+  telemetry.** Every other test in this repo compares cc-audit to cc-audit.
+  `src/__tests__/otelReconcile.test.ts` joins a captured OTLP stream to the matching
+  transcripts on `request_id` — Claude Code's `claude_code.api_request` event carries
+  the final per-request token counts plus Anthropic's own `cost_usd` — and asserts
+  our arithmetic reproduces their figure exactly. Fixtures captured both ways at once
+  from two scripted sessions (10 requests, 4 subagent sidechains, 5 streamed across
+  multiple rows); procedure and scrubbing rules in MAINTAINING.md.
+
+  | pricing basis | vs Claude Code's `cost_usd` |
+  |---|---|
+  | transcript, with the 5m/1h split | **exact — every request, to 1e-9** |
+  | wire only, all cache writes as 1h | +10.4% |
+  | wire only, all cache writes as 5m | −23.9% |
+
+  Three things this settles. **(1) Our transcript read loses no tokens** — including
+  on the streamed multi-row messages and subagent sidechains that have actually
+  broken before; this is the check the 0.5.2 undercount would have failed, and it
+  retires the theory that the transcript's own per-field maximum is itself partial.
+  **(2) Claude Code prices Sonnet 5 at the steady-state $3/$15**, not the live
+  introductory $2/$10 — exactly 1.5x ours, which is the entire reported "cc-audit
+  runs 40% below `/cost`" defect, now pinned by assertion rather than argued.
+  **(3) The OTLP wire cannot reproduce an exact bill:** it collapses cache creation
+  into one figure while the 5m and 1h write tiers price at 1.25x and 2.0x input, and
+  real corpora mix them — here the subagent requests were 5m and the main chain 1h,
+  with no wire attribute to tell them apart. That is a hard ceiling for anything
+  proposing to source cost from OTel instead of the transcript.
+
+- `scripts/otlp-capture.py` — a dependency-free OTLP/HTTP-JSON receiver for
+  re-capturing the corpus. Stores raw wire batches untouched so fixtures stay
+  captured rather than authored.
+
 ### Fixed
 
 - **The weekly run-rate row priced Sonnet 5 at a different tariff than the
