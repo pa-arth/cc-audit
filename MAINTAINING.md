@@ -135,3 +135,66 @@ npm run bundle
 ( cd bundles && sha256sum cc-audit-* cc-audit.mjs > SHA256SUMS.txt )
 gh release create vX.Y.Z --generate-notes bundles/cc-audit-* bundles/cc-audit.mjs bundles/SHA256SUMS.txt
 ```
+
+## OTel reconciliation (external check on our cost math)
+
+`src/__tests__/otelReconcile.test.ts` is the only test in this repo that grades our
+arithmetic against something we did not write. Everything else compares cc-audit to
+cc-audit; this compares it to **Claude Code's own telemetry**.
+
+Claude Code emits a `claude_code.api_request` event carrying the FINAL per-request
+token counts plus Anthropic's own `cost_usd`, keyed by a `request_id` the transcript
+also records. That makes an exact join possible, so the question "did we read the
+tokens right, and do we price them right" has an external answer.
+
+**Findings pinned by that test** (captured 2026-07-26, Claude Code 2.1.220):
+
+| pricing basis | vs Claude Code's `cost_usd` |
+|---|---|
+| transcript, with the 5m/1h split | **exact — every request, to 1e-9** |
+| wire only, assume all cache writes are 1h | +10.4% |
+| wire only, assume all cache writes are 5m | −23.9% |
+
+1. **Our transcript read loses no tokens** — including on streamed multi-row messages
+   and subagent sidechains, both present in the corpus. This is the check the 0.5.2
+   streamed-output undercount would have failed.
+2. **Claude Code prices Sonnet 5 at the steady-state $3/$15**, not the introductory
+   $2/$10 that is live through 2026-08-31. Its figure is exactly 1.5x ours. That is
+   the whole of the reported "cc-audit runs 40% below `/cost`" defect.
+3. **The OTLP wire cannot reproduce an exact bill.** It collapses cache creation into
+   one `cache_creation_tokens` figure, but the 5-minute and 1-hour write tiers price
+   at 1.25x and 2.0x input, and real corpora mix them (here: subagent requests were
+   5m, main-chain 1h). No wire attribute distinguishes them. Anything proposing to
+   replace the transcript read with OTel inherits this as a hard cost-fidelity
+   ceiling — it is not tunable.
+
+### Re-capturing the corpus
+
+Fixtures are captured, never hand-written. To refresh them:
+
+```bash
+python3 scripts/otlp-capture.py wire.jsonl 4318 &     # receiver -> wire.jsonl
+CLAUDE_CODE_ENABLE_TELEMETRY=1 \
+OTEL_LOGS_EXPORTER=otlp OTEL_METRICS_EXPORTER=otlp \
+OTEL_EXPORTER_OTLP_PROTOCOL=http/json \
+OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318 \
+OTEL_LOGS_EXPORT_INTERVAL=1000 \
+  claude -p "<a prompt that streams a long answer AND dispatches a subagent>" \
+  --model claude-sonnet-5 --allowedTools "Read,Bash,Glob,Grep,Agent"
+```
+
+Then filter the batches to `claude_code.api_request` records for
+`fixtures/otel-api-request-wire.jsonl`, and project the matching transcript rows
+(join on `requestId`, per-field max across rows) into
+`fixtures/otel-transcript-tokens.jsonl`.
+
+Two rules when you do:
+
+- **Keep a subagent and a multi-row streamed message in the corpus.** The pairing test
+  asserts both are present, because they are the cases that have actually broken.
+- **Scrub identity before committing — this repo is public.** The wire carries
+  `user.email`, `user.id`, `user.account_uuid`, `user.account_id` and
+  `organization.id` on every record. Replace those five values with placeholders and
+  leave everything else byte-identical; the committed fixture is otherwise verbatim.
+  Do not commit transcript prose, prompts, or `cwd` paths — the transcript fixture is
+  deliberately a token-only projection.
