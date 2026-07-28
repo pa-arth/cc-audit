@@ -54,18 +54,42 @@ export function setCapture(on: boolean): void {
   writeConsent({ capture: on, captureAnsweredAt: new Date().toISOString() });
 }
 
-/** The disclosure shown with the capture question. States what is sent, what never is,
- *  how long it is kept, and how to turn it off — in the terminal, not behind a link. */
+/**
+ * Apply the shareable-link answer to the SHARING setting. Sharing no longer has a confirm
+ * of its own — it rides on that one question — so this is the whole rule, in one place.
+ *
+ * ONLY a yes writes. A no is deliberately a no-op, not `setCapture(false)`:
+ *   • Declining to publish a public URL is a different decision from declining to share
+ *     privately. Recording it as the latter puts words in their mouth.
+ *   • It must not revoke a previous yes, or a user who shares happily but doesn't want
+ *     THIS report public would silently lose the setting by answering the visible question.
+ *   • It must not consume the tri-state `undefined`, which is what preserves the ability
+ *     to ask again on a later run.
+ * Sharing is turned off by `cc-audit capture --off`, and by nothing else.
+ */
+export function applyShareLinkAnswer(yes: boolean): void {
+  if (yes) setCapture(true);
+}
+
+/** The disclosure shown wherever sharing is turned on. States what is sent, what never
+ *  is, how long it is kept, and how to turn it off — in the terminal, not behind a link.
+ *
+ *  This is the DISCLAIMER half of the shareable-link question: saying yes there both
+ *  publishes the report and switches sharing on, so the text has to stand on its own
+ *  without a confirm of its own to carry it. Nothing here may be softened — a shorter,
+ *  friendlier version of this paragraph is the failure mode, not an improvement. */
 export function captureDisclosure(gistCount: number): string {
   return [
-    'Sharing sends your privacy-safe metrics (shares, counts, ratios — never raw',
-    `dollar amounts) and ${gistCount} task gist${gistCount === 1 ? '' : 's'}: the prompt text you typed, plus`,
-    'model/turn/tool counts.',
+    'It also switches on data sharing with Promptster, so we can make the tool better.',
+    'That sends the same metrics report you just read — including your spend figures in',
+    `dollars — and ${gistCount} task gist${gistCount === 1 ? '' : 's'}: the prompt text you typed, plus model/turn/tool counts.`,
     '',
-    `  • Never sent: your source code, diffs, file paths, or repo names.`,
+    `  • Never read from disk: your source code, your diffs, your file tree.`,
+    `  • Task gists are your prompts VERBATIM (700 chars each). We don't add paths or`,
+    `    repo names — but we don't strip what you typed. Type one, and it goes.`,
     `  • Attributed to a random install key — not your name, email, or hostname.`,
     `  • Retention: ${RETENTION_COPY}.`,
-    '  • Turn it off any time:  cc-audit capture --off   (permanent, never re-asked)',
+    '  • It stays on for future runs until you turn it off:  cc-audit capture --off',
     '  • See or delete your data:  cc-audit capture --status',
   ].join('\n');
 }

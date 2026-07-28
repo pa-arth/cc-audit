@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
+  applyShareLinkAnswer,
   buildCapturePayload,
   captureDisclosure,
   captureSetting,
@@ -11,6 +12,7 @@ import {
   sendCapture,
   setCapture,
 } from '../capture.js';
+import { AggregateRecordSchema } from '../aggregate.js';
 import { readConsent, writeConsent } from '../consent.js';
 import type { SessionFootprint } from '../footprint.js';
 
@@ -111,7 +113,7 @@ describe('capture', () => {
   it('the disclosure names what is sent, what never is, retention, and the opt-out', () => {
     const text = captureDisclosure(7);
     expect(text).toContain('7 task gists');
-    expect(text).toMatch(/Never sent:.*source code/i);
+    expect(text).toMatch(/Never read from disk:.*source code/i);
     expect(text).toContain('cc-audit capture --off');
     expect(text).toMatch(/Retention/);
   });
@@ -131,6 +133,88 @@ describe('capture', () => {
     expect(status).toContain('curl -X DELETE https://example.invalid/v1/public/solo/data');
     expect(status).toContain('"installKey"');
     expect(status).not.toMatch(/email .*@/i);
+  });
+
+  describe('the shareable-link answer is the ONLY thing that turns sharing on', () => {
+    it('yes turns it on and persists it', () => {
+      applyShareLinkAnswer(true);
+      expect(captureSetting()).toBe(true);
+      expect(readConsent().captureAnsweredAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+    });
+
+    it('no does NOT record an opt-out — declining a public URL is a different decision', () => {
+      // If this wrote `capture: false`, the tri-state would be consumed and we could never
+      // ask again, having recorded a decision the developer did not make.
+      applyShareLinkAnswer(false);
+      expect(captureSetting()).toBeUndefined();
+    });
+
+    it('no does NOT revoke a previous yes', () => {
+      setCapture(true);
+      applyShareLinkAnswer(false);
+      expect(captureSetting()).toBe(true); // they still share; they just didn't want THIS link
+    });
+
+    it('no does not resurrect a previous opt-out either — off stays off', () => {
+      setCapture(false);
+      applyShareLinkAnswer(false);
+      expect(captureSetting()).toBe(false);
+    });
+  });
+
+  it('reads as the disclaimer half of the link question — it must carry itself', () => {
+    // There is no longer a confirm of its own beneath this text: sharing rides on the
+    // shareable-link answer. So the paragraph has to say, unprompted, that saying yes
+    // turns sharing ON and that it STAYS on. Copy that only describes what is sent — with
+    // no statement that a decision is being made — would leave the user opted in by a
+    // question they read as being about a URL.
+    const text = captureDisclosure(4);
+    expect(text).toMatch(/also switches on data sharing/i);
+    expect(text).toMatch(/stays on for future runs/i);
+    expect(text).toContain('cc-audit capture --off');
+  });
+
+  it('does NOT claim the aggregate is dollar-free — it carries raw USD, and says so', () => {
+    // Regression, and the ugly kind: the disclosure used to read "shares, counts, ratios
+    // — never raw dollar amounts". The aggregate has ALWAYS carried spend.perMonthUsd,
+    // spend.totalUsd, fluency.carryUsd and friends as plain numbers. A false reassurance
+    // in a privacy disclosure is worse than no disclosure, because it is the sentence
+    // someone relies on when deciding to say yes.
+    //
+    // Coupled to the schema on purpose: if a USD field is ever genuinely removed from the
+    // aggregate, this test stops demanding the disclosure mention dollars. Copy alone
+    // would just drift again.
+    const usdFields = Object.keys(AggregateRecordSchema.shape.spend.shape).filter((k) => k.endsWith('Usd'));
+    expect(usdFields.length).toBeGreaterThan(0); // the premise: raw dollars are in there
+
+    const text = captureDisclosure(3);
+    expect(text).not.toMatch(/never raw dollar/i);
+    expect(text).not.toMatch(/no raw \$/i);
+    // Affirmative, not merely silent — omitting the lie is not the same as disclosing.
+    // \s+ because the copy is hard-wrapped and "in dollars" straddles a line break.
+    expect(text).toMatch(/in\s+dollars/i);
+  });
+
+  it('does NOT promise gists are free of paths and repo names — nothing strips them', () => {
+    // Second copy overreach of the same family as the dollar one. The disclosure said
+    // "Never sent: your source code, diffs, file paths, or repo names". The first two are
+    // enforced at ingestion. The last two were never enforced anywhere: a gist is the
+    // developer's prompt VERBATIM and footprint.ts applies no redaction, so a path or repo
+    // name they typed ships with it. Measured on a real 30-day corpus, 3 of 25 gists
+    // carried a repo name ("add CI to cc-audit").
+    //
+    // Proven here, not asserted: push a prompt containing both through buildCapturePayload
+    // and confirm they survive to the wire. That is the fact the copy has to match.
+    const typed = 'fix the retry in src/upload/client.ts for the cc-audit repo';
+    const payload = buildCapturePayload({}, [{ ...GISTS[0]!, taskGist: typed }]);
+    expect(payload.gists[0]!.taskGist).toBe(typed); // verbatim — no scrub between here and the POST
+    expect(payload.gists[0]!.taskGist).toContain('src/upload/client.ts');
+    expect(payload.gists[0]!.taskGist).toContain('cc-audit');
+
+    const text = captureDisclosure(3);
+    expect(text).not.toMatch(/never sent:[^\n]*file paths/i);
+    expect(text).not.toMatch(/never sent:[^\n]*repo names/i);
+    expect(text).toMatch(/verbatim/i); // it must say the gist is unedited
   });
 
   it('states the retention the backend actually performs (90d scrub), not an indefinite one', () => {
