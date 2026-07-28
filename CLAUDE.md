@@ -41,13 +41,65 @@ consent flow. Everything it calls is a pure-ish module:
   (`cc-audit fix` reviewable patches). All hit backend HTTP endpoints behind `CC_AUDIT_API`.
 - **`index.ts`** — the importable library surface (CLI lives in `cli.ts`, not exported there).
 
+### The bare interactive run asks THREE questions
+All default Yes, all at the very bottom, after the whole report. **Order is load-bearing**:
+the analysis runs first because its output is what makes the link worth creating, and the
+link's disclosure has to name what the analysis actually produced.
+1. **Run the analysis now, and install the skill** (`agentRun.ts` + `skill.ts`). One yes does
+   both because they cover different moments:
+   - **Shell-out** (`claude -p` / `codex exec`) answers "right now" — plans printed in the
+     same terminal, same run. This is the first-run experience; the skill path alone (install
+     → restart session → recall a phrase) is too much friction before any value lands.
+   - **Skill** is the durable path and produces *better* plans, because it runs inside a
+     session with their repo loaded and can cite the actual line in the actual CLAUDE.md.
+     Installing is a file write, so it rides along free.
+
+   Both instruction sets are EMBEDDED in the binary, never fetched — they execute with the
+   user's agent's permissions, so a network delivery path would be an instruction supply
+   chain. Posture is structural, not asserted: the data goes inline and no tools are granted
+   (`--allowed-tools ''` / `-s read-only`).
+
+   **Two rules the shell-out must keep.** (a) Disclose the window cost before spending it —
+   invoking their agent consumes the same rate-limit window the report explains. (b) Bound
+   the input: `compactFindings()` sends ~11KB, not the raw ~22KB record, and DECLARES its
+   truncation in-band so the model can't mistake a subset for everything. Degradation is
+   named — no agent, failure, or timeout leaves the deterministic report intact and says what
+   didn't happen. A partial run must never read as complete.
+2. **Shareable link** (`offerShareLink` + `advice.ts`) — the web report, carrying the agent's
+   written plans alongside the aggregate.
+
+   **The advice is a HIGHER privacy tier than the aggregate and the copy must keep them
+   separate.** The aggregate is shares and counts. The plans quote real dollar figures and
+   real command/subagent/skill names — which is exactly what makes them useful. Rolling both
+   into one reassuring sentence would be true-in-parts and false-overall. Source code still
+   never leaves, on this path like every other.
+
+   The advice text is FREE-FORM model output. `parseAdvice()` is best-effort and returns
+   `plans: null` when the shape is unfamiliar; `raw` is always populated. **Never make a
+   render depend on the parse** — a strict parser's failure mode here is a blank report.
+
+3. **Share data** (`capture.ts`) — asked ONCE, persisted, **never re-prompted in either
+   direction**. Re-asking someone who declined is what turns disclosed capture into a dark
+   pattern; `ConsentState.capture` is tri-state (`undefined` = not yet asked) for exactly this.
+
+A fourth question needs a real argument. The ladder used to be five confirms and it was noise.
+
 ### Consent tiers (see `consent.ts`)
 - **Tier 0** local read — sticky one-time ack, persisted to `~/.cc-audit/consent.json`.
-- **Tier 1** `--judge` — task gist + metadata to the hosted model, never code/paths. Re-confirmed each run.
-- **Tier 2** `--open` — privacy-safe aggregate to a PUBLIC link. Re-confirmed each run, defaults to No.
+- **Tier 1** sharing — aggregate + task gists to `/v1/public/solo-capture`, keyed on the
+  install key. Sticky answer; `cc-audit capture --off/--on/--status`.
+- **Tier 1** `--judge` — task gist + metadata to the hosted model, never code/paths. Flag-only.
+- **Tier 2** shareable link — aggregate + the agent's plans, to a URL anyone holding it can
+  read. The second question, or `--open`. A reachable URL can't be un-published, so the
+  disclosure runs on BOTH paths (the non-interactive `--open` receipt names the advice too).
 
-`--json` and any non-TTY run are strictly non-interactive: only explicit `--judge`/`--open`
-send anything. **stdout under `--json` must stay pure JSON** — route diagnostics/notices to stderr.
+**Source code and diffs never leave, under any flag.** There is no opt-in for it. That is the
+claim the product is written to — never "nothing leaves your machine", which capture makes false.
+
+`--json` and any non-TTY run are strictly non-interactive: they never prompt, and transmit only
+on an explicit `--judge`/`--open` or a previously-answered sharing consent. Silence never opts
+anyone in. `--root DIR` never transmits (it would pollute both local history and the corpus).
+**stdout under `--json` must stay pure JSON** — route diagnostics/notices to stderr.
 
 ## Conventions that bite
 

@@ -63,11 +63,38 @@ Prefer a single self-contained executable (no Node)? Grab a pre-built binary for
 ## Usage
 
 ```bash
-npx @promptster/cc-audit                 # local audit (default)
+npx @promptster/cc-audit                 # local audit, then two questions (see below)
 npx @promptster/cc-audit --judge         # + hosted right-sizing analysis
 npx @promptster/cc-audit --open          # + shareable public web report
-npx @promptster/cc-audit --json          # machine-readable, local-only unless a flag is given
+npx @promptster/cc-audit --json          # machine-readable, pure stdout
 ```
+
+A bare run in a terminal ends with **three** questions, all default *Yes*:
+
+1. **Run the analysis now?** Invokes `claude -p` (or `codex exec`) on a compacted summary
+   of the report and prints **three ranked improvement plans** right there — no session
+   restart, no memorized phrase. The same yes also installs
+   `~/.claude/skills/cc-audit/SKILL.md`, so future sessions can coach you *with your repo
+   loaded*, which produces better plans than this cold run can. Both paths run on **your**
+   subscription; cc-audit never sends your sessions to a model of ours.
+2. **Create a shareable link?** Uploads the web report — including the three plans your
+   agent just wrote — to a URL you can send to anyone. ⚠️ Those plans quote your **real
+   dollar figures** and your command, subagent, and skill names; that is strictly more than
+   the privacy-safe metrics carry, and a published URL cannot be un-published. The prompt
+   says exactly this before you answer.
+3. **Share your data with Promptster?** See [What leaves your machine](#what-leaves-your-machine).
+   Asked once, persisted, and never re-prompted in either direction.
+
+The order matters: the analysis runs first so the link has something worth sharing, and so
+the link's disclosure can name what the analysis actually produced.
+
+Question 1 discloses its cost before spending it: invoking your agent consumes the same
+rate-limit window this report exists to explain, so the confirm states the agent, whose
+subscription pays, and the token estimate (~3k, from a compacted summary — not the raw
+22KB record, and never your transcripts). `cc-audit --print-prompt` shows the exact prompt
+and invokes nothing. No `claude`/`codex` on PATH, or an invocation that fails or times out,
+leaves the measured report intact and says what didn't happen — a partial run never reads
+as a complete one.
 
 | Flag | What it does |
 | --- | --- |
@@ -77,12 +104,16 @@ npx @promptster/cc-audit --json          # machine-readable, local-only unless a
 | `--aggressiveness conservative\|balanced\|aggressive` | How eagerly to flag over-modeled tasks as cuts (default `balanced`). |
 | `--judge` | Hosted right-sizing — sends task *gists + metadata*, never code. |
 | `--open` | Upload the privacy-safe aggregate and open a shareable web report. |
-| `--json` | Print the aggregate record as JSON (always local-only, pure stdout). |
+| `--json` | Print the aggregate record as JSON (pure stdout). |
+| `--print-prompt` | Print the exact prompt that would go to your agent. Invokes nothing. |
 
 <details>
 <summary>Calibration &amp; patch subcommands</summary>
 
 ```bash
+cc-audit skill  [--print]  # install the analysis skill (or print its full text)
+cc-audit capture --status  # is sharing on? what install key is my data under?
+cc-audit capture --off     # stop sharing: immediate, permanent, survives upgrades
 cc-audit label   [--n 50]  # judge real sessions → a sheet you hand-label
 cc-audit score   <file>    # score your labels vs. the judge (precision/recall)
 cc-audit fix               # turn recommendations into reviewable patches (never auto-applied)
@@ -91,23 +122,38 @@ cc-audit fix               # turn recommendations into reviewable patches (never
 
 ## What leaves your machine
 
-**By default: nothing.** The audit runs fully local — no network, no key. Two optional steps
-upload data, and each asks first, gated proportional to what leaves:
+**We never read your source code or diffs.** That holds under every flag and has no opt-in —
+it is enforced at ingestion, not just asserted here. It is the line, and it does not move.
+
+The *analysis* is local: parse → attribute → report runs with no network and no key. What can
+leave, and only after you say so:
 
 | Tier | Trigger | What's sent |
 | --- | --- | --- |
 | **0** — local read | first run | Sticky one-time ack. Reads `~/.claude/projects`. Nothing leaves. |
-| **1** — right-sizing | `--judge` | Each task's *gist + metadata* (model, token counts, turn shape) to the hosted model. **Never** your code, prompts, file paths, or repo names. |
-| **2** — shareable report | `--open` | The privacy-safe *aggregate* (shares and counts — **never** raw `$` or code) to a **public** link. Defaults to *No*, re-confirmed each run. |
+| **1** — sharing | the second question, or `cc-audit capture --on` | The privacy-safe *aggregate* (shares, counts, ratios — never raw `$`) **plus your task gists**: the prompt text you typed, with model/turn/tool counts. Never code, diffs, file paths, or repo names. Attributed to a random install key. |
+| **1** — right-sizing | `--judge` | Each task's *gist + metadata* to the hosted model. Same exclusions. |
+| **2** — shareable link | the second question, or `--open` | The privacy-safe *aggregate* **plus the plans your agent wrote**, to a link anyone with the URL can open. The plans are a higher tier than the aggregate: they quote your real `$` figures and your command/subagent/skill names. Still never your source code. A published URL can't be un-published. |
 
-`--json` and any non-TTY run are strictly non-interactive: only an explicit `--judge`/`--open`
-sends anything, so CI stays local. A random anonymous machine ID (a hash, not your hostname) is
-minted for dedup *only* if you share a report.
+**On sharing specifically.** It is asked once, in the terminal, with the full list above shown
+*before* you answer — not behind a link. Say no and you are never asked again. Say yes and:
+
+- `cc-audit capture --off` stops it immediately and permanently, and survives upgrades.
+- `cc-audit capture --status` prints the install key your data is stored under, so you can
+  delete it yourself — it prints the exact `curl` that erases everything under that key,
+  no account needed. Retention: **de-identified after 90 days**, or deleted sooner on
+  request.
+- The install key is a random UUID — not your hostname, email, or repo names — and deleting
+  `~/.cc-audit/install.json` resets it.
+
+**If you have never answered the question, nothing is transmitted** — including on `--json`
+and non-TTY runs, which never prompt and never opt you in by silence. `--root DIR` runs never
+transmit at all (an alternate corpus would pollute both your local history and ours).
 
 ## How it works
 
 The deterministic half — parse → attribute → report — runs entirely on your machine. Egress is
-a separate, opt-in tier that only fires on an explicit flag:
+a separate tier that only fires on an explicit flag or an answer you gave:
 
 ```
                     ┌──────────── LOCAL · deterministic · no network, no key ─────────────┐
@@ -117,9 +163,16 @@ a separate, opt-in tier that only fires on an explicit flag:
    transcripts)     │                 Span)     by model) └─ contextHygiene ─┘   (TUI)     │
                     └─────────────────────────────────────┬───────────────────────────────┘
                                                           │
-                                       opt-in · consent-gated ▼
-                            --judge ─▶ right-sizing     task gists + metadata ─▶ hosted model
-                            --open  ─▶ shareable report privacy-safe aggregate ─▶ public link
+                                            consent-gated ▼
+                            you said yes ─▶ sharing      aggregate + task gists ─▶ Promptster
+                            you said yes ─▶ share link   aggregate + agent plans ─▶ web report
+                            --judge      ─▶ right-sizing task gists + metadata  ─▶ hosted model
+
+                    ┌─── LOCAL · your agent, your subscription, your window ───────────────┐
+                    │  now:   claude -p / codex exec  ◀─ compacted summary (~3k tok)       │
+                    │  later: ~/.claude/skills/cc-audit/SKILL.md ─▶ reads `cc-audit --json`│
+                    │  (both embedded in the CLI, never fetched) ─▶ three improvement plans │
+                    └──────────────────────────────────────────────────────────────────────┘
 ```
 
 | Stage | Modules |
@@ -127,10 +180,12 @@ a separate, opt-in tier that only fires on an explicit flag:
 | **Ingest** | `adapters/claudeCode.ts` → `model.ts` (`Session`/`Span`). Tool-agnostic, so Codex/Cursor adapters can drop in later. |
 | **Analyze** *(local)* | `attribute.ts`, `pricing.ts` + `vendor/` (cost tables), `fluency.ts` / `alwaysOn.ts` / `contextHygiene.ts`, tied together by `audit.ts` into an `AuditResult`; `aggregate.ts` is the privacy-safe record. |
 | **Render** | `report.ts` + `theme.ts` (the only module that knows ANSI). |
-| **Egress** *(opt-in)* | `judgeClient.ts` (`--judge`), `open.ts` (`--open`), `fixClient.ts` / `fix.ts` (`cc-audit fix`). All behind `consent.ts`. |
+| **Agent path** *(local)* | `agentRun.ts` — detect `claude`/`codex`, compact the findings, invoke with no tools. `skill.ts` — the embedded `SKILL.md`. Neither makes a network call of ours. |
+| **Egress** *(consented)* | `capture.ts` (sharing), `judgeClient.ts` (`--judge`), `open.ts` (`--open`), `fixClient.ts` / `fix.ts` (`cc-audit fix`). All behind `consent.ts`. |
 
-The core principle, preserved by design: **no code path phones home on a bare or
-non-interactive run.**
+The core principle, preserved by design: **no code path phones home until you have said it
+can** — a flag you passed, or the sharing question you answered yes to. Nothing is inferred
+from silence, and a non-interactive run never opts you in.
 
 ## Not the assessment CLI
 

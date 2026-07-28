@@ -557,8 +557,11 @@ export function renderReport(r: AuditResult, opts: { rows?: number; delta?: Hist
       for (const ln of wrap(rec.action, BOX_WIDTH - 3)) actionRows.push(c.dim(`   ${ln}`));
       i += 1;
     }
+    // The config-suggestions prompt is gone (the bare run asks two questions only), so
+    // this points at the two surfaces that still produce edits: the skill (your agent,
+    // grounded in your repo) and `cc-audit fix` (reviewable patches under ./.cc-audit/).
     actionRows.push(
-      c.dim('→ exact edits for these: say yes at the next prompt, or run ') + c.cyan('cc-audit fix'),
+      c.dim('→ exact edits for these: install the skill below, or run ') + c.cyan('cc-audit fix'),
     );
     blank();
     out.push(...card('NEXT ACTIONS  ·  ranked by est. $/mo saved', actionRows, c.gold));
