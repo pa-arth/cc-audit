@@ -140,7 +140,9 @@ leave, and only after you say so:
 
 - `cc-audit capture --off` stops it immediately and permanently, and survives upgrades.
 - `cc-audit capture --status` prints the install key your data is stored under, so you can
-  request deletion against it. Retention: kept until you ask us to delete it.
+  delete it yourself — it prints the exact `curl` that erases everything under that key,
+  no account needed. Retention: **de-identified after 90 days**, or deleted sooner on
+  request.
 - The install key is a random UUID — not your hostname, email, or repo names — and deleting
   `~/.cc-audit/install.json` resets it.
 

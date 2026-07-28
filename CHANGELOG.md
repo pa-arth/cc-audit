@@ -88,7 +88,9 @@ Notable changes to `@promptster/cc-audit`. GitHub Releases carry the same notes
   - Never re-prompted in either direction. Declining is permanent until *you* revisit it.
   - `--off` is immediate, permanent, and survives upgrades.
   - `--status` prints the install key your data is stored under so you can request
-    deletion against it. Retention: kept until you ask us to delete it.
+    deletion against it, and prints the exact `curl` that performs it — no account,
+    no email, effective immediately. Retention: de-identified after 90 days, or
+    deleted sooner on request.
   - Never answered ⇒ nothing transmitted, including on `--json` and non-TTY runs, which
     never prompt and never opt you in by silence. `--root DIR` runs never transmit.
 

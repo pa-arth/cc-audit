@@ -2,7 +2,15 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import { buildCapturePayload, captureDisclosure, captureSetting, captureStatus, sendCapture, setCapture } from '../capture.js';
+import {
+  buildCapturePayload,
+  captureDisclosure,
+  captureSetting,
+  captureStatus,
+  RETENTION_COPY,
+  sendCapture,
+  setCapture,
+} from '../capture.js';
 import { readConsent, writeConsent } from '../consent.js';
 import type { SessionFootprint } from '../footprint.js';
 
@@ -115,5 +123,20 @@ describe('capture', () => {
     const off = captureStatus();
     expect(off).toContain('OFF');
     expect(off).not.toContain('Install key:');
+  });
+
+  it('status hands over a WORKING deletion command, not an email address', () => {
+    setCapture(true);
+    const status = captureStatus();
+    expect(status).toContain('curl -X DELETE https://example.invalid/v1/public/solo/data');
+    expect(status).toContain('"installKey"');
+    expect(status).not.toMatch(/email .*@/i);
+  });
+
+  it('states the retention the backend actually performs (90d scrub), not an indefinite one', () => {
+    // publicSoloScrub de-identifies solo_captures on a 90-day window. Copy that reads as
+    // "we keep it until you ask" would be a false statement in a privacy disclosure.
+    expect(RETENTION_COPY).toContain('90 days');
+    expect(captureDisclosure(3)).toContain('90 days');
   });
 });

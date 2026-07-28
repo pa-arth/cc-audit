@@ -24,9 +24,17 @@ const TIMEOUT_MS = 4000;
 
 export const CAPTURE_SCHEMA_VERSION = 1;
 
-/** How long we keep it. Stated verbatim in the first-run disclosure — if this changes,
- *  the published policy changes with it. */
-export const RETENTION_COPY = 'kept until you ask us to delete it';
+/** How long we keep it. Stated verbatim in the first-run disclosure.
+ *
+ *  This MUST track what the backend actually does, not what we'd like to promise. The
+ *  `publicSoloScrub` worker de-identifies `solo_captures` on a 90-day window, so an
+ *  earlier "kept until you ask us to delete it" was simply false — it read as indefinite
+ *  retention we do not perform. If the retention window moves, this line moves with it,
+ *  and so does the published policy page. */
+export const RETENTION_COPY = 'de-identified after 90 days, or deleted sooner on request';
+
+/** Self-serve erasure. Works with no account: possession of the key is the proof. */
+export const DELETE_ENDPOINT = '/v1/public/solo/data';
 
 export interface CapturePayload {
   schemaVersion: number;
@@ -103,11 +111,18 @@ export function captureStatus(): string {
     setting === true ? 'ON — metrics + task gists are shared' : setting === false ? 'OFF — nothing is sent' : 'not set — you have not been asked yet';
   const lines = [`Capture: ${state}`];
   if (setting === true) {
+    const base = (process.env.CC_AUDIT_API ?? DEFAULT_API).replace(/\/$/, '');
+    const key = getInstallKey();
     lines.push(
-      `Install key: ${getInstallKey()}`,
+      `Install key: ${key}`,
       `Retention: ${RETENTION_COPY}.`,
-      'To delete everything stored under that key, email privacy@promptster.ai with it.',
-      'Turn off:  cc-audit capture --off',
+      '',
+      'Delete everything stored under that key — no account needed, takes effect immediately:',
+      `  curl -X DELETE ${base}${DELETE_ENDPOINT} \\`,
+      "    -H 'content-type: application/json' \\",
+      `    -d '{"installKey":"${key}"}'`,
+      '',
+      'Turn off future sends:  cc-audit capture --off',
     );
   } else if (setting === false) {
     lines.push('Turn on:  cc-audit capture --on');
