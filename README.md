@@ -137,9 +137,9 @@ leave, and only after you say so:
 | Tier | Trigger | What's sent |
 | --- | --- | --- |
 | **0** — local read | first run | Sticky one-time ack. Reads `~/.claude/projects`. Nothing leaves. |
-| **1** — sharing | *yes* to the second question, or `cc-audit capture --on` | The privacy-safe *aggregate* (shares, counts, ratios — never raw `$`) **plus your task gists**: the prompt text you typed, with model/turn/tool counts. Never code, diffs, file paths, or repo names. Attributed to a random install key. |
+| **1** — sharing | *yes* to the second question, or `cc-audit capture --on` | The *aggregate* — the metrics report you just read, **including your spend in dollars** (`spend.perMonthUsd`, `fluency.carryUsd`, and the rest) — **plus your task gists**: the prompt text you typed, with model/turn/tool counts. Never code, diffs, file paths, or repo names. Attributed to a random install key. |
 | **1** — right-sizing | `--judge` | Each task's *gist + metadata* to the hosted model. Same exclusions. |
-| **2** — shareable link | the second question, or `--open` | The privacy-safe *aggregate* **plus the plans your agent wrote**, to a link anyone with the URL can open. The plans are a higher tier than the aggregate: they quote your real `$` figures and your command/subagent/skill names. Still never your source code. A published URL can't be un-published. |
+| **2** — shareable link | the second question, or `--open` | The *aggregate* **plus the plans your agent wrote**, to a link anyone with the URL can open. The plans are a higher tier: on top of the dollar figures, they name your commands, subagents, and skills, which the aggregate does not. Still never your source code. A published URL can't be un-published. |
 
 Tiers 1-sharing and 2-link ride on the *same* yes. They are bundled in that direction only,
 because the link is the larger disclosure: publishing to a URL anyone can open is more

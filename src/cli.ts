@@ -441,11 +441,11 @@ async function offerShareLink(
   p.log.warn(
     'A shareable report uploads to a link ANYONE WITH THE URL can open:\n' +
       '\n' +
-      '  • The privacy-safe metrics (shares, counts, ratios — no raw $, no code).\n' +
+      '  • The metrics report you just read, including your spend in dollars. No code.\n' +
       (advice
-        ? `  • The three plans your ${advice.agent} just wrote. These quote your REAL dollar\n` +
-          '    figures and your command, subagent, and skill names — more than the metrics\n' +
-          '    above carry. Read them again before you say yes.\n'
+        ? `  • The three plans your ${advice.agent} just wrote. On top of the dollar figures,\n` +
+          '    these name your commands, subagents, and skills — which the metrics above do\n' +
+          '    not. Read them again before you say yes.\n'
         : '') +
       '\n' +
       'It cannot be un-published.\n' +

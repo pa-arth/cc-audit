@@ -12,6 +12,7 @@ import {
   sendCapture,
   setCapture,
 } from '../capture.js';
+import { AggregateRecordSchema } from '../aggregate.js';
 import { readConsent, writeConsent } from '../consent.js';
 import type { SessionFootprint } from '../footprint.js';
 
@@ -171,6 +172,27 @@ describe('capture', () => {
     expect(text).toMatch(/also switches on data sharing/i);
     expect(text).toMatch(/stays on for future runs/i);
     expect(text).toContain('cc-audit capture --off');
+  });
+
+  it('does NOT claim the aggregate is dollar-free — it carries raw USD, and says so', () => {
+    // Regression, and the ugly kind: the disclosure used to read "shares, counts, ratios
+    // — never raw dollar amounts". The aggregate has ALWAYS carried spend.perMonthUsd,
+    // spend.totalUsd, fluency.carryUsd and friends as plain numbers. A false reassurance
+    // in a privacy disclosure is worse than no disclosure, because it is the sentence
+    // someone relies on when deciding to say yes.
+    //
+    // Coupled to the schema on purpose: if a USD field is ever genuinely removed from the
+    // aggregate, this test stops demanding the disclosure mention dollars. Copy alone
+    // would just drift again.
+    const usdFields = Object.keys(AggregateRecordSchema.shape.spend.shape).filter((k) => k.endsWith('Usd'));
+    expect(usdFields.length).toBeGreaterThan(0); // the premise: raw dollars are in there
+
+    const text = captureDisclosure(3);
+    expect(text).not.toMatch(/never raw dollar/i);
+    expect(text).not.toMatch(/no raw \$/i);
+    // Affirmative, not merely silent — omitting the lie is not the same as disclosing.
+    // \s+ because the copy is hard-wrapped and "in dollars" straddles a line break.
+    expect(text).toMatch(/in\s+dollars/i);
   });
 
   it('states the retention the backend actually performs (90d scrub), not an indefinite one', () => {

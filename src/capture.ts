@@ -81,8 +81,8 @@ export function applyShareLinkAnswer(yes: boolean): void {
 export function captureDisclosure(gistCount: number): string {
   return [
     'It also switches on data sharing with Promptster, so we can make the tool better.',
-    'That sends your privacy-safe metrics (shares, counts, ratios — never raw dollar',
-    `amounts) and ${gistCount} task gist${gistCount === 1 ? '' : 's'}: the prompt text you typed, plus model/turn/tool counts.`,
+    'That sends the same metrics report you just read — including your spend figures in',
+    `dollars — and ${gistCount} task gist${gistCount === 1 ? '' : 's'}: the prompt text you typed, plus model/turn/tool counts.`,
     '',
     `  • Never sent: your source code, diffs, file paths, or repo names.`,
     `  • Attributed to a random install key — not your name, email, or hostname.`,

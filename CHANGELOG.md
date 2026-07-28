@@ -66,11 +66,12 @@ Notable changes to `@promptster/cc-audit`. GitHub Releases carry the same notes
   the metrics.
 
   **This raises what the link exposes, and the disclosure says so rather than glossing it.**
-  The privacy-safe aggregate is shares and counts with no raw dollars. The plans quote your
-  *actual* dollar figures and your command, subagent, and skill names — which is precisely
-  what makes them worth reading. Those are two different privacy tiers and the prompt lists
-  them as two bullets, because one reassuring sentence covering both would be true in parts
-  and false overall. Source code still never leaves, here as everywhere.
+  The aggregate is the metrics report you just read, dollar figures included — it always
+  was; `spend.perMonthUsd` and `fluency.carryUsd` are raw USD. The plans go further still:
+  they *name* your commands, subagents, and skills, which the aggregate never does. Those
+  are two different privacy tiers and the prompt lists them as two bullets, because one
+  reassuring sentence covering both would be true in parts and false overall. Source code
+  still never leaves, here as everywhere.
 
   The plans are free-form model output, so `advice.ts` treats structure as a bonus:
   `parseAdvice()` splits them into `{n, title, body}` plus the closing line when the shape
