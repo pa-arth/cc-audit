@@ -71,12 +71,22 @@ npx @promptster/cc-audit --json          # machine-readable, pure stdout
 
 A bare run in a terminal ends with exactly **two** questions, both default *Yes*:
 
-1. **Install the analysis skill?** Writes `~/.claude/skills/cc-audit/SKILL.md` so your own
-   agent reads `cc-audit --json` and writes three ranked improvement plans, grounded in the
-   repo you have open. The skill text is embedded in the CLI — nothing is downloaded — and
-   the model work runs on *your* subscription, never a hosted model of ours.
+1. **Run the analysis now?** Invokes `claude -p` (or `codex exec`) on a compacted summary
+   of the report and prints **three ranked improvement plans** right there — no session
+   restart, no memorized phrase. The same yes also installs
+   `~/.claude/skills/cc-audit/SKILL.md`, so future sessions can coach you *with your repo
+   loaded*, which produces better plans than this cold run can. Both paths run on **your**
+   subscription; cc-audit never sends your sessions to a model of ours.
 2. **Share your data with Promptster?** See [What leaves your machine](#what-leaves-your-machine).
    Asked once, persisted, and never re-prompted in either direction.
+
+Question 1 discloses its cost before spending it: invoking your agent consumes the same
+rate-limit window this report exists to explain, so the confirm states the agent, whose
+subscription pays, and the token estimate (~3k, from a compacted summary — not the raw
+22KB record, and never your transcripts). `cc-audit --print-prompt` shows the exact prompt
+and invokes nothing. No `claude`/`codex` on PATH, or an invocation that fails or times out,
+leaves the measured report intact and says what didn't happen — a partial run never reads
+as a complete one.
 
 | Flag | What it does |
 | --- | --- |
@@ -86,7 +96,8 @@ A bare run in a terminal ends with exactly **two** questions, both default *Yes*
 | `--aggressiveness conservative\|balanced\|aggressive` | How eagerly to flag over-modeled tasks as cuts (default `balanced`). |
 | `--judge` | Hosted right-sizing — sends task *gists + metadata*, never code. |
 | `--open` | Upload the privacy-safe aggregate and open a shareable web report. |
-| `--json` | Print the aggregate record as JSON (always local-only, pure stdout). |
+| `--json` | Print the aggregate record as JSON (pure stdout). |
+| `--print-prompt` | Print the exact prompt that would go to your agent. Invokes nothing. |
 
 <details>
 <summary>Calibration &amp; patch subcommands</summary>
@@ -147,9 +158,10 @@ a separate tier that only fires on an explicit flag or an answer you gave:
                             --judge      ─▶ right-sizing task gists + metadata  ─▶ hosted model
                             --open       ─▶ public report privacy-safe aggregate ─▶ public link
 
-                    ┌─── LOCAL · your agent, your subscription ────────────────────────────┐
-                    │  ~/.claude/skills/cc-audit/SKILL.md  ─▶  reads `cc-audit --json`     │
-                    │  (embedded in the CLI, never fetched)     ─▶  three improvement plans │
+                    ┌─── LOCAL · your agent, your subscription, your window ───────────────┐
+                    │  now:   claude -p / codex exec  ◀─ compacted summary (~3k tok)       │
+                    │  later: ~/.claude/skills/cc-audit/SKILL.md ─▶ reads `cc-audit --json`│
+                    │  (both embedded in the CLI, never fetched) ─▶ three improvement plans │
                     └──────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -158,7 +170,7 @@ a separate tier that only fires on an explicit flag or an answer you gave:
 | **Ingest** | `adapters/claudeCode.ts` → `model.ts` (`Session`/`Span`). Tool-agnostic, so Codex/Cursor adapters can drop in later. |
 | **Analyze** *(local)* | `attribute.ts`, `pricing.ts` + `vendor/` (cost tables), `fluency.ts` / `alwaysOn.ts` / `contextHygiene.ts`, tied together by `audit.ts` into an `AuditResult`; `aggregate.ts` is the privacy-safe record. |
 | **Render** | `report.ts` + `theme.ts` (the only module that knows ANSI). |
-| **Agent path** *(local)* | `skill.ts` — the embedded `SKILL.md` your own agent runs. Writes a file; makes no network call. |
+| **Agent path** *(local)* | `agentRun.ts` — detect `claude`/`codex`, compact the findings, invoke with no tools. `skill.ts` — the embedded `SKILL.md`. Neither makes a network call of ours. |
 | **Egress** *(consented)* | `capture.ts` (sharing), `judgeClient.ts` (`--judge`), `open.ts` (`--open`), `fixClient.ts` / `fix.ts` (`cc-audit fix`). All behind `consent.ts`. |
 
 The core principle, preserved by design: **no code path phones home until you have said it

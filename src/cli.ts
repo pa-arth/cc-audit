@@ -36,7 +36,8 @@ import { captureDisclosure, captureSetting, captureStatus, sendCapture, setCaptu
 import { readConsent, writeConsent } from './consent.js';
 import type { ContextHygiene } from './contextHygiene.js';
 import { buildFootprints, type SessionFootprint } from './footprint.js';
-import { installSkill, invocationHint, isSkillCurrent, SKILL_MARKDOWN, skillPath } from './skill.js';
+import { buildAnalysisPrompt, compactFindings, detectAgent, estimateTokens, runAgentAnalysis } from './agentRun.js';
+import { installSkill, invocationHint, isSkillCurrent, SKILL_MARKDOWN } from './skill.js';
 import {
   buildHygieneFootprints,
   refineAvoidableCarry,
@@ -63,6 +64,7 @@ interface Args {
   json: boolean;
   judge: boolean;
   open: boolean;
+  printPrompt: boolean;
   shareSessions: boolean;
   rows?: number;
   out?: string;
@@ -80,10 +82,11 @@ function ordinal(n: number): string {
 }
 
 function parseArgs(argv: string[]): Args {
-  const args: Args = { json: false, judge: false, open: false, shareSessions: false, aggressiveness: 'balanced' };
+  const args: Args = { json: false, judge: false, open: false, printPrompt: false, shareSessions: false, aggressiveness: 'balanced' };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]!;
     if (a === '--json') args.json = true;
+    else if (a === '--print-prompt') args.printPrompt = true;
     else if (a === '--judge') args.judge = true;
     else if (a === '--open') args.open = true;
     else if (a === '--share-sessions') args.shareSessions = true;
@@ -102,9 +105,12 @@ function parseArgs(argv: string[]): Args {
           '  cc-audit [--since-days N] [--root DIR] [--rows N] [--json] [--judge] [--open]\n' +
           '          [--share-sessions] [--aggressiveness conservative|balanced|aggressive]\n' +
           '      Analyze ~/.claude transcripts locally. In a terminal, a bare run then asks\n' +
-          '      two things: install the analysis skill (so your own agent writes three\n' +
-          '      improvement plans), and share your data to improve the tool. Both default\n' +
-          '      Yes; the sharing answer is asked once and never re-prompted.\n' +
+          '      two things: run the analysis now on YOUR agent (claude -p / codex exec —\n' +
+          '      three improvement plans printed here, plus the skill installed for next\n' +
+          '      time), and share your data to improve the tool. Both default Yes; the\n' +
+          '      sharing answer is asked once and never re-prompted.\n' +
+          '      --print-prompt shows the EXACT prompt that would go to your agent and\n' +
+          '          invokes nothing.\n' +
           '      The TOP SPENDERS leaderboard (with your prompt gists) is always LOCAL-only.\n' +
           '      --json prints the aggregate record; it never prompts, and transmits only\n' +
           '          if you already said yes to sharing (cc-audit capture --status).\n' +
@@ -306,35 +312,81 @@ function runScoreFluency(file: string): void {
   process.stdout.write(`${renderBandSummary(summarizeBands(rows))}\n`);
 }
 
-/** QUESTION 1 (default Yes) — install the analysis skill.
+/** QUESTION 1 (default Yes) — install the skill AND run the analysis now.
  *
- *  The skill text is embedded in this binary, so "install" is a local file write and
- *  nothing is fetched: no instruction supply chain, and it is readable before it ever
- *  runs. We deliberately do NOT shell out to their agent afterwards — the point of the
- *  skill path is that the analysis runs INSIDE a session where their repo is loaded, so
- *  the three plans are about the code they're actually writing. A cold shell-out would
- *  spend the same rate-limit window the report is diagnosing, on worse output. So we
- *  install and hand them the one line that runs it.
+ *  One yes does both, because they cover different moments and neither replaces the other:
  *
- *  Skipped silently when the installed skill is already current — a question with no
- *  action behind it is nagging, not consent. */
-async function offerSkill(interactive: boolean): Promise<void> {
-  if (!interactive || isSkillCurrent()) return;
-  p.log.message(
-    'The analysis skill lets your OWN agent read this report and write three ranked\n' +
-      'improvement plans, grounded in the repo you have open. It runs on your\n' +
-      'subscription — cc-audit never sends your sessions to a model of ours. The text\n' +
-      `is embedded in this CLI (nothing is downloaded) and readable at\n${skillPath()}.`,
-  );
-  const ok = await p.confirm({ message: 'Install the analysis skill and run it in your next session?', initialValue: true });
-  if (p.isCancel(ok) || ok !== true) return;
-  const r = installSkill();
-  if (r.status === 'failed') {
-    p.log.warn(r.message);
+ *  - The SHELL-OUT is the answer to "right now". It runs `claude -p` (or `codex exec`) on
+ *    a compacted summary and prints three plans in this terminal, this run. No session
+ *    restart, no memorized phrase. That is the whole first-run experience.
+ *  - The SKILL is the durable path and produces strictly better output, because it runs
+ *    inside a session with their repo loaded and can cite the actual line in the actual
+ *    CLAUDE.md. Installing it is a file write — zero friction, so it rides along free.
+ *
+ *  The cost is disclosed before we spend it. Invoking their agent consumes the same
+ *  rate-limit window this report exists to explain; a tool that silently eats the thing it
+ *  diagnoses has no business shipping. So the confirm states the agent, the token estimate,
+ *  and whose subscription pays.
+ *
+ *  Degradation is NAMED, never silent (see the spec's tiering requirement): no agent on
+ *  PATH, or an invocation that fails or times out, still leaves the deterministic report
+ *  above intact — we say what did not happen and hand back the skill invocation. A partial
+ *  run must never read as a complete one. */
+async function offerAnalysis(interactive: boolean, aggregate: Record<string, unknown>): Promise<void> {
+  if (!interactive) return;
+  const agent = detectAgent();
+  const skillPending = !isSkillCurrent();
+  if (!agent && !skillPending) return; // nothing to offer
+
+  if (!agent) {
+    // No agent to run right now — the skill is still worth installing for next session.
+    p.log.message(
+      'No `claude` or `codex` on your PATH, so the analysis can\'t run here. The skill\n' +
+        'still installs, and your agent can run it from inside any session.',
+    );
+    const ok = await p.confirm({ message: 'Install the analysis skill for next time?', initialValue: true });
+    if (p.isCancel(ok) || ok !== true) return;
+    const r = installSkill();
+    if (r.status === 'failed') p.log.warn(r.message);
+    else {
+      p.log.success(r.message);
+      p.log.message(invocationHint());
+    }
     return;
   }
-  p.log.success(r.message);
-  p.log.message(invocationHint());
+
+  const prompt = buildAnalysisPrompt(compactFindings(aggregate));
+  const tokens = estimateTokens(prompt);
+  p.log.message(
+    `Runs the analysis on YOUR ${agent.bin} subscription — cc-audit never sends your\n` +
+      'sessions to a model of ours. It also installs the skill so future sessions can\n' +
+      'coach you with your repo loaded (better output than this cold run).\n' +
+      '\n' +
+      `  • Costs about ${tokens.toLocaleString()} input tokens of your own rate-limit window —\n` +
+      '    the same window this report is about.\n' +
+      '  • Sends a compacted summary of the numbers above. No tools, no code, no repo.\n' +
+      '  • Inspect the exact prompt first with:  cc-audit --print-prompt',
+  );
+  const ok = await p.confirm({ message: `Run the analysis now with ${agent.bin} and install the skill?`, initialValue: true });
+  if (p.isCancel(ok) || ok !== true) return;
+
+  // The skill install is instant and local; do it first so a failed agent run still
+  // leaves them with the durable path.
+  const installed = installSkill();
+  if (installed.status === 'failed') p.log.warn(installed.message);
+
+  const run = await withSpinner(`Analyzing with ${agent.bin}`, () => runAgentAnalysis(agent, prompt));
+  if (!run.ok) {
+    // Named degradation: say what failed, and that the report above still stands.
+    p.log.warn(
+      `${run.error}.\nThe measured report above is complete and unaffected — only the ` +
+        `written plans are missing.\n\n${invocationHint()}`,
+    );
+    return;
+  }
+  process.stdout.write(`\n${run.text}\n`);
+  p.log.success(`Three plans, written by your own ${run.bin}.`);
+  if (installed.status !== 'failed') p.log.message(invocationHint());
 }
 
 /** QUESTION 2 (default Yes) — data sharing.
@@ -571,6 +623,16 @@ async function run(): Promise<void> {
   const captureGists = () => buildFootprints(sessions);
   const mayTransmit = !args.root;
 
+  // Inspectable instructions: print the EXACT prompt that would be sent to their agent
+  // and invoke nothing. Required by the spec, and it is the cheapest way for a
+  // security-minded developer to satisfy themselves before ever saying yes.
+  if (args.printPrompt) {
+    const prompt = buildAnalysisPrompt(compactFindings(result.aggregate as unknown as Record<string, unknown>));
+    process.stdout.write(`${prompt}\n`);
+    process.stderr.write(`\n(~${estimateTokens(prompt).toLocaleString()} input tokens. Nothing was sent.)\n`);
+    return;
+  }
+
   if (args.json) {
     process.stdout.write(`${JSON.stringify(result.aggregate, null, 2)}\n`);
     // The skill's own path is `cc-audit --json`, so this is the hot capture route.
@@ -612,7 +674,7 @@ async function run(): Promise<void> {
 
   // ── The two questions. Both default Yes; both sit below the whole report so the
   // developer has seen what the tool is worth before either is asked.
-  await offerSkill(interactive);
+  await offerAnalysis(interactive, result.aggregate as unknown as Record<string, unknown>);
   const gists = captureGists();
   const share = (await offerCapture(interactive, gists)) && mayTransmit;
   if (share) {

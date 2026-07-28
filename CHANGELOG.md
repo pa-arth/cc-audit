@@ -12,9 +12,9 @@ Notable changes to `@promptster/cc-audit`. GitHub Releases carry the same notes
   statusline, a public report — was five confirms deep and buried the two that matter.
   What's left, both default *Yes*, both below the whole report:
 
-  1. **Install the analysis skill** → `~/.claude/skills/cc-audit/SKILL.md`, so your own
-     agent reads `cc-audit --json` and writes three ranked improvement plans grounded in
-     the repo you have open.
+  1. **Run the analysis now** → three ranked improvement plans, written by your own
+     `claude`/`codex` and printed in the same terminal, plus the skill installed for
+     next time.
   2. **Share your data with Promptster** → the privacy-safe aggregate plus your task
      gists.
 
@@ -25,12 +25,36 @@ Notable changes to `@promptster/cc-audit`. GitHub Releases carry the same notes
 
 ### Added
 
-- **`cc-audit skill [--print]` — the analysis skill, embedded, not downloaded.** The skill
-  is an instruction set that runs in your repo with your agent's permissions, so it ships
-  inside the CLI rather than being fetched: it installs offline, is readable before it ever
-  runs, and there is no delivery path for one bad push to reach every install. `--print`
-  dumps the full text without writing anything. The model work runs on **your**
-  subscription — cc-audit never calls a hosted model to analyze your sessions.
+- **Three improvement plans, written by your own agent, in the same run.** Say yes and
+  cc-audit invokes `claude -p` (or `codex exec`, resolved deterministically in that order)
+  on a compacted summary and prints the plans right there. No session restart, no phrase to
+  remember. It runs on **your** subscription — cc-audit never calls a hosted model to
+  analyze your sessions.
+
+  Three things keep it honest, and they are the design, not garnish:
+  - **The window cost is disclosed before it's spent.** Invoking your agent consumes the
+    same rate-limit window this report exists to explain. The confirm names the agent,
+    whose subscription pays, and the token estimate.
+  - **The input is bounded and says so.** `compactFindings()` sends ~11KB (~3k tokens), not
+    the raw ~22KB record — and it declares its own truncation in-band, so the model says
+    "your top 8 commands of 12" rather than mistaking a subset for the whole picture.
+  - **Degradation is named.** No agent on PATH, a failed invocation, or a timeout leaves the
+    measured report above completely intact and states what didn't happen. A partial run
+    never reads as a complete one.
+
+  The prompt asks for no tools and carries its data inline, so the read-only posture is
+  structural rather than promised (`--allowed-tools ''` on claude, `-s read-only` on codex).
+  `cc-audit --print-prompt` renders the exact text that would be sent and invokes nothing.
+
+- **`cc-audit skill [--print]` — the analysis skill, embedded, not downloaded.** Installed
+  by the same yes. It is the *better* of the two paths — running inside a session with your
+  repo loaded lets it cite the actual line in your actual CLAUDE.md, which a cold shell-out
+  can't — it just isn't the one that works in the first ten seconds.
+
+  The skill is an instruction set that runs in your repo with your agent's permissions, so
+  it ships inside the CLI rather than being fetched: it installs offline, is readable before
+  it ever runs, and there is no delivery path for one bad push to reach every install.
+  `--print` dumps the full text without writing anything.
 
 - **`cc-audit capture [--on|--off|--status]` — disclosed data sharing.** Sends the
   privacy-safe aggregate plus your task gists (the prompt text you typed, with model/turn/

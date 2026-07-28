@@ -43,12 +43,26 @@ consent flow. Everything it calls is a pure-ish module:
 
 ### The bare interactive run asks exactly TWO questions
 Both default Yes, both at the very bottom, after the whole report:
-1. **Install the analysis skill** (`skill.ts`) — writes `~/.claude/skills/cc-audit/SKILL.md`.
-   The text is EMBEDDED in the binary and never fetched: it executes in the user's repo with
-   their agent's permissions, so a network delivery path would be an instruction supply chain.
-   Skipped silently when the installed copy is already current (`SKILL_VERSION`).
-   We deliberately do NOT shell out to their agent — the skill's value is running *inside* a
-   session where their repo is loaded, and a cold shell-out spends the very window we diagnose.
+1. **Run the analysis now, and install the skill** (`agentRun.ts` + `skill.ts`). One yes does
+   both because they cover different moments:
+   - **Shell-out** (`claude -p` / `codex exec`) answers "right now" — plans printed in the
+     same terminal, same run. This is the first-run experience; the skill path alone (install
+     → restart session → recall a phrase) is too much friction before any value lands.
+   - **Skill** is the durable path and produces *better* plans, because it runs inside a
+     session with their repo loaded and can cite the actual line in the actual CLAUDE.md.
+     Installing is a file write, so it rides along free.
+
+   Both instruction sets are EMBEDDED in the binary, never fetched — they execute with the
+   user's agent's permissions, so a network delivery path would be an instruction supply
+   chain. Posture is structural, not asserted: the data goes inline and no tools are granted
+   (`--allowed-tools ''` / `-s read-only`).
+
+   **Two rules the shell-out must keep.** (a) Disclose the window cost before spending it —
+   invoking their agent consumes the same rate-limit window the report explains. (b) Bound
+   the input: `compactFindings()` sends ~11KB, not the raw ~22KB record, and DECLARES its
+   truncation in-band so the model can't mistake a subset for everything. Degradation is
+   named — no agent, failure, or timeout leaves the deterministic report intact and says what
+   didn't happen. A partial run must never read as complete.
 2. **Share data** (`capture.ts`) — asked ONCE, persisted, **never re-prompted in either
    direction**. Re-asking someone who declined is what turns disclosed capture into a dark
    pattern; `ConsentState.capture` is tri-state (`undefined` = not yet asked) for exactly this.
