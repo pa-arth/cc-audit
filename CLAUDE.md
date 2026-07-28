@@ -41,8 +41,8 @@ consent flow. Everything it calls is a pure-ish module:
   (`cc-audit fix` reviewable patches). All hit backend HTTP endpoints behind `CC_AUDIT_API`.
 - **`index.ts`** — the importable library surface (CLI lives in `cli.ts`, not exported there).
 
-### The bare interactive run asks THREE questions
-All default Yes, all at the very bottom, after the whole report. **Order is load-bearing**:
+### The bare interactive run asks TWO questions
+Both default Yes, both at the very bottom, after the whole report. **Order is load-bearing**:
 the analysis runs first because its output is what makes the link worth creating, and the
 link's disclosure has to name what the analysis actually produced.
 1. **Run the analysis now, and install the skill** (`agentRun.ts` + `skill.ts`). One yes does
@@ -65,8 +65,22 @@ link's disclosure has to name what the analysis actually produced.
    truncation in-band so the model can't mistake a subset for everything. Degradation is
    named — no agent, failure, or timeout leaves the deterministic report intact and says what
    didn't happen. A partial run must never read as complete.
-2. **Shareable link** (`offerShareLink` + `advice.ts`) — the web report, carrying the agent's
-   written plans alongside the aggregate.
+2. **Shareable link + data sharing** (`offerShareLink` + `advice.ts` + `capture.ts`) — ONE
+   confirm with two effects: publish the web report (carrying the agent's written plans
+   alongside the aggregate) and switch on sharing with Promptster.
+
+   **Bundling only runs one way, and that direction is the argument.** The link is the
+   larger disclosure — a URL anyone can open beats sending the same numbers privately to us
+   — so someone who accepts the link is not surprised by the send. The reverse would be
+   indefensible. Consequently there is NO path that turns sharing on without
+   `captureDisclosure()` having printed first, and `--open` consents to the link ONLY
+   (nobody read the disclaimer on a flag).
+
+   **A No is not an opt-out.** Declining a public URL is a different decision from declining
+   to share, so a No writes nothing: it must not record `capture: false` and must not revoke
+   a previous Yes. Only `cc-audit capture --off` turns it off. `ConsentState.capture` stays
+   tri-state (`undefined` = never answered) — that is what keeps a No from being logged as
+   a decision it wasn't.
 
    **The advice is a HIGHER privacy tier than the aggregate and the copy must keep them
    separate.** The aggregate is shares and counts. The plans quote real dollar figures and
@@ -78,20 +92,19 @@ link's disclosure has to name what the analysis actually produced.
    `plans: null` when the shape is unfamiliar; `raw` is always populated. **Never make a
    render depend on the parse** — a strict parser's failure mode here is a blank report.
 
-3. **Share data** (`capture.ts`) — asked ONCE, persisted, **never re-prompted in either
-   direction**. Re-asking someone who declined is what turns disclosed capture into a dark
-   pattern; `ConsentState.capture` is tri-state (`undefined` = not yet asked) for exactly this.
-
-A fourth question needs a real argument. The ladder used to be five confirms and it was noise.
+A third question needs a real argument. The ladder was five confirms, then three, and each
+cut was because the extra prompt read as noise rather than as a choice.
 
 ### Consent tiers (see `consent.ts`)
 - **Tier 0** local read — sticky one-time ack, persisted to `~/.cc-audit/consent.json`.
 - **Tier 1** sharing — aggregate + task gists to `/v1/public/solo-capture`, keyed on the
-  install key. Sticky answer; `cc-audit capture --off/--on/--status`.
+  install key. Turned on by a *yes* to the second question or `cc-audit capture --on`;
+  turned off only by `cc-audit capture --off`. Sticky; a no to the question writes nothing.
 - **Tier 1** `--judge` — task gist + metadata to the hosted model, never code/paths. Flag-only.
 - **Tier 2** shareable link — aggregate + the agent's plans, to a URL anyone holding it can
   read. The second question, or `--open`. A reachable URL can't be un-published, so the
   disclosure runs on BOTH paths (the non-interactive `--open` receipt names the advice too).
+  `--open` grants Tier 2 only — it never escalates into Tier 1 sharing.
 
 **Source code and diffs never leave, under any flag.** There is no opt-in for it. That is the
 claim the product is written to — never "nothing leaves your machine", which capture makes false.

@@ -63,13 +63,13 @@ Prefer a single self-contained executable (no Node)? Grab a pre-built binary for
 ## Usage
 
 ```bash
-npx @promptster/cc-audit                 # local audit, then two questions (see below)
+npx @promptster/cc-audit                 # local audit, then the two questions (see below)
 npx @promptster/cc-audit --judge         # + hosted right-sizing analysis
 npx @promptster/cc-audit --open          # + shareable public web report
 npx @promptster/cc-audit --json          # machine-readable, pure stdout
 ```
 
-A bare run in a terminal ends with **three** questions, all default *Yes*:
+A bare run in a terminal ends with **two** questions, both default *Yes*:
 
 1. **Run the analysis now?** Invokes `claude -p` (or `codex exec`) on a compacted summary
    of the report and prints **three ranked improvement plans** right there — no session
@@ -78,15 +78,21 @@ A bare run in a terminal ends with **three** questions, all default *Yes*:
    loaded*, which produces better plans than this cold run can. Both paths run on **your**
    subscription; cc-audit never sends your sessions to a model of ours.
 2. **Create a shareable link?** Uploads the web report — including the three plans your
-   agent just wrote — to a URL you can send to anyone. ⚠️ Those plans quote your **real
-   dollar figures** and your command, subagent, and skill names; that is strictly more than
-   the privacy-safe metrics carry, and a published URL cannot be un-published. The prompt
-   says exactly this before you answer.
-3. **Share your data with Promptster?** See [What leaves your machine](#what-leaves-your-machine).
-   Asked once, persisted, and never re-prompted in either direction.
+   agent just wrote — to a URL you can send to anyone, **and switches on data sharing with
+   Promptster**. The full disclaimer for both prints immediately above the prompt, so you
+   read it before you answer. ⚠️ Those plans quote your **real dollar figures** and your
+   command, subagent, and skill names; that is strictly more than the privacy-safe metrics
+   carry, and a published URL cannot be un-published. See
+   [What leaves your machine](#what-leaves-your-machine).
 
 The order matters: the analysis runs first so the link has something worth sharing, and so
 the link's disclosure can name what the analysis actually produced.
+
+Saying **no** publishes nothing and leaves your sharing setting exactly as it was — it is
+not recorded as an opt-out, and it does not revoke a previous yes. Sharing is turned off
+only by `cc-audit capture --off`, which is permanent and survives upgrades. The `--open`
+flag consents to the *link only* and never flips the sharing setting, because nobody read
+the disclaimer on that path.
 
 Question 1 discloses its cost before spending it: invoking your agent consumes the same
 rate-limit window this report exists to explain, so the confirm states the agent, whose
@@ -131,12 +137,17 @@ leave, and only after you say so:
 | Tier | Trigger | What's sent |
 | --- | --- | --- |
 | **0** — local read | first run | Sticky one-time ack. Reads `~/.claude/projects`. Nothing leaves. |
-| **1** — sharing | the second question, or `cc-audit capture --on` | The privacy-safe *aggregate* (shares, counts, ratios — never raw `$`) **plus your task gists**: the prompt text you typed, with model/turn/tool counts. Never code, diffs, file paths, or repo names. Attributed to a random install key. |
+| **1** — sharing | *yes* to the second question, or `cc-audit capture --on` | The privacy-safe *aggregate* (shares, counts, ratios — never raw `$`) **plus your task gists**: the prompt text you typed, with model/turn/tool counts. Never code, diffs, file paths, or repo names. Attributed to a random install key. |
 | **1** — right-sizing | `--judge` | Each task's *gist + metadata* to the hosted model. Same exclusions. |
 | **2** — shareable link | the second question, or `--open` | The privacy-safe *aggregate* **plus the plans your agent wrote**, to a link anyone with the URL can open. The plans are a higher tier than the aggregate: they quote your real `$` figures and your command/subagent/skill names. Still never your source code. A published URL can't be un-published. |
 
-**On sharing specifically.** It is asked once, in the terminal, with the full list above shown
-*before* you answer — not behind a link. Say no and you are never asked again. Say yes and:
+Tiers 1-sharing and 2-link ride on the *same* yes. They are bundled in that direction only,
+because the link is the larger disclosure: publishing to a URL anyone can open is more
+exposure than sending the same numbers privately to us. There is no path that turns sharing
+on without the disclaimer above having been printed first.
+
+**On sharing specifically.** The full list above is shown in the terminal *before* you
+answer — not behind a link. Say yes and:
 
 - `cc-audit capture --off` stops it immediately and permanently, and survives upgrades.
 - `cc-audit capture --status` prints the install key your data is stored under, so you can

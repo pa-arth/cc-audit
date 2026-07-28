@@ -32,7 +32,14 @@ import { loadClaudeCodeSessions } from './adapters/claudeCode.js';
 import { computeAndWriteKneeCache } from './kneeCache.js';
 import { runStatusline } from './statusline.js';
 import { runAudit } from './audit.js';
-import { captureDisclosure, captureSetting, captureStatus, sendCapture, setCapture } from './capture.js';
+import {
+  applyShareLinkAnswer,
+  captureDisclosure,
+  captureSetting,
+  captureStatus,
+  sendCapture,
+  setCapture,
+} from './capture.js';
 import { readConsent, writeConsent } from './consent.js';
 import type { ContextHygiene } from './contextHygiene.js';
 import { buildFootprints, type SessionFootprint } from './footprint.js';
@@ -400,23 +407,36 @@ async function offerAnalysis(
   return parseAdvice(run.bin, run.text ?? '');
 }
 
-/** QUESTION 2 (default Yes) — the shareable web report.
+/** QUESTION 2 of 2 (default Yes) — the shareable web report, AND the data-sharing opt-in.
  *
- *  Default-Yes is a deliberate change from the old default-No, because this is now an
- *  explicit question with its contents spelled out immediately above it rather than a
- *  buried extra. If that reads as too loose, flipping `initialValue` here is the whole fix.
+ *  One question, two effects, both disclosed above the confirm. They are bundled because
+ *  the link is strictly the larger disclosure: it publishes the report to a URL anyone can
+ *  open, which is more exposure than sharing the same numbers privately with us. Someone
+ *  who accepts a public link is not being surprised by a private send. It does NOT work in
+ *  the other direction, which is why there is no path that turns sharing on without this
+ *  warning block having been printed first.
  *
- *  The disclosure has to name the advice separately from the aggregate, because they are
- *  NOT the same privacy tier. The aggregate is shares and counts. The advice quotes real
- *  dollar figures and real command/subagent names — strictly more. Rolling them into one
+ *  The disclosure names the advice separately from the aggregate, because they are NOT the
+ *  same privacy tier. The aggregate is shares and counts. The advice quotes real dollar
+ *  figures and real command/subagent names — strictly more. Rolling them into one
  *  reassuring sentence would be the kind of true-in-parts, false-overall copy this project
- *  exists to avoid. */
+ *  exists to avoid.
+ *
+ *  Consent asymmetry, deliberate:
+ *    • YES  → publish the link AND switch sharing on, persisted (sticky across runs).
+ *    • NO   → publish nothing, and leave the stored sharing setting UNTOUCHED. Declining
+ *             a public URL is not the same decision as declining to share, so a No here
+ *             must not be recorded as an opt-out, and must not revoke a previous Yes.
+ *             Only `cc-audit capture --off` turns sharing off.
+ *    • --open (flag) → the flag consents to the LINK only. It never flips the sharing
+ *             setting, because no human read this warning on that path. */
 async function offerShareLink(
   args: Args,
   interactive: boolean,
   advice: SharedAdvice | undefined,
+  gistCount: number,
 ): Promise<boolean> {
-  if (args.open) return true; // the flag is the consent
+  if (args.open) return true; // the flag is the consent — for the link, and only the link
   if (!interactive) return false;
   p.log.warn(
     'A shareable report uploads to a link ANYONE WITH THE URL can open:\n' +
@@ -428,31 +448,14 @@ async function offerShareLink(
           '    above carry. Read them again before you say yes.\n'
         : '') +
       '\n' +
-      'It cannot be un-published.',
+      'It cannot be un-published.\n' +
+      '\n' +
+      captureDisclosure(gistCount),
   );
   const ok = await p.confirm({ message: 'Create a shareable link?', initialValue: true });
-  return !p.isCancel(ok) && ok === true;
-}
-
-/** QUESTION 2 (default Yes) — data sharing.
- *
- *  Asked exactly ONCE and persisted. `captureSetting() !== undefined` means they have
- *  already answered, in either direction, and we never ask again — re-prompting someone
- *  who declined is the thing that makes disclosed capture indefensible. The disclosure
- *  states what is sent, what never is, retention, and the opt-out command BEFORE the
- *  confirm, in the terminal, not behind a link.
- *
- *  Returns whether to transmit on THIS run. */
-async function offerCapture(interactive: boolean, gists: SessionFootprint[]): Promise<boolean> {
-  const prior = captureSetting();
-  if (prior !== undefined) return prior; // answered before — honored, never re-asked
-  if (!interactive) return false; // a non-TTY run never opts anyone in by silence
-  p.log.message(captureDisclosure(gists.length));
-  const ok = await p.confirm({ message: 'Share this with Promptster so we can make the tool better?', initialValue: true });
-  const on = !p.isCancel(ok) && ok === true;
-  setCapture(on);
-  if (!on) p.log.message('Not shared. We will not ask again — turn it on later with: cc-audit capture --on');
-  return on;
+  const yes = !p.isCancel(ok) && ok === true;
+  applyShareLinkAnswer(yes); // only a yes writes — the asymmetry lives in capture.ts
+  return yes;
 }
 
 /** What a consented right-sizing run needs to execute later (the call is deferred so
@@ -726,12 +729,13 @@ async function run(): Promise<void> {
       else process.stderr.write(`${msg}\n`);
     }
   }
-  // ── The three questions, all default Yes, all below the whole report so the developer
-  // has seen what the tool is worth before any of them. Order is load-bearing: the
+  // ── The two questions, both default Yes, both below the whole report so the developer
+  // has seen what the tool is worth before either of them. Order is load-bearing: the
   // analysis must run first because its output is what makes the shareable link worth
   // creating, and the link's disclosure has to name what the analysis actually produced.
+  const gists = captureGists();
   const advice = await offerAnalysis(interactive, result.aggregate as unknown as Record<string, unknown>);
-  const wantLink = await offerShareLink(args, interactive, advice);
+  const wantLink = await offerShareLink(args, interactive, advice, gists.length);
   await maybeShare(
     args,
     interactive,
@@ -741,8 +745,10 @@ async function run(): Promise<void> {
     advice,
     judgeOut?.hygieneRefinement,
   );
-  const gists = captureGists();
-  const share = (await offerCapture(interactive, gists)) && mayTransmit;
+  // Sharing is not a third question: it rides on the answer above (or on a setting from a
+  // previous run / `cc-audit capture --on`). sendCapture re-checks this itself — the guard
+  // is duplicated here only to skip the spinner when there is nothing to send.
+  const share = captureSetting() === true && mayTransmit;
   if (share) {
     const sent = interactive ? await withSpinner('Sharing with Promptster', () => sendCapture(result.aggregate, gists)) : await sendCapture(result.aggregate, gists);
     // Only ever a note. A failed send is not the developer's problem and must not read

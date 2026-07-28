@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
+  applyShareLinkAnswer,
   buildCapturePayload,
   captureDisclosure,
   captureSetting,
@@ -131,6 +132,45 @@ describe('capture', () => {
     expect(status).toContain('curl -X DELETE https://example.invalid/v1/public/solo/data');
     expect(status).toContain('"installKey"');
     expect(status).not.toMatch(/email .*@/i);
+  });
+
+  describe('the shareable-link answer is the ONLY thing that turns sharing on', () => {
+    it('yes turns it on and persists it', () => {
+      applyShareLinkAnswer(true);
+      expect(captureSetting()).toBe(true);
+      expect(readConsent().captureAnsweredAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+    });
+
+    it('no does NOT record an opt-out — declining a public URL is a different decision', () => {
+      // If this wrote `capture: false`, the tri-state would be consumed and we could never
+      // ask again, having recorded a decision the developer did not make.
+      applyShareLinkAnswer(false);
+      expect(captureSetting()).toBeUndefined();
+    });
+
+    it('no does NOT revoke a previous yes', () => {
+      setCapture(true);
+      applyShareLinkAnswer(false);
+      expect(captureSetting()).toBe(true); // they still share; they just didn't want THIS link
+    });
+
+    it('no does not resurrect a previous opt-out either — off stays off', () => {
+      setCapture(false);
+      applyShareLinkAnswer(false);
+      expect(captureSetting()).toBe(false);
+    });
+  });
+
+  it('reads as the disclaimer half of the link question — it must carry itself', () => {
+    // There is no longer a confirm of its own beneath this text: sharing rides on the
+    // shareable-link answer. So the paragraph has to say, unprompted, that saying yes
+    // turns sharing ON and that it STAYS on. Copy that only describes what is sent — with
+    // no statement that a decision is being made — would leave the user opted in by a
+    // question they read as being about a URL.
+    const text = captureDisclosure(4);
+    expect(text).toMatch(/also switches on data sharing/i);
+    expect(text).toMatch(/stays on for future runs/i);
+    expect(text).toContain('cc-audit capture --off');
   });
 
   it('states the retention the backend actually performs (90d scrub), not an indefinite one', () => {

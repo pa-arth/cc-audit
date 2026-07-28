@@ -7,7 +7,7 @@ Notable changes to `@promptster/cc-audit`. GitHub Releases carry the same notes
 
 ### Changed
 
-- **The bare interactive run now asks two questions instead of four.** The old offer
+- **The bare interactive run now asks two questions instead of five.** The old offer
   ladder — local config edits, a hosted `CLAUDE.md` rewrite, right-sizing, a claude-hud
   statusline, a public report — was five confirms deep and buried the two that matter.
   What's left, both default *Yes*, both below the whole report:
@@ -15,12 +15,23 @@ Notable changes to `@promptster/cc-audit`. GitHub Releases carry the same notes
   1. **Run the analysis now** → three ranked improvement plans, written by your own
      `claude`/`codex` and printed in the same terminal, plus the skill installed for
      next time.
-  2. **Create a shareable link** → the web report, carrying those plans.
-  3. **Share your data with Promptster** → the privacy-safe aggregate plus your task
-     gists.
+  2. **Create a shareable link** → the web report carrying those plans, **and** data
+     sharing with Promptster switched on. One confirm, two effects, with the full
+     disclaimer for both printed immediately above it.
 
   Order is load-bearing: the analysis runs first so the link has something worth
   sharing, and so the link's disclosure can name what the analysis actually produced.
+
+  Sharing is bundled into the link question in one direction only, and that direction
+  is the argument: publishing to a URL anyone can open is a *larger* disclosure than
+  sending the same numbers privately to us, so someone who accepts the link is not
+  surprised by the send. There is no path that turns sharing on without the disclaimer
+  having printed first — `--open` consents to the link alone, because nobody read the
+  disclaimer on a flag.
+
+  **Answering no is not an opt-out.** It publishes nothing and leaves your sharing
+  setting exactly as it was: it does not record a decline, and it does not revoke a
+  previous yes. Sharing is turned off by `cc-audit capture --off` and by nothing else.
 
   The removed prompts did not remove the features: `--judge`, `--open`,
   `cc-audit fix`, and `cc-audit statusline --install` all still do exactly what they did.
@@ -84,9 +95,12 @@ Notable changes to `@promptster/cc-audit`. GitHub Releases carry the same notes
   flag, with no opt-in.** Attributed to a random install key, not your hostname or email.
 
   The controls are the point:
-  - Asked **once**, in the terminal, with the full list shown before you answer.
-  - Never re-prompted in either direction. Declining is permanent until *you* revisit it.
-  - `--off` is immediate, permanent, and survives upgrades.
+  - Switched on only by a *yes* to the shareable-link question — which prints this full
+    list immediately above it — or by an explicit `cc-audit capture --on`.
+  - Answering *no* to that question writes nothing at all: not a recorded decline, and
+    not a revocation of a previous yes.
+  - `--off` is immediate, permanent, and survives upgrades. It is the only thing that
+    turns sharing off.
   - `--status` prints the install key your data is stored under so you can request
     deletion against it, and prints the exact `curl` that performs it — no account,
     no email, effective immediately. Retention: de-identified after 90 days, or
