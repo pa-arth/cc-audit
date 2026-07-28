@@ -91,9 +91,18 @@ Notable changes to `@promptster/cc-audit`. GitHub Releases carry the same notes
   `--print` dumps the full text without writing anything.
 
 - **`cc-audit capture [--on|--off|--status]` — disclosed data sharing.** Sends the
-  privacy-safe aggregate plus your task gists (the prompt text you typed, with model/turn/
-  tool counts). **Never your source code, diffs, file paths, or repo names — under any
-  flag, with no opt-in.** Attributed to a random install key, not your hostname or email.
+  aggregate plus your task gists (the prompt text you typed, verbatim, 700 chars each,
+  with model/turn/tool counts). **We never read your source code, diffs, or file tree off
+  disk — under any flag, with no opt-in.** Attributed to a random install key, not your
+  hostname or email.
+
+  Note the shape of that claim, because the earlier wording overreached. It said "never
+  your source code, diffs, file paths, or repo names". The first two are enforced at
+  ingestion. The last two were not: a gist is your prompt *unedited*, and `footprint.ts`
+  applies no redaction, so a path or repo name you typed goes with it. Measured against a
+  real 30-day corpus: 3 of 25 gists contained a repo name the developer had typed
+  ("add CI to cc-audit"). 0 contained a file path or a code fence in that sample — but
+  nothing prevents one. The copy now says what is enforced and what is merely typical.
 
   The controls are the point:
   - Switched on only by a *yes* to the shareable-link question — which prints this full

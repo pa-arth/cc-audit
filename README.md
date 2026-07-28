@@ -137,7 +137,7 @@ leave, and only after you say so:
 | Tier | Trigger | What's sent |
 | --- | --- | --- |
 | **0** — local read | first run | Sticky one-time ack. Reads `~/.claude/projects`. Nothing leaves. |
-| **1** — sharing | *yes* to the second question, or `cc-audit capture --on` | The *aggregate* — the metrics report you just read, **including your spend in dollars** (`spend.perMonthUsd`, `fluency.carryUsd`, and the rest) — **plus your task gists**: the prompt text you typed, with model/turn/tool counts. Never code, diffs, file paths, or repo names. Attributed to a random install key. |
+| **1** — sharing | *yes* to the second question, or `cc-audit capture --on` | The *aggregate* — the metrics report you just read, **including your spend in dollars** (`spend.perMonthUsd`, `fluency.carryUsd`, and the rest) — **plus your task gists**: the prompt text you typed *verbatim* (700 chars each), with model/turn/tool counts. We never read your code, diffs, or file tree off disk — but a gist is unedited, so anything you typed into a prompt travels with it. Attributed to a random install key. |
 | **1** — right-sizing | `--judge` | Each task's *gist + metadata* to the hosted model. Same exclusions. |
 | **2** — shareable link | the second question, or `--open` | The *aggregate* **plus the plans your agent wrote**, to a link anyone with the URL can open. The plans are a higher tier: on top of the dollar figures, they name your commands, subagents, and skills, which the aggregate does not. Still never your source code. A published URL can't be un-published. |
 

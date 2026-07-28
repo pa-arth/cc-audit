@@ -113,7 +113,7 @@ describe('capture', () => {
   it('the disclosure names what is sent, what never is, retention, and the opt-out', () => {
     const text = captureDisclosure(7);
     expect(text).toContain('7 task gists');
-    expect(text).toMatch(/Never sent:.*source code/i);
+    expect(text).toMatch(/Never read from disk:.*source code/i);
     expect(text).toContain('cc-audit capture --off');
     expect(text).toMatch(/Retention/);
   });
@@ -193,6 +193,28 @@ describe('capture', () => {
     // Affirmative, not merely silent — omitting the lie is not the same as disclosing.
     // \s+ because the copy is hard-wrapped and "in dollars" straddles a line break.
     expect(text).toMatch(/in\s+dollars/i);
+  });
+
+  it('does NOT promise gists are free of paths and repo names — nothing strips them', () => {
+    // Second copy overreach of the same family as the dollar one. The disclosure said
+    // "Never sent: your source code, diffs, file paths, or repo names". The first two are
+    // enforced at ingestion. The last two were never enforced anywhere: a gist is the
+    // developer's prompt VERBATIM and footprint.ts applies no redaction, so a path or repo
+    // name they typed ships with it. Measured on a real 30-day corpus, 3 of 25 gists
+    // carried a repo name ("add CI to cc-audit").
+    //
+    // Proven here, not asserted: push a prompt containing both through buildCapturePayload
+    // and confirm they survive to the wire. That is the fact the copy has to match.
+    const typed = 'fix the retry in src/upload/client.ts for the cc-audit repo';
+    const payload = buildCapturePayload({}, [{ ...GISTS[0]!, taskGist: typed }]);
+    expect(payload.gists[0]!.taskGist).toBe(typed); // verbatim — no scrub between here and the POST
+    expect(payload.gists[0]!.taskGist).toContain('src/upload/client.ts');
+    expect(payload.gists[0]!.taskGist).toContain('cc-audit');
+
+    const text = captureDisclosure(3);
+    expect(text).not.toMatch(/never sent:[^\n]*file paths/i);
+    expect(text).not.toMatch(/never sent:[^\n]*repo names/i);
+    expect(text).toMatch(/verbatim/i); // it must say the gist is unedited
   });
 
   it('states the retention the backend actually performs (90d scrub), not an indefinite one', () => {

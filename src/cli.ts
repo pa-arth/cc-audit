@@ -137,9 +137,11 @@ function parseArgs(argv: string[]): Args {
           '      agent can read `cc-audit --json` and write three improvement plans. The text\n' +
           '      is embedded in this binary — nothing is downloaded. --print shows it instead.\n' +
           '  cc-audit capture [--on|--off|--status]\n' +
-          '      Data sharing with Promptster: privacy-safe metrics + your task gists (the\n' +
-          '      prompts you typed) — never your code, diffs, paths, or repo names, under any\n' +
-          '      flag. --off is immediate, permanent, and survives upgrades. Bare = --status.\n' +
+          '      Data sharing with Promptster: your metrics report + your task gists (the\n' +
+          '      prompts you typed, verbatim). We never read your code, diffs, or file tree\n' +
+          '      off disk, under any flag — but a gist is what YOU typed, unedited, so a path\n' +
+          '      or repo name you put in a prompt goes with it.\n' +
+          '      --off is immediate, permanent, and survives upgrades. Bare = --status.\n' +
           '  cc-audit label [--n 50] [--out labels.json] [--since-days N] [--root DIR]\n' +
           '      Judge real sessions and write a sheet to hand-label (set trueMinTier per row).\n' +
           '  cc-audit score <labels.json>\n' +
