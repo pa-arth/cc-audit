@@ -36,6 +36,7 @@ import { captureDisclosure, captureSetting, captureStatus, sendCapture, setCaptu
 import { readConsent, writeConsent } from './consent.js';
 import type { ContextHygiene } from './contextHygiene.js';
 import { buildFootprints, type SessionFootprint } from './footprint.js';
+import { parseAdvice, type SharedAdvice } from './advice.js';
 import { buildAnalysisPrompt, compactFindings, detectAgent, estimateTokens, runAgentAnalysis } from './agentRun.js';
 import { installSkill, invocationHint, isSkillCurrent, SKILL_MARKDOWN } from './skill.js';
 import {
@@ -105,10 +106,11 @@ function parseArgs(argv: string[]): Args {
           '  cc-audit [--since-days N] [--root DIR] [--rows N] [--json] [--judge] [--open]\n' +
           '          [--share-sessions] [--aggressiveness conservative|balanced|aggressive]\n' +
           '      Analyze ~/.claude transcripts locally. In a terminal, a bare run then asks\n' +
-          '      two things: run the analysis now on YOUR agent (claude -p / codex exec —\n' +
-          '      three improvement plans printed here, plus the skill installed for next\n' +
-          '      time), and share your data to improve the tool. Both default Yes; the\n' +
-          '      sharing answer is asked once and never re-prompted.\n' +
+          '      three things, all default Yes:\n' +
+          '        1. Run the analysis now on YOUR agent (claude -p / codex exec) — three\n' +
+          '           improvement plans printed here, plus the skill installed for next time.\n' +
+          '        2. Create a shareable link — the web report, INCLUDING those plans.\n' +
+          '        3. Share your data with Promptster (asked once, never re-prompted).\n' +
           '      --print-prompt shows the EXACT prompt that would go to your agent and\n' +
           '          invokes nothing.\n' +
           '      The TOP SPENDERS leaderboard (with your prompt gists) is always LOCAL-only.\n' +
@@ -116,6 +118,9 @@ function parseArgs(argv: string[]): Args {
           '          if you already said yes to sharing (cc-audit capture --status).\n' +
           '      --judge calls the hosted right-sizing model (task gist + metadata, never code).\n' +
           '      --open uploads the privacy-safe aggregate and opens a shareable web report.\n' +
+          '          When the analysis ran, the report also carries its written plans, which\n' +
+          '          quote your REAL dollar figures and command names — more than the\n' +
+          '          aggregate alone. Anyone with the URL can read it.\n' +
           '      --share-sessions adds an ANONYMIZED leaderboard (cost share, turns, model,\n' +
           '          plan-mode, trajectory — never gists, projects, or $) to the shared report.\n' +
           '      --judge/--open are never prompted for — the flag IS the consent.\n' +
@@ -332,11 +337,14 @@ function runScoreFluency(file: string): void {
  *  PATH, or an invocation that fails or times out, still leaves the deterministic report
  *  above intact — we say what did not happen and hand back the skill invocation. A partial
  *  run must never read as a complete one. */
-async function offerAnalysis(interactive: boolean, aggregate: Record<string, unknown>): Promise<void> {
-  if (!interactive) return;
+async function offerAnalysis(
+  interactive: boolean,
+  aggregate: Record<string, unknown>,
+): Promise<SharedAdvice | undefined> {
+  if (!interactive) return undefined;
   const agent = detectAgent();
   const skillPending = !isSkillCurrent();
-  if (!agent && !skillPending) return; // nothing to offer
+  if (!agent && !skillPending) return undefined; // nothing to offer
 
   if (!agent) {
     // No agent to run right now — the skill is still worth installing for next session.
@@ -345,14 +353,14 @@ async function offerAnalysis(interactive: boolean, aggregate: Record<string, unk
         'still installs, and your agent can run it from inside any session.',
     );
     const ok = await p.confirm({ message: 'Install the analysis skill for next time?', initialValue: true });
-    if (p.isCancel(ok) || ok !== true) return;
+    if (p.isCancel(ok) || ok !== true) return undefined;
     const r = installSkill();
     if (r.status === 'failed') p.log.warn(r.message);
     else {
       p.log.success(r.message);
       p.log.message(invocationHint());
     }
-    return;
+    return undefined;
   }
 
   const prompt = buildAnalysisPrompt(compactFindings(aggregate));
@@ -368,7 +376,7 @@ async function offerAnalysis(interactive: boolean, aggregate: Record<string, unk
       '  • Inspect the exact prompt first with:  cc-audit --print-prompt',
   );
   const ok = await p.confirm({ message: `Run the analysis now with ${agent.bin} and install the skill?`, initialValue: true });
-  if (p.isCancel(ok) || ok !== true) return;
+  if (p.isCancel(ok) || ok !== true) return undefined;
 
   // The skill install is instant and local; do it first so a failed agent run still
   // leaves them with the durable path.
@@ -382,11 +390,48 @@ async function offerAnalysis(interactive: boolean, aggregate: Record<string, unk
       `${run.error}.\nThe measured report above is complete and unaffected — only the ` +
         `written plans are missing.\n\n${invocationHint()}`,
     );
-    return;
+    return undefined;
   }
   process.stdout.write(`\n${run.text}\n`);
   p.log.success(`Three plans, written by your own ${run.bin}.`);
   if (installed.status !== 'failed') p.log.message(invocationHint());
+  // Returned so the shareable link can carry it. The parse is best-effort; `raw` always
+  // survives, so a render never depends on the model having followed our format.
+  return parseAdvice(run.bin, run.text ?? '');
+}
+
+/** QUESTION 2 (default Yes) — the shareable web report.
+ *
+ *  Default-Yes is a deliberate change from the old default-No, because this is now an
+ *  explicit question with its contents spelled out immediately above it rather than a
+ *  buried extra. If that reads as too loose, flipping `initialValue` here is the whole fix.
+ *
+ *  The disclosure has to name the advice separately from the aggregate, because they are
+ *  NOT the same privacy tier. The aggregate is shares and counts. The advice quotes real
+ *  dollar figures and real command/subagent names — strictly more. Rolling them into one
+ *  reassuring sentence would be the kind of true-in-parts, false-overall copy this project
+ *  exists to avoid. */
+async function offerShareLink(
+  args: Args,
+  interactive: boolean,
+  advice: SharedAdvice | undefined,
+): Promise<boolean> {
+  if (args.open) return true; // the flag is the consent
+  if (!interactive) return false;
+  p.log.warn(
+    'A shareable report uploads to a link ANYONE WITH THE URL can open:\n' +
+      '\n' +
+      '  • The privacy-safe metrics (shares, counts, ratios — no raw $, no code).\n' +
+      (advice
+        ? `  • The three plans your ${advice.agent} just wrote. These quote your REAL dollar\n` +
+          '    figures and your command, subagent, and skill names — more than the metrics\n' +
+          '    above carry. Read them again before you say yes.\n'
+        : '') +
+      '\n' +
+      'It cannot be un-published.',
+  );
+  const ok = await p.confirm({ message: 'Create a shareable link?', initialValue: true });
+  return !p.isCancel(ok) && ok === true;
 }
 
 /** QUESTION 2 (default Yes) — data sharing.
@@ -474,23 +519,34 @@ function renderJudgeOutput(
   return { result: judged, hygieneRefinement };
 }
 
-/** Tier 2 — public shareable report. FLAG-ONLY: `--open` is the consent. Publishing is
- *  deliberately never one of the bare run's questions — a reachable URL cannot be
- *  un-published, and prompt context carries credentials and employers' material, so it
- *  stays an act the developer has to reach for by name. */
+/** Tier 2 — the shareable web report. Consent is either the `--open` flag or the
+ *  interactive question (see offerShareLink); this function only performs an
+ *  already-granted one. */
 async function maybeShare(
   args: Args,
   interactive: boolean,
+  want: boolean,
   aggregate: unknown,
   rightSizing: unknown,
+  advice?: SharedAdvice,
   hygieneRefinement?: HygieneRefinementUpload,
 ): Promise<void> {
-  if (!args.open) return;
-  const notice = 'Uploading your aggregate metrics — no code, prompts, or paths — to create a PUBLIC shareable link…';
-  if (interactive) p.log.warn(notice);
-  else process.stderr.write(`${notice}\n`);
+  if (!want) return;
+  if (args.open && !interactive) {
+    // Non-interactive --open: the flag is the consent, so this receipt is the only
+    // disclosure that runs. It must name the advice, which carries raw $ and command names.
+    process.stderr.write(
+      'Uploading your aggregate metrics — no code, prompts, or paths — to create a PUBLIC ' +
+        'shareable link…' +
+        (advice
+          ? `\nIncluding the plans your ${advice.agent} wrote, which quote your real dollar ` +
+            'figures and command names.'
+          : '') +
+        '\n',
+    );
+  }
   try {
-    const post = () => postReport({ aggregate, rightSizing, hygieneRefinement, anonId: machineAnonId() });
+    const post = () => postReport({ aggregate, rightSizing, hygieneRefinement, advice, anonId: machineAnonId() });
     const { url, benchmark, fluency } = interactive ? await withSpinner('Creating shareable report', post) : await post();
     // The gated readout rides on the --open response (no extra egress): a calibrated
     // BAND always, the cohort percentile once the corpus is large enough, plus the
@@ -670,11 +726,21 @@ async function run(): Promise<void> {
       else process.stderr.write(`${msg}\n`);
     }
   }
-  await maybeShare(args, interactive, result.aggregate, judgeOut?.result.summary, judgeOut?.hygieneRefinement);
-
-  // ── The two questions. Both default Yes; both sit below the whole report so the
-  // developer has seen what the tool is worth before either is asked.
-  await offerAnalysis(interactive, result.aggregate as unknown as Record<string, unknown>);
+  // ── The three questions, all default Yes, all below the whole report so the developer
+  // has seen what the tool is worth before any of them. Order is load-bearing: the
+  // analysis must run first because its output is what makes the shareable link worth
+  // creating, and the link's disclosure has to name what the analysis actually produced.
+  const advice = await offerAnalysis(interactive, result.aggregate as unknown as Record<string, unknown>);
+  const wantLink = await offerShareLink(args, interactive, advice);
+  await maybeShare(
+    args,
+    interactive,
+    wantLink,
+    result.aggregate,
+    judgeOut?.result.summary,
+    advice,
+    judgeOut?.hygieneRefinement,
+  );
   const gists = captureGists();
   const share = (await offerCapture(interactive, gists)) && mayTransmit;
   if (share) {

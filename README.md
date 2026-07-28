@@ -69,7 +69,7 @@ npx @promptster/cc-audit --open          # + shareable public web report
 npx @promptster/cc-audit --json          # machine-readable, pure stdout
 ```
 
-A bare run in a terminal ends with exactly **two** questions, both default *Yes*:
+A bare run in a terminal ends with **three** questions, all default *Yes*:
 
 1. **Run the analysis now?** Invokes `claude -p` (or `codex exec`) on a compacted summary
    of the report and prints **three ranked improvement plans** right there — no session
@@ -77,8 +77,16 @@ A bare run in a terminal ends with exactly **two** questions, both default *Yes*
    `~/.claude/skills/cc-audit/SKILL.md`, so future sessions can coach you *with your repo
    loaded*, which produces better plans than this cold run can. Both paths run on **your**
    subscription; cc-audit never sends your sessions to a model of ours.
-2. **Share your data with Promptster?** See [What leaves your machine](#what-leaves-your-machine).
+2. **Create a shareable link?** Uploads the web report — including the three plans your
+   agent just wrote — to a URL you can send to anyone. ⚠️ Those plans quote your **real
+   dollar figures** and your command, subagent, and skill names; that is strictly more than
+   the privacy-safe metrics carry, and a published URL cannot be un-published. The prompt
+   says exactly this before you answer.
+3. **Share your data with Promptster?** See [What leaves your machine](#what-leaves-your-machine).
    Asked once, persisted, and never re-prompted in either direction.
+
+The order matters: the analysis runs first so the link has something worth sharing, and so
+the link's disclosure can name what the analysis actually produced.
 
 Question 1 discloses its cost before spending it: invoking your agent consumes the same
 rate-limit window this report exists to explain, so the confirm states the agent, whose
@@ -125,7 +133,7 @@ leave, and only after you say so:
 | **0** — local read | first run | Sticky one-time ack. Reads `~/.claude/projects`. Nothing leaves. |
 | **1** — sharing | the second question, or `cc-audit capture --on` | The privacy-safe *aggregate* (shares, counts, ratios — never raw `$`) **plus your task gists**: the prompt text you typed, with model/turn/tool counts. Never code, diffs, file paths, or repo names. Attributed to a random install key. |
 | **1** — right-sizing | `--judge` | Each task's *gist + metadata* to the hosted model. Same exclusions. |
-| **2** — public report | `--open` | The privacy-safe *aggregate* to a **public** link. Never one of the two questions — a reachable URL can't be un-published, so you have to ask for it by name. |
+| **2** — shareable link | the second question, or `--open` | The privacy-safe *aggregate* **plus the plans your agent wrote**, to a link anyone with the URL can open. The plans are a higher tier than the aggregate: they quote your real `$` figures and your command/subagent/skill names. Still never your source code. A published URL can't be un-published. |
 
 **On sharing specifically.** It is asked once, in the terminal, with the full list above shown
 *before* you answer — not behind a link. Say no and you are never asked again. Say yes and:
@@ -155,8 +163,8 @@ a separate tier that only fires on an explicit flag or an answer you gave:
                                                           │
                                             consent-gated ▼
                             you said yes ─▶ sharing      aggregate + task gists ─▶ Promptster
+                            you said yes ─▶ share link   aggregate + agent plans ─▶ web report
                             --judge      ─▶ right-sizing task gists + metadata  ─▶ hosted model
-                            --open       ─▶ public report privacy-safe aggregate ─▶ public link
 
                     ┌─── LOCAL · your agent, your subscription, your window ───────────────┐
                     │  now:   claude -p / codex exec  ◀─ compacted summary (~3k tok)       │

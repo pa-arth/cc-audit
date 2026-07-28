@@ -140,7 +140,16 @@ export interface PostReportResult {
  * per-task verdicts/gists) to the report store, returning a shareable id + url.
  */
 export async function postReport(
-  body: { aggregate: unknown; rightSizing?: unknown; hygieneRefinement?: unknown; anonId?: string },
+  // `advice` is the agent's written plans (see advice.ts). It carries the developer's REAL
+  // dollar figures and command names — more than the privacy-safe aggregate — so it rides
+  // only on the explicit shareable-link consent, and is simply absent when they declined.
+  body: {
+    aggregate: unknown;
+    rightSizing?: unknown;
+    hygieneRefinement?: unknown;
+    advice?: unknown;
+    anonId?: string;
+  },
   apiBase: string = process.env.CC_AUDIT_API ?? DEFAULT_API,
 ): Promise<PostReportResult> {
   // SINGLE attempt: creating a report is a non-idempotent write. Retrying after a

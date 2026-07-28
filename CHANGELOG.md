@@ -15,8 +15,12 @@ Notable changes to `@promptster/cc-audit`. GitHub Releases carry the same notes
   1. **Run the analysis now** → three ranked improvement plans, written by your own
      `claude`/`codex` and printed in the same terminal, plus the skill installed for
      next time.
-  2. **Share your data with Promptster** → the privacy-safe aggregate plus your task
+  2. **Create a shareable link** → the web report, carrying those plans.
+  3. **Share your data with Promptster** → the privacy-safe aggregate plus your task
      gists.
+
+  Order is load-bearing: the analysis runs first so the link has something worth
+  sharing, and so the link's disclosure can name what the analysis actually produced.
 
   The removed prompts did not remove the features: `--judge`, `--open`,
   `cc-audit fix`, and `cc-audit statusline --install` all still do exactly what they did.
@@ -45,6 +49,24 @@ Notable changes to `@promptster/cc-audit`. GitHub Releases carry the same notes
   The prompt asks for no tools and carries its data inline, so the read-only posture is
   structural rather than promised (`--allowed-tools ''` on claude, `-s read-only` on codex).
   `cc-audit --print-prompt` renders the exact text that would be sent and invokes nothing.
+
+- **The shareable web report now carries the agent's written plans.** The link is a real
+  question again (it had been demoted to flag-only), and it renders the coaching, not just
+  the metrics.
+
+  **This raises what the link exposes, and the disclosure says so rather than glossing it.**
+  The privacy-safe aggregate is shares and counts with no raw dollars. The plans quote your
+  *actual* dollar figures and your command, subagent, and skill names — which is precisely
+  what makes them worth reading. Those are two different privacy tiers and the prompt lists
+  them as two bullets, because one reassuring sentence covering both would be true in parts
+  and false overall. Source code still never leaves, here as everywhere.
+
+  The plans are free-form model output, so `advice.ts` treats structure as a bonus:
+  `parseAdvice()` splits them into `{n, title, body}` plus the closing line when the shape
+  is recognizable, and returns `plans: null` when it isn't. The verbatim `raw` text is
+  *always* present, so a renderer is correct either way. A strict parser's failure mode here
+  would be a blank report card, which is worse than an unstyled one. Parser is tested
+  against the verbatim output of a real `claude -p` run, not an idealized fixture.
 
 - **`cc-audit skill [--print]` — the analysis skill, embedded, not downloaded.** Installed
   by the same yes. It is the *better* of the two paths — running inside a session with your
