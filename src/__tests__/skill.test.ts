@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
@@ -59,6 +59,40 @@ describe('analysis skill', () => {
     writeFileSync(skillPath(), 'some hand-written skill with no marker\n');
     expect(installedSkillVersion()).toBeNull();
     expect(isSkillCurrent()).toBe(false);
+  });
+
+  it('BACKS UP a hand-written skill instead of destroying it', () => {
+    const mine = '# my own cc-audit skill\ndo it my way\n';
+    mkdirSync(skillDir(), { recursive: true });
+    writeFileSync(skillPath(), mine);
+
+    const r = installSkill();
+    expect(r.status).toBe('replaced-foreign');
+    expect(r.backupPath).toBe(`${skillPath()}.bak`);
+    expect(readFileSync(r.backupPath!, 'utf8')).toBe(mine); // their work survives verbatim
+    expect(readFileSync(skillPath(), 'utf8')).toBe(SKILL_MARKDOWN);
+    expect(r.message).toContain('preserved at');
+  });
+
+  it('does not back up when the existing file is OURS — no .bak litter on every upgrade', () => {
+    mkdirSync(skillDir(), { recursive: true });
+    writeFileSync(skillPath(), '<!-- cc-audit-skill-version: 0 -->\nour older text\n');
+    const r = installSkill();
+    expect(r.status).toBe('updated');
+    expect(r.backupPath).toBeUndefined();
+    expect(existsSync(`${skillPath()}.bak`)).toBe(false);
+  });
+
+  it('describes the --json command truthfully — it writes and may transmit', () => {
+    // Regression: the skill used to tell the agent this command "makes no network call,
+    // and writes nothing". writeSnapshot() writes, and sendCapture() transmits once the
+    // developer has opted in. A false privacy claim injected into an agent's context is
+    // worse than no claim, because the agent repeats it to the user as fact.
+    expect(SKILL_MARKDOWN).not.toContain('makes no network call');
+    expect(SKILL_MARKDOWN).not.toContain('writes nothing');
+    expect(SKILL_MARKDOWN).toContain('~/.cc-audit/');
+    expect(SKILL_MARKDOWN).toContain('cc-audit capture --status');
+    expect(SKILL_MARKDOWN).toMatch(/Transmits.*only if they previously turned on data sharing/s);
   });
 
   it('ships complete text — readable with no network, which is the whole reason it is embedded', () => {

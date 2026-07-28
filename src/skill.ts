@@ -11,12 +11,12 @@
 // Compute stays on THEIR subscription: this file writes a markdown file, nothing more.
 // cc-audit never calls a hosted model to produce this analysis.
 
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { copyFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
 /** Bump when SKILL_MARKDOWN changes so an existing install is refreshed, not skipped. */
-export const SKILL_VERSION = 1;
+export const SKILL_VERSION = 2;
 
 const VERSION_MARKER = 'cc-audit-skill-version:';
 
@@ -41,9 +41,19 @@ and the code they were written about.
 cc-audit --json --since-days 30
 \`\`\`
 
-That prints one JSON object and exits. It is strictly local — it reads
-\`~/.claude/projects\`, makes no network call, and writes nothing. If the command is not
-found, tell them to run \`npx @promptster/cc-audit\` and stop; do not guess at numbers.
+That prints one JSON object and exits. What it does, stated exactly — do not paraphrase
+this to the developer more reassuringly than it reads:
+
+- **Reads** \`~/.claude/projects\` (their transcripts).
+- **Writes** a small run-history snapshot under \`~/.cc-audit/\`, so the next run can show
+  deltas. Nothing else on disk.
+- **Transmits** only if they previously turned on data sharing. If they did, this command
+  also sends the privacy-safe aggregate plus their task gists. \`cc-audit capture --status\`
+  says which, and \`cc-audit capture --off\` stops it.
+- **Never** reads or transmits source code or diffs, under any flag.
+
+If the command is not found, tell them to run \`npx @promptster/cc-audit\` and stop; do not
+guess at numbers.
 
 Run it once. Do not re-run it per finding.
 
@@ -168,21 +178,63 @@ export function isSkillCurrent(): boolean {
   return installedSkillVersion() === SKILL_VERSION;
 }
 
-export type SkillInstallStatus = 'installed' | 'updated' | 'current' | 'failed';
+export type SkillInstallStatus = 'installed' | 'updated' | 'current' | 'replaced-foreign' | 'failed';
 
 export interface SkillInstallResult {
   status: SkillInstallStatus;
   path: string;
   message: string;
+  /** Where the pre-existing file was preserved, when we found one that wasn't ours. */
+  backupPath?: string;
 }
 
-/** Write the skill to ~/.claude/skills/cc-audit/SKILL.md. Idempotent; never throws. */
+/** Is there a file here already? Distinguishes "nothing installed" from "something we
+ *  didn't write" — both report a null version, but only one of them is destructible. */
+function skillFileExists(): boolean {
+  try {
+    readFileSync(skillPath(), 'utf8');
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Write the skill to ~/.claude/skills/cc-audit/SKILL.md. Idempotent; never throws.
+ *
+ * A file already at that path with NO version marker is not ours — a hand-written skill,
+ * or a pre-versioning install. We back it up to `SKILL.md.bak` before writing and say so,
+ * rather than silently destroying work someone did. This mirrors statuslineInstall.ts,
+ * which backs settings.json up before patching and never clobbers a foreign value.
+ * (An older version of OUR marker is just ours, and gets overwritten with no fuss.)
+ */
 export function installSkill(): SkillInstallResult {
   const path = skillPath();
   const prior = installedSkillVersion();
   if (prior === SKILL_VERSION) {
     return { status: 'current', path, message: `Analysis skill already installed at ${path}` };
   }
+
+  // null version + a file present ⇒ foreign content. Preserve it.
+  const foreign = prior === null && skillFileExists();
+  let backupPath: string | undefined;
+  if (foreign) {
+    backupPath = `${path}.bak`;
+    try {
+      copyFileSync(path, backupPath);
+    } catch (err) {
+      // Could not preserve it ⇒ do NOT overwrite. Losing their file is worse than
+      // this run not installing the skill.
+      return {
+        status: 'failed',
+        path,
+        message:
+          `${path} already exists and isn't ours, and it could not be backed up ` +
+          `(${err instanceof Error ? err.message : String(err)}). Left it untouched.`,
+      };
+    }
+  }
+
   try {
     mkdirSync(skillDir(), { recursive: true });
     writeFileSync(path, SKILL_MARKDOWN);
@@ -191,6 +243,15 @@ export function installSkill(): SkillInstallResult {
       status: 'failed',
       path,
       message: `Could not write the analysis skill to ${path}: ${err instanceof Error ? err.message : String(err)}`,
+    };
+  }
+
+  if (foreign) {
+    return {
+      status: 'replaced-foreign',
+      path,
+      backupPath,
+      message: `Analysis skill installed at ${path}\n  Your previous SKILL.md was not ours — preserved at ${backupPath}`,
     };
   }
   return {
