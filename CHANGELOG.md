@@ -3,7 +3,22 @@
 Notable changes to `@promptster/cc-audit`. GitHub Releases carry the same notes
 (the publish workflow attaches binaries per `v*` tag — see MAINTAINING.md).
 
-## Unreleased
+## 0.6.0 — 2026-07-28
+
+> **Known gaps at the moment of this release**, stated here rather than discovered later.
+> Both are server-side; the local half of the tool is unaffected.
+>
+> - **The shareable link renders the metrics but not yet the agent's plans.** The CLI
+>   uploads them and the second question's disclosure names them, so until the receiving
+>   end ships, that page shows less than the prompt said it would. It shows nothing it
+>   said it wouldn't — the gap is under-delivery, not over-exposure.
+> - **Data sharing transmits nothing yet.** The ingest endpoint is not deployed, so
+>   `sendCapture()` gets a 404 and returns false silently, by design (a failed send must
+>   never break a local run). Opting in today is recorded locally and starts having an
+>   effect when the endpoint lands. Nothing is queued or retried from disk.
+>
+> Everything that runs locally — parse, attribute, report, the agent analysis, the skill
+> install — is complete and unaffected by both.
 
 ### Changed
 
