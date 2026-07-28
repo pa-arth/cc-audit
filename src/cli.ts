@@ -1,15 +1,25 @@
 #!/usr/bin/env node
 // cc-audit — point it at your Claude Code transcripts and see where the money
-// and the bad habits are. Local-only by default (no network, no key): parse +
-// attribute + report. A bare interactive run then walks the value ladder —
-// local config edits (the headline lever), hosted right-sizing, then a shareable
-// report — each behind a consent gate proportional to what leaves the machine
-// (see consent.ts). `--json` and any non-TTY run stay strictly non-interactive:
-// only explicit --judge/--open send anything, so CI and the audit skills are
-// unaffected.
+// and the bad habits are. The analysis is local (no network, no key): parse +
+// attribute + report. A bare interactive run then asks exactly TWO questions,
+// both default-Yes:
+//
+//   1. Install the analysis skill — writes ~/.claude/skills/cc-audit/SKILL.md so
+//      the developer's OWN agent turns `cc-audit --json` into three improvement
+//      plans. The skill text is embedded in this binary (see skill.ts); nothing
+//      is fetched, and the model work runs on their subscription, not ours.
+//   2. Share data with Promptster — the privacy-safe aggregate + the task gists
+//      --judge already sends. Asked ONCE, persisted, never re-prompted (see
+//      capture.ts / consent.ts). Never source code or paths, under any flag.
+//
+// `--json` and any non-TTY run stay strictly non-interactive: they never prompt,
+// and only an explicit --judge/--open (or a previously-consented capture) sends
+// anything — so CI and the audit skills are unaffected.
 //
 // Subcommands:
-//   cc-audit                  full local report, then config edits + right-size + share
+//   cc-audit                  full local report, then the two questions
+//   cc-audit skill            install (or print) the analysis skill
+//   cc-audit capture          --on / --off / --status for data sharing
 //   cc-audit label [--out F]  judge real sessions → a sheet you hand-label (calibration)
 //   cc-audit score <F>        score your filled sheet vs the judge (the USEFUL gate)
 //   cc-audit label-fluency    sessions → a sheet you rate 0-100 (fluency calibration)
@@ -21,12 +31,12 @@ import * as p from '@clack/prompts';
 import { loadClaudeCodeSessions } from './adapters/claudeCode.js';
 import { computeAndWriteKneeCache } from './kneeCache.js';
 import { runStatusline } from './statusline.js';
-import { installStatusline, isOfferable } from './statuslineInstall.js';
-import { runAudit, type AuditResult } from './audit.js';
-import { renderConfigSuggestions } from './configSuggestions.js';
+import { runAudit } from './audit.js';
+import { captureDisclosure, captureSetting, captureStatus, sendCapture, setCapture } from './capture.js';
 import { readConsent, writeConsent } from './consent.js';
 import type { ContextHygiene } from './contextHygiene.js';
 import { buildFootprints, type SessionFootprint } from './footprint.js';
+import { installSkill, invocationHint, isSkillCurrent, SKILL_MARKDOWN, skillPath } from './skill.js';
 import {
   buildHygieneFootprints,
   refineAvoidableCarry,
@@ -37,11 +47,10 @@ import {
 import { judgeFootprints, postReport, type RightSizingResult } from './judgeClient.js';
 import { buildLabelSheet, renderScore, scoreLabels, type LabelRow } from './label.js';
 import { buildFluencySheet, renderBandSummary, summarizeBands, type FluencyLabelRow } from './labelFluency.js';
-import { buildConfigTrimProposal, buildModelPinProposals, isHostedTrimCandidate, renderFix, runFix } from './fix.js';
+import { isHostedTrimCandidate, renderFix, runFix } from './fix.js';
 import { DAILY_CAP, spendToday } from './fixClient.js';
 import { computeDelta, readBaseline, windowKey, writeSnapshot } from './history.js';
 import { getInstallKey } from './installKey.js';
-import type { Recommendation } from './recommend.js';
 import { machineAnonId, openURL } from './open.js';
 import { isPremiumModel } from './pricing.js';
 import { type Aggressiveness, renderHygieneRefinement, renderReport, renderRightSizing } from './report.js';
@@ -92,17 +101,27 @@ function parseArgs(argv: string[]): Args {
         'Usage:\n' +
           '  cc-audit [--since-days N] [--root DIR] [--rows N] [--json] [--judge] [--open]\n' +
           '          [--share-sessions] [--aggressiveness conservative|balanced|aggressive]\n' +
-          '      Analyze ~/.claude transcripts locally. In a terminal, a bare run then\n' +
-          '      offers exact config edits (local), right-sizing, and a shareable\n' +
-          '      report — each asks first.\n' +
+          '      Analyze ~/.claude transcripts locally. In a terminal, a bare run then asks\n' +
+          '      two things: install the analysis skill (so your own agent writes three\n' +
+          '      improvement plans), and share your data to improve the tool. Both default\n' +
+          '      Yes; the sharing answer is asked once and never re-prompted.\n' +
           '      The TOP SPENDERS leaderboard (with your prompt gists) is always LOCAL-only.\n' +
-          '      --json prints the aggregate record (always local-only, no prompts).\n' +
+          '      --json prints the aggregate record; it never prompts, and transmits only\n' +
+          '          if you already said yes to sharing (cc-audit capture --status).\n' +
           '      --judge calls the hosted right-sizing model (task gist + metadata, never code).\n' +
           '      --open uploads the privacy-safe aggregate and opens a shareable web report.\n' +
           '      --share-sessions adds an ANONYMIZED leaderboard (cost share, turns, model,\n' +
           '          plan-mode, trajectory — never gists, projects, or $) to the shared report.\n' +
-          '      Passing --judge/--open skips the prompt — the flag is the consent.\n' +
+          '      --judge/--open are never prompted for — the flag IS the consent.\n' +
           '      --aggressiveness gates which over-modeled tasks are recommended as cuts (default balanced).\n' +
+          '  cc-audit skill [--print]\n' +
+          '      Install the analysis skill to ~/.claude/skills/cc-audit/SKILL.md so your own\n' +
+          '      agent can read `cc-audit --json` and write three improvement plans. The text\n' +
+          '      is embedded in this binary — nothing is downloaded. --print shows it instead.\n' +
+          '  cc-audit capture [--on|--off|--status]\n' +
+          '      Data sharing with Promptster: privacy-safe metrics + your task gists (the\n' +
+          '      prompts you typed) — never your code, diffs, paths, or repo names, under any\n' +
+          '      flag. --off is immediate, permanent, and survives upgrades. Bare = --status.\n' +
           '  cc-audit label [--n 50] [--out labels.json] [--since-days N] [--root DIR]\n' +
           '      Judge real sessions and write a sheet to hand-label (set trueMinTier per row).\n' +
           '  cc-audit score <labels.json>\n' +
@@ -157,12 +176,15 @@ async function ensureLocalReadConsent(interactive: boolean): Promise<void> {
   p.note(
     [
       'Analyzes your local Claude Code history (~/.claude/projects) to estimate',
-      'spend and model fit.',
+      'spend, context waste, and model fit. The analysis itself is local — no',
+      'network, no key.',
       '',
-      '• Nothing leaves this machine unless you say so below.',
-      '• We never read your code, prompts, file paths, or repo names.',
-      '• A random anonymous machine ID (a hash, not your hostname) is created',
-      '  for dedup only if you later share a report.',
+      '• We never read your source code or diffs. Not under any flag, ever.',
+      '• Nothing leaves this machine until you answer the sharing question at',
+      '  the end of this run. If you say yes, what gets sent is spelled out',
+      '  there before you answer.',
+      '• Attribution is a random install key — never your hostname, email, or',
+      '  repo names.',
       '',
       'This is not the assessment CLI (@promptster/cli).',
     ].join('\n'),
@@ -284,38 +306,56 @@ function runScoreFluency(file: string): void {
   process.stdout.write(`${renderBandSummary(summarizeBands(rows))}\n`);
 }
 
-/** Tier 0.5 — local config suggestions, the FIRST offer: exact cut/change edits derived
- *  from the audit above. Zero egress, so the confirm defaults Yes (it sits BELOW the
- *  judge confirm on the consent ladder). The optional hosted CLAUDE.md rewrite is a
- *  SEPARATE default-No confirm — it sends the file's FULL CONTENT, more than --judge
- *  sends. The consented rec is RETURNED, not executed, so the network call can run in
- *  parallel with right-sizing. */
-async function maybeConfigSuggestions(interactive: boolean, result: AuditResult): Promise<Recommendation | null> {
-  if (!interactive || result.configSuggestions.length === 0) return null;
-  const n = result.configSuggestions.length;
+/** QUESTION 1 (default Yes) — install the analysis skill.
+ *
+ *  The skill text is embedded in this binary, so "install" is a local file write and
+ *  nothing is fetched: no instruction supply chain, and it is readable before it ever
+ *  runs. We deliberately do NOT shell out to their agent afterwards — the point of the
+ *  skill path is that the analysis runs INSIDE a session where their repo is loaded, so
+ *  the three plans are about the code they're actually writing. A cold shell-out would
+ *  spend the same rate-limit window the report is diagnosing, on worse output. So we
+ *  install and hand them the one line that runs it.
+ *
+ *  Skipped silently when the installed skill is already current — a question with no
+ *  action behind it is nagging, not consent. */
+async function offerSkill(interactive: boolean): Promise<void> {
+  if (!interactive || isSkillCurrent()) return;
   p.log.message(
-    'Config suggestions are computed locally from the audit above —\n' +
-      'nothing leaves this machine, nothing is applied.',
+    'The analysis skill lets your OWN agent read this report and write three ranked\n' +
+      'improvement plans, grounded in the repo you have open. It runs on your\n' +
+      'subscription — cc-audit never sends your sessions to a model of ours. The text\n' +
+      `is embedded in this CLI (nothing is downloaded) and readable at\n${skillPath()}.`,
   );
-  const ok = await p.confirm({
-    message: `Show ${n} exact config edit${n === 1 ? '' : 's'} (cut dead weight, quote never-followed rules) and write .cc-audit/*.proposed patches for reviewable diffs?`,
-    initialValue: true,
-  });
-  if (p.isCancel(ok) || ok !== true) return null;
-  // Model-pin patches are local file proposals — written only after the consent above,
-  // matching `cc-audit fix` semantics (./.cc-audit/*.proposed, nothing applied).
-  const pins = buildModelPinProposals(result.recommendations);
-  process.stdout.write(renderConfigSuggestions(result.configSuggestions, pins));
+  const ok = await p.confirm({ message: 'Install the analysis skill and run it in your next session?', initialValue: true });
+  if (p.isCancel(ok) || ok !== true) return;
+  const r = installSkill();
+  if (r.status === 'failed') {
+    p.log.warn(r.message);
+    return;
+  }
+  p.log.success(r.message);
+  p.log.message(invocationHint());
+}
 
-  const trim = result.recommendations.find(isHostedTrimCandidate);
-  if (!trim) return null;
-  p.log.warn(
-    "A hosted trim sends that CLAUDE.md's FULL CONTENT to our config-review service —\n" +
-      'more than --judge sends — where it is retained to improve the service, and\n' +
-      'spends credits.',
-  );
-  const wantTrim = await p.confirm({ message: `Request a hosted rewrite of ${trim.file}?`, initialValue: false });
-  return !p.isCancel(wantTrim) && wantTrim === true ? trim : null;
+/** QUESTION 2 (default Yes) — data sharing.
+ *
+ *  Asked exactly ONCE and persisted. `captureSetting() !== undefined` means they have
+ *  already answered, in either direction, and we never ask again — re-prompting someone
+ *  who declined is the thing that makes disclosed capture indefensible. The disclosure
+ *  states what is sent, what never is, retention, and the opt-out command BEFORE the
+ *  confirm, in the terminal, not behind a link.
+ *
+ *  Returns whether to transmit on THIS run. */
+async function offerCapture(interactive: boolean, gists: SessionFootprint[]): Promise<boolean> {
+  const prior = captureSetting();
+  if (prior !== undefined) return prior; // answered before — honored, never re-asked
+  if (!interactive) return false; // a non-TTY run never opts anyone in by silence
+  p.log.message(captureDisclosure(gists.length));
+  const ok = await p.confirm({ message: 'Share this with Promptster so we can make the tool better?', initialValue: true });
+  const on = !p.isCancel(ok) && ok === true;
+  setCapture(on);
+  if (!on) p.log.message('Not shared. We will not ask again — turn it on later with: cc-audit capture --on');
+  return on;
 }
 
 /** What a consented right-sizing run needs to execute later (the call is deferred so
@@ -325,50 +365,37 @@ interface RightSizeConsent {
   hygieneItems: HygieneFootprint[];
 }
 
-/** Tier 1 consent — right-sizing. Explicit --judge (flag is consent) or, in an
- *  interactive run, a default-Yes confirm. Prompt/receipt only — no network here. */
+/** Tier 1 — right-sizing. FLAG-ONLY now: `--judge` is the consent, and a bare run never
+ *  prompts for it (the bare run's only questions are the skill + capture ones). Prompt
+ *  removal did not weaken the disclosure — the receipt below still states exactly what
+ *  is sent, and it now prints on BOTH paths because there is no interactive prompt left
+ *  to carry it. No network here. */
 async function rightSizeConsent(
   args: Args,
   interactive: boolean,
   sessions: ReturnType<typeof loadClaudeCodeSessions>,
   hygiene: ContextHygiene,
 ): Promise<RightSizeConsent | undefined> {
+  if (!args.judge) return undefined;
   const footprints = buildFootprints(sessions);
   // Context-hygiene items ride in the SAME judge payload (one model pass) — they refine
   // the deterministic avoidable-carry headline by separating stale carry from
   // genuinely-needed big context.
   const hygieneItems = buildHygieneFootprints(hygiene, sessions);
-  let want = args.judge;
-  if (!want && interactive && footprints.length > 0) {
-    p.log.message(
-      "Right-sizing sends each task's gist + metadata (model, tokens, turn shape)\n" +
-        'to our hosted model, which retains them to improve right-sizing and the\n' +
-        'benchmark — never your code, prompts, or paths.' +
-        (hygieneItems.length > 0
-          ? `\nThe same call also refines your context-hygiene estimate from ${hygieneItems.length} episodes' task gists (no extra call).`
-          : ''),
-    );
-    const ok = await p.confirm({ message: `Right-size ${footprints.length} sessions?`, initialValue: true });
-    want = !p.isCancel(ok) && ok === true;
-  }
-  if (!want) return undefined;
   if (footprints.length === 0) {
     process.stdout.write('\n  (no premium prompt-driven sessions to right-size)\n');
     return undefined;
   }
-  // Explicit flag in a non-interactive run: print the receipt of what's being sent.
-  // The flag IS the consent here (no interactive prompt runs), so this receipt must
-  // carry the SAME disclosure the interactive prompt does — including that the call
-  // is retained and attributed by an install id (anonId). Route to stderr so --json
-  // stdout stays pure.
-  if (args.judge && !interactive) {
-    process.stderr.write(
-      `Right-sizing ${footprints.length} sessions via the hosted model (task gist + metadata, never code), ` +
-        'retained + attributed by an anonymous install id to improve right-sizing and the benchmark' +
-        (hygieneItems.length > 0 ? ` + refining ${hygieneItems.length} context-hygiene episodes (same call)` : '') +
-        '…\n',
-    );
-  }
+  // The flag IS the consent, so this receipt is the ONLY disclosure of what leaves —
+  // including that the call is retained and attributed by an install id (anonId). Route
+  // the non-interactive copy to stderr so --json stdout stays pure.
+  const receipt =
+    `Right-sizing ${footprints.length} sessions via the hosted model (task gist + metadata, never code), ` +
+    'retained + attributed by an anonymous install id to improve right-sizing and the benchmark' +
+    (hygieneItems.length > 0 ? ` + refining ${hygieneItems.length} context-hygiene episodes (same call)` : '') +
+    '…';
+  if (interactive) p.log.message(receipt);
+  else process.stderr.write(`${receipt}\n`);
   return { footprints, hygieneItems };
 }
 
@@ -395,8 +422,10 @@ function renderJudgeOutput(
   return { result: judged, hygieneRefinement };
 }
 
-/** Tier 2 — public shareable report. Explicit --open (flag is consent) or, in an
- *  interactive run, a default-No confirm (the report is public). */
+/** Tier 2 — public shareable report. FLAG-ONLY: `--open` is the consent. Publishing is
+ *  deliberately never one of the bare run's questions — a reachable URL cannot be
+ *  un-published, and prompt context carries credentials and employers' material, so it
+ *  stays an act the developer has to reach for by name. */
 async function maybeShare(
   args: Args,
   interactive: boolean,
@@ -404,24 +433,10 @@ async function maybeShare(
   rightSizing: unknown,
   hygieneRefinement?: HygieneRefinementUpload,
 ): Promise<void> {
-  let want = args.open;
-  if (!want && interactive) {
-    p.log.warn(
-      'A shareable report uploads the privacy-safe AGGREGATE (shares and counts —\n' +
-        'never raw $ amounts or code) to a PUBLIC link anyone with the URL can open.',
-    );
-    const ok = await p.confirm({ message: 'Create a public shareable report?', initialValue: false });
-    want = !p.isCancel(ok) && ok === true;
-  }
-  if (!want) {
-    if (interactive) p.outro('Done — nothing was uploaded.');
-    return;
-  }
-  if (args.open && !interactive) {
-    process.stderr.write(
-      'Uploading your aggregate metrics — no code, prompts, or paths — to create a shareable link…\n',
-    );
-  }
+  if (!args.open) return;
+  const notice = 'Uploading your aggregate metrics — no code, prompts, or paths — to create a PUBLIC shareable link…';
+  if (interactive) p.log.warn(notice);
+  else process.stderr.write(`${notice}\n`);
   try {
     const post = () => postReport({ aggregate, rightSizing, hygieneRefinement, anonId: machineAnonId() });
     const { url, benchmark, fluency } = interactive ? await withSpinner('Creating shareable report', post) : await post();
@@ -451,7 +466,7 @@ async function maybeShare(
           `${benchmark.cohortSize.toLocaleString()} engineers measured.`,
       );
     }
-    if (interactive) p.outro(`Shareable report: ${url}`);
+    if (interactive) p.log.success(`Shareable report: ${url}`);
     else process.stdout.write(`\n  Shareable report: ${url}\n`);
     openURL(url);
   } catch (err) {
@@ -461,18 +476,33 @@ async function maybeShare(
   }
 }
 
-/** Interactive offer to wire the live-guardrail statusline into claude-hud. Fits the consent
- *  ladder: default-Yes (it's a local settings edit, nothing leaves the machine), but STRICTLY
- *  interactive — a --json or non-TTY run never reaches here, so settings.json is only ever
- *  modified by an explicit --install/--uninstall or a real "yes". */
-async function maybeOfferHudInstall(interactive: boolean): Promise<void> {
-  if (!interactive) return;
-  if (!isOfferable()) return; // no claude-hud, already installed, foreign extra-cmd, or JSONC
-  const ok = await p.confirm({ message: 'Add the context-guardrail line to your claude-hud HUD?', initialValue: true });
-  if (p.isCancel(ok) || ok !== true) return;
-  const r = installStatusline();
-  if (r.ok) p.log.success(r.message);
-  else p.log.warn(r.message);
+/** `cc-audit skill [--print]` — install the embedded analysis skill, or show its text. */
+function runSkillCmd(argv: string[]): void {
+  if (argv.includes('--print')) {
+    process.stdout.write(SKILL_MARKDOWN);
+    return;
+  }
+  const r = installSkill();
+  const out = r.status === 'failed' ? process.stderr : process.stdout;
+  out.write(`${r.message}\n`);
+  if (r.status === 'failed') process.exit(1);
+  process.stdout.write(`\n${invocationHint()}\n`);
+}
+
+/** `cc-audit capture [--on|--off|--status]` — the one-command opt-out (and back in).
+ *  Immediate, persisted to ~/.cc-audit/consent.json, and survives upgrades. */
+function runCaptureCmd(argv: string[]): void {
+  if (argv.includes('--off')) {
+    setCapture(false);
+    process.stdout.write('Capture OFF. Nothing will be sent, and you will not be asked again.\n');
+    return;
+  }
+  if (argv.includes('--on')) {
+    setCapture(true);
+    process.stdout.write(captureStatus());
+    return;
+  }
+  process.stdout.write(captureStatus());
 }
 
 async function run(): Promise<void> {
@@ -508,6 +538,14 @@ async function run(): Promise<void> {
     await runFixCmd(parseArgs(argv.slice(1)));
     return;
   }
+  if (sub === 'skill') {
+    runSkillCmd(argv.slice(1));
+    return;
+  }
+  if (sub === 'capture') {
+    runCaptureCmd(argv.slice(1));
+    return;
+  }
 
   const args = parseArgs(argv);
   const interactive = isInteractive(args.json);
@@ -526,68 +564,64 @@ async function run(): Promise<void> {
   const baseline = historyOn ? readBaseline(key, today) : undefined;
   if (historyOn) writeSnapshot(result.aggregate, key, today);
 
+  // Capture rides on an answer already given — it NEVER prompts here. An alternate
+  // --root corpus is excluded from TRANSMISSION for the same reason history is (it
+  // would pollute the timeline, and in the fixture case the corpus too); the gists are
+  // still built so the disclosure can state a truthful count.
+  const captureGists = () => buildFootprints(sessions);
+  const mayTransmit = !args.root;
+
   if (args.json) {
     process.stdout.write(`${JSON.stringify(result.aggregate, null, 2)}\n`);
+    // The skill's own path is `cc-audit --json`, so this is the hot capture route.
+    // Awaited but silent and best-effort: stdout purity holds by construction (sendCapture
+    // writes nothing, ever) and a failure can't fail the run.
+    if (mayTransmit) await sendCapture(result.aggregate, captureGists());
     return;
   }
   const delta = baseline ? computeDelta(baseline, result.aggregate) : historyOn ? ('first-run' as const) : undefined;
   process.stdout.write(`${renderReport(result, { rows: args.rows, delta })}\n`);
 
-  // Offer ladder: config suggestions (local, first) → right-sizing → share. Both
-  // consents are collected up front so the two consented NETWORK calls (judge +
-  // hosted trim) fire concurrently — one round-trip of waiting, not two. The trim
-  // request body stays files-only (see fixClient.ts); parallelism changes
-  // scheduling, never payloads.
-  const trimRec = await maybeConfigSuggestions(interactive, result);
+  // Right-sizing is flag-only now (--judge); the bare run's only questions are the two
+  // at the bottom of this function.
   const consent = await rightSizeConsent(args, interactive, sessions, result.contextHygiene);
-
-  // Offer to auto-wire the live-guardrail statusline into claude-hud (local settings edit,
-  // no egress). Interactive-only + gated on a clean, hud-shaped, not-yet-installed config —
-  // a --json/non-TTY run never prompts or touches settings.json.
-  await maybeOfferHudInstall(interactive);
 
   const premiumMonthlyUsd = result.spend.byModel
     .filter((m) => isPremiumModel(m.model))
     .reduce((n, m) => n + (m.costUsd / result.spend.windowDays) * 30.44, 0);
 
   let judgeOut: { result: RightSizingResult; hygieneRefinement?: HygieneRefinementUpload } | undefined;
-  if (consent || trimRec) {
+  if (consent) {
     const api = process.env.CC_AUDIT_API ?? undefined;
-    const today = new Date().toISOString().slice(0, 10);
-    const settle = () =>
-      Promise.allSettled([
-        consent
-          ? // strip the local-only avoidableUsd before sending; anonId lets the backend
-            // persist + attribute the judge call (benchmark cohort / dedup), never a path
-            judgeFootprints(consent.footprints, api, consent.hygieneItems.map((h) => h.item), machineAnonId())
-          : Promise.resolve(undefined),
-        trimRec ? buildConfigTrimProposal(trimRec, today, api) : Promise.resolve(null),
-      ] as const);
-    const label = [
-      consent ? `Right-sizing ${consent.footprints.length} sessions` : null,
-      trimRec ? 'reviewing CLAUDE.md' : null,
-    ]
-      .filter(Boolean)
-      .join(' + ');
-    const [judgeSettled, trimSettled] = interactive ? await withSpinner(label, settle) : await settle();
-
-    // Right-sizing renders first; a failure in one call never discards the other.
-    if (consent) {
-      if (judgeSettled.status === 'fulfilled' && judgeSettled.value) {
-        judgeOut = renderJudgeOutput(consent, judgeSettled.value, args, result.spend.windowDays, premiumMonthlyUsd, result.contextHygiene);
-      } else if (judgeSettled.status === 'rejected') {
-        const err: unknown = judgeSettled.reason;
-        const msg = `right-sizing failed: ${err instanceof Error ? err.message : String(err)}`;
-        if (interactive) p.log.error(msg);
-        else process.stderr.write(`${msg}\n`);
+    // strip the local-only avoidableUsd before sending; anonId lets the backend
+    // persist + attribute the judge call (benchmark cohort / dedup), never a path
+    const call = () => judgeFootprints(consent.footprints, api, consent.hygieneItems.map((h) => h.item), machineAnonId());
+    const label = `Right-sizing ${consent.footprints.length} sessions`;
+    try {
+      const judged = interactive ? await withSpinner(label, call) : await call();
+      if (judged) {
+        judgeOut = renderJudgeOutput(consent, judged, args, result.spend.windowDays, premiumMonthlyUsd, result.contextHygiene);
       }
-    }
-    // buildConfigTrimProposal never throws (failures come back as a "(skipped)" row).
-    if (trimRec && trimSettled.status === 'fulfilled' && trimSettled.value) {
-      process.stdout.write(renderFix([trimSettled.value]));
+    } catch (err) {
+      const msg = `right-sizing failed: ${err instanceof Error ? err.message : String(err)}`;
+      if (interactive) p.log.error(msg);
+      else process.stderr.write(`${msg}\n`);
     }
   }
   await maybeShare(args, interactive, result.aggregate, judgeOut?.result.summary, judgeOut?.hygieneRefinement);
+
+  // ── The two questions. Both default Yes; both sit below the whole report so the
+  // developer has seen what the tool is worth before either is asked.
+  await offerSkill(interactive);
+  const gists = captureGists();
+  const share = (await offerCapture(interactive, gists)) && mayTransmit;
+  if (share) {
+    const sent = interactive ? await withSpinner('Sharing with Promptster', () => sendCapture(result.aggregate, gists)) : await sendCapture(result.aggregate, gists);
+    // Only ever a note. A failed send is not the developer's problem and must not read
+    // as an error in their report — the next run will carry the data.
+    if (interactive && sent) p.log.success('Shared — thank you. Turn it off any time with: cc-audit capture --off');
+  }
+  if (interactive) p.outro('Done.');
 }
 
 async function main(): Promise<void> {

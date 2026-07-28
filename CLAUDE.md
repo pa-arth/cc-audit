@@ -41,13 +41,35 @@ consent flow. Everything it calls is a pure-ish module:
   (`cc-audit fix` reviewable patches). All hit backend HTTP endpoints behind `CC_AUDIT_API`.
 - **`index.ts`** — the importable library surface (CLI lives in `cli.ts`, not exported there).
 
+### The bare interactive run asks exactly TWO questions
+Both default Yes, both at the very bottom, after the whole report:
+1. **Install the analysis skill** (`skill.ts`) — writes `~/.claude/skills/cc-audit/SKILL.md`.
+   The text is EMBEDDED in the binary and never fetched: it executes in the user's repo with
+   their agent's permissions, so a network delivery path would be an instruction supply chain.
+   Skipped silently when the installed copy is already current (`SKILL_VERSION`).
+   We deliberately do NOT shell out to their agent — the skill's value is running *inside* a
+   session where their repo is loaded, and a cold shell-out spends the very window we diagnose.
+2. **Share data** (`capture.ts`) — asked ONCE, persisted, **never re-prompted in either
+   direction**. Re-asking someone who declined is what turns disclosed capture into a dark
+   pattern; `ConsentState.capture` is tri-state (`undefined` = not yet asked) for exactly this.
+
+Adding a third question needs a real argument. The ladder used to be four and it was noise.
+
 ### Consent tiers (see `consent.ts`)
 - **Tier 0** local read — sticky one-time ack, persisted to `~/.cc-audit/consent.json`.
-- **Tier 1** `--judge` — task gist + metadata to the hosted model, never code/paths. Re-confirmed each run.
-- **Tier 2** `--open` — privacy-safe aggregate to a PUBLIC link. Re-confirmed each run, defaults to No.
+- **Tier 1** sharing — aggregate + task gists to `/v1/public/solo-capture`, keyed on the
+  install key. Sticky answer; `cc-audit capture --off/--on/--status`.
+- **Tier 1** `--judge` — task gist + metadata to the hosted model, never code/paths. Flag-only.
+- **Tier 2** `--open` — privacy-safe aggregate to a PUBLIC link. Flag-only, never a question:
+  a reachable URL can't be un-published and prompt context carries credentials.
 
-`--json` and any non-TTY run are strictly non-interactive: only explicit `--judge`/`--open`
-send anything. **stdout under `--json` must stay pure JSON** — route diagnostics/notices to stderr.
+**Source code and diffs never leave, under any flag.** There is no opt-in for it. That is the
+claim the product is written to — never "nothing leaves your machine", which capture makes false.
+
+`--json` and any non-TTY run are strictly non-interactive: they never prompt, and transmit only
+on an explicit `--judge`/`--open` or a previously-answered sharing consent. Silence never opts
+anyone in. `--root DIR` never transmits (it would pollute both local history and the corpus).
+**stdout under `--json` must stay pure JSON** — route diagnostics/notices to stderr.
 
 ## Conventions that bite
 

@@ -5,7 +5,51 @@ Notable changes to `@promptster/cc-audit`. GitHub Releases carry the same notes
 
 ## Unreleased
 
+### Changed
+
+- **The bare interactive run now asks two questions instead of four.** The old offer
+  ladder — local config edits, a hosted `CLAUDE.md` rewrite, right-sizing, a claude-hud
+  statusline, a public report — was five confirms deep and buried the two that matter.
+  What's left, both default *Yes*, both below the whole report:
+
+  1. **Install the analysis skill** → `~/.claude/skills/cc-audit/SKILL.md`, so your own
+     agent reads `cc-audit --json` and writes three ranked improvement plans grounded in
+     the repo you have open.
+  2. **Share your data with Promptster** → the privacy-safe aggregate plus your task
+     gists.
+
+  The removed prompts did not remove the features: `--judge`, `--open`,
+  `cc-audit fix`, and `cc-audit statusline --install` all still do exactly what they did.
+  They are now flag-driven only, and the `--judge`/`--open` disclosures moved onto the
+  flag path so nothing that leaves the machine leaves undisclosed.
+
 ### Added
+
+- **`cc-audit skill [--print]` — the analysis skill, embedded, not downloaded.** The skill
+  is an instruction set that runs in your repo with your agent's permissions, so it ships
+  inside the CLI rather than being fetched: it installs offline, is readable before it ever
+  runs, and there is no delivery path for one bad push to reach every install. `--print`
+  dumps the full text without writing anything. The model work runs on **your**
+  subscription — cc-audit never calls a hosted model to analyze your sessions.
+
+- **`cc-audit capture [--on|--off|--status]` — disclosed data sharing.** Sends the
+  privacy-safe aggregate plus your task gists (the prompt text you typed, with model/turn/
+  tool counts). **Never your source code, diffs, file paths, or repo names — under any
+  flag, with no opt-in.** Attributed to a random install key, not your hostname or email.
+
+  The controls are the point:
+  - Asked **once**, in the terminal, with the full list shown before you answer.
+  - Never re-prompted in either direction. Declining is permanent until *you* revisit it.
+  - `--off` is immediate, permanent, and survives upgrades.
+  - `--status` prints the install key your data is stored under so you can request
+    deletion against it. Retention: kept until you ask us to delete it.
+  - Never answered ⇒ nothing transmitted, including on `--json` and non-TTY runs, which
+    never prompt and never opt you in by silence. `--root DIR` runs never transmit.
+
+  README's "what leaves your machine" section was rewritten to match. The old
+  "by default: nothing" framing no longer describes the tool once sharing is on; the
+  claim the product is written to is the narrower and durable one — **we never touch
+  your source code**.
 
 - **An external check on our cost math: reconciliation against Claude Code's own
   telemetry.** Every other test in this repo compares cc-audit to cc-audit.
