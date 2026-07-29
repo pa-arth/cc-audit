@@ -16,7 +16,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 
 /** Bump when SKILL_MARKDOWN changes so an existing install is refreshed, not skipped. */
-export const SKILL_VERSION = 2;
+export const SKILL_VERSION = 3;
 
 const VERSION_MARKER = 'cc-audit-skill-version:';
 
@@ -45,8 +45,9 @@ That prints one JSON object and exits. What it does, stated exactly — do not p
 this to the developer more reassuringly than it reads:
 
 - **Reads** \`~/.claude/projects\` (their transcripts).
-- **Writes** a small run-history snapshot under \`~/.cc-audit/\`, so the next run can show
-  deltas. Nothing else on disk.
+- **Writes** a run-history snapshot under \`~/.cc-audit/history/\`, so the next run can
+  show deltas. If they ran the analysis from the CLI, the plans it produced are also
+  kept under \`~/.cc-audit/history/advice/\`. Nothing else on disk.
 - **Transmits** only if they previously turned on data sharing. If they did, this command
   also sends the privacy-safe aggregate plus their task gists. \`cc-audit capture --status\`
   says which, and \`cc-audit capture --off\` stops it.
@@ -105,7 +106,42 @@ The record is large. These are the ones that carry the diagnosis:
   soften the dollar claims. Do not quietly present a partial bill as a complete one.
 - \`fluency.sessions\` — a handful of sessions cannot support a confident habit claim.
 
-## 3. Look at their actual repo
+## 3. Check what you told them last time
+
+Before writing anything new, look for prior runs. Two directories, both optional:
+
+\`\`\`bash
+ls ~/.cc-audit/history/ ~/.cc-audit/history/advice/ 2>/dev/null
+\`\`\`
+
+- \`history/<YYYY-MM-DD>-<window>.json\` — a **full aggregate** from that day. Every field
+  in section 2 is in there, so you can compare any number, not just a preset few.
+- \`history/advice/<YYYY-MM-DD>-<window>.json\` — \`{generatedAt, agent, raw, plans,
+  closing}\`: the plans that were actually given. \`plans\` may be \`null\` when the parse
+  failed; \`raw\` is always the full text, so read \`raw\` when \`plans\` is null.
+
+**Only compare files with the same \`<window>\` key.** A \`w30\` run and an \`all\` run cover
+different spans; diffing across them produces a number that means nothing.
+
+If there IS prior advice, open this analysis with follow-through, before the new plans:
+
+- For each prior plan, name the field it targeted and quote **prev → cur**. Say whether
+  it moved in the intended direction, moved against it, or didn't move.
+- **Do not claim credit.** A number moving is not proof the advice caused it — a quiet
+  week, a finished project, or a different task mix moves these too. Write "avoidable
+  carry is down $31/mo since 07-21, when the plan was to \`/clear\` between tasks" and
+  stop. Do not write "your fix saved you $31/mo." You cannot separate the two, and
+  pretending otherwise is the one thing that would make this section worthless.
+- **A plan they clearly ignored is the most useful thing you can report.** If the field
+  is flat and the same plan is about to be repeated, say so plainly and ask what got in
+  the way — then consider whether a *different, smaller* change would actually get done.
+  Repeating an identical plan verbatim, week after week, is a failure of coaching.
+- Two or more prior entries ⇒ describe the trend, not just the last hop.
+
+If there is no prior advice, say nothing about history at all. Do not announce its
+absence, and never invent a comparison — this is a first run, and that is normal.
+
+## 4. Look at their actual repo
 
 Before writing the plans, spend a few tool calls grounding them:
 
@@ -119,7 +155,7 @@ Before writing the plans, spend a few tool calls grounding them:
 This is the step that makes the output worth more than the CLI's own report. Do not skip
 it.
 
-## 4. Write exactly three plans
+## 5. Write exactly three plans
 
 Three. Not two, not seven. Ranked by measured impact, biggest first.
 

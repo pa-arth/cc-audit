@@ -4,13 +4,16 @@
 // attribute + report. A bare interactive run then asks exactly TWO questions,
 // both default-Yes:
 //
-//   1. Install the analysis skill — writes ~/.claude/skills/cc-audit/SKILL.md so
-//      the developer's OWN agent turns `cc-audit --json` into three improvement
-//      plans. The skill text is embedded in this binary (see skill.ts); nothing
-//      is fetched, and the model work runs on their subscription, not ours.
-//   2. Share data with Promptster — the privacy-safe aggregate + the task gists
-//      --judge already sends. Asked ONCE, persisted, never re-prompted (see
-//      capture.ts / consent.ts). Never source code or paths, under any flag.
+//   1. Run the analysis now — invokes the developer's OWN agent (claude -p /
+//      codex exec) for three improvement plans, and installs
+//      ~/.claude/skills/cc-audit/SKILL.md for next time. The skill text is
+//      embedded in this binary (see skill.ts); nothing is fetched, and the model
+//      work runs on their subscription, not ours. The plans are persisted to
+//      ~/.cc-audit/history/advice/ so a later run can measure follow-through.
+//   2. Create a shareable link — the web report carrying those plans — AND switch
+//      on data sharing with Promptster (the aggregate + the task gists --judge
+//      already sends). One confirm, both disclosed above it. A no writes nothing
+//      at all; only `cc-audit capture --off` turns sharing off. See capture.ts.
 //
 // `--json` and any non-TTY run stay strictly non-interactive: they never prompt,
 // and only an explicit --judge/--open (or a previously-consented capture) sends
@@ -58,7 +61,7 @@ import { buildLabelSheet, renderScore, scoreLabels, type LabelRow } from './labe
 import { buildFluencySheet, renderBandSummary, summarizeBands, type FluencyLabelRow } from './labelFluency.js';
 import { isHostedTrimCandidate, renderFix, runFix } from './fix.js';
 import { DAILY_CAP, spendToday } from './fixClient.js';
-import { computeDelta, readBaseline, windowKey, writeSnapshot } from './history.js';
+import { computeDelta, readBaseline, windowKey, writeAdvice, writeSnapshot } from './history.js';
 import { getInstallKey } from './installKey.js';
 import { machineAnonId, openURL } from './open.js';
 import { isPremiumModel } from './pricing.js';
@@ -113,11 +116,15 @@ function parseArgs(argv: string[]): Args {
           '  cc-audit [--since-days N] [--root DIR] [--rows N] [--json] [--judge] [--open]\n' +
           '          [--share-sessions] [--aggressiveness conservative|balanced|aggressive]\n' +
           '      Analyze ~/.claude transcripts locally. In a terminal, a bare run then asks\n' +
-          '      three things, all default Yes:\n' +
+          '      two things, both default Yes:\n' +
           '        1. Run the analysis now on YOUR agent (claude -p / codex exec) — three\n' +
           '           improvement plans printed here, plus the skill installed for next time.\n' +
-          '        2. Create a shareable link — the web report, INCLUDING those plans.\n' +
-          '        3. Share your data with Promptster (asked once, never re-prompted).\n' +
+          '           The plans are also kept in ~/.cc-audit/history/advice/, so a later run\n' +
+          '           can tell you whether the things you were told to change actually moved.\n' +
+          '        2. Create a shareable link — the web report, INCLUDING those plans — and\n' +
+          '           switch on data sharing with Promptster. One confirm, both disclosed\n' +
+          '           above it. Saying no publishes nothing and changes no setting; only\n' +
+          '           `cc-audit capture --off` turns sharing off.\n' +
           '      --print-prompt shows the EXACT prompt that would go to your agent and\n' +
           '          invokes nothing.\n' +
           '      The TOP SPENDERS leaderboard (with your prompt gists) is always LOCAL-only.\n' +
@@ -737,6 +744,10 @@ async function run(): Promise<void> {
   // creating, and the link's disclosure has to name what the analysis actually produced.
   const gists = captureGists();
   const advice = await offerAnalysis(interactive, result.aggregate as unknown as Record<string, unknown>);
+  // Keep the plans next to the snapshot they were written about, so a later run can ask
+  // "did they act on this?" rather than only "did the number move?". Same --root
+  // exclusion as the snapshot: an alternate corpus must not pollute the real timeline.
+  if (advice && historyOn) writeAdvice(advice, key, today);
   const wantLink = await offerShareLink(args, interactive, advice, gists.length);
   await maybeShare(
     args,

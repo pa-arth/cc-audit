@@ -3,6 +3,56 @@
 Notable changes to `@promptster/cc-audit`. GitHub Releases carry the same notes
 (the publish workflow attaches binaries per `v*` tag — see MAINTAINING.md).
 
+## Unreleased
+
+### Added
+
+- **The plans are remembered, so a weekly run compounds.** Until now every run
+  re-derived the same advice from scratch and had no idea whether you'd acted on it.
+  The aggregate could measure that a number moved; nothing recorded what had been
+  *recommended*, so "did they do it?" was unanswerable in principle, not just unbuilt.
+
+  `writeAdvice()` now persists each run's plans to
+  `~/.cc-audit/history/advice/<YYYY-MM-DD>-<window>.json` — `{generatedAt, agent, raw,
+  plans, closing}` — beside the aggregate snapshot they were written about. Same
+  one-file-per-day-per-window rule as snapshots, so a same-day rerun overwrites instead
+  of accumulating near-duplicates, and the same `--root` exclusion, so an alternate
+  corpus can't pollute the real timeline.
+
+  SKILL.md gains **§3 "Check what you told them last time"** and the skill version bumps
+  to 3 so existing installs refresh. It reads prior plans, names the field each targeted,
+  quotes prev → cur, and says whether it moved.
+
+  Three constraints on that section, which are the difference between useful and
+  actively misleading:
+  - **It must not claim credit.** A number moving is not proof the advice caused it — a
+    quiet week or a finished project moves the same fields. It reports the movement
+    alongside what was advised and stops.
+  - **A plan you ignored is the most useful thing it can report.** Flat field plus the
+    same plan about to be repeated ⇒ say so and ask what got in the way, rather than
+    reprinting an identical plan weekly.
+  - **Only compare within a window key.** A `w30` run and a bare `all` run cover
+    different spans; diffing across them yields a number that means nothing.
+
+  Stored in a *subdirectory* rather than as sibling files: `readBaseline()` matches every
+  entry in `history/` against `SNAPSHOT_NAME`, and `<day>-<key>-advice.json` would have
+  parsed as window key `w30-advice` — harmless today, but only by accident. A test pins
+  that the snapshot lane is unaffected by a directory full of advice.
+
+  `plans` is nullable on read, deliberately. `parseAdvice()` returns `plans: null`
+  whenever the model's output shape is unfamiliar, and `raw` is always populated —
+  rejecting those entries would silently drop exactly the weeks the model wrote prose.
+
+  **Local only.** This is the most specific artifact cc-audit keeps: it names commands,
+  skills, and real dollar figures. No egress path reads that directory — not `capture.ts`,
+  not `open.ts`, not `judgeClient.ts`.
+
+### Fixed
+
+- **`--help` and the module header still described the old three-question flow**, left
+  over from the two-question change. `--help` is user-facing and was telling people about
+  a "Share your data with Promptster" prompt that no longer exists.
+
 ## 0.6.0 — 2026-07-28
 
 > **Known gaps at the moment of this release**, stated here rather than discovered later.

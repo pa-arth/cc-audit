@@ -101,6 +101,28 @@ describe('analysis skill', () => {
     expect(SKILL_MARKDOWN).toMatch(/cc-audit-skill-version:\s*\d+/);
   });
 
+  it('teaches the agent to read prior advice, and to NOT claim credit for movement', () => {
+    // The whole point of persisting plans is week-over-week follow-through. Two things
+    // make it useful rather than harmful: comparing only within a window key, and
+    // refusing to attribute a moved number to the advice. A quiet week moves these too.
+    expect(SKILL_MARKDOWN).toContain('Check what you told them last time');
+    expect(SKILL_MARKDOWN).toContain('~/.cc-audit/history/advice/');
+    expect(SKILL_MARKDOWN).toMatch(/Do not claim credit/);
+    expect(SKILL_MARKDOWN).toContain('same `<window>` key');
+    expect(SKILL_MARKDOWN).toContain('read `raw` when `plans` is null');
+  });
+
+  it('tells the agent to stay SILENT when there is no history, not to announce it', () => {
+    expect(SKILL_MARKDOWN).toMatch(/no prior advice, say nothing about history/i);
+  });
+
+  it('discloses that advice is written to disk — it is not only the snapshot now', () => {
+    // Regression of the same family as the --json claim: writeAdvice() added a second
+    // thing this tool puts on disk, and "Nothing else on disk" was true before it.
+    expect(SKILL_MARKDOWN).toContain('~/.cc-audit/history/advice/');
+    expect(SKILL_MARKDOWN).toMatch(/plans it produced are also\s+kept/);
+  });
+
   it('asks for exactly three plans and forbids invented numbers and fake percentiles', () => {
     expect(SKILL_MARKDOWN).toContain('Write exactly three plans');
     expect(SKILL_MARKDOWN).toContain('Never invent a number');
