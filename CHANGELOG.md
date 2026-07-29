@@ -3,7 +3,11 @@
 Notable changes to `@promptster/cc-audit`. GitHub Releases carry the same notes
 (the publish workflow attaches binaries per `v*` tag — see MAINTAINING.md).
 
-## Unreleased
+## 0.7.0 — 2026-07-28
+
+> **The two gaps named in 0.6.0 are closed.** The share page now renders the agent's
+> plans, and data sharing transmits — both server halves shipped and are deployed. The
+> 0.6.0 note below is left as written, because it was accurate at that release.
 
 ### Added
 
