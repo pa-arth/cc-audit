@@ -77,6 +77,12 @@ A bare run in a terminal ends with **two** questions, both default *Yes*:
    `~/.claude/skills/cc-audit/SKILL.md`, so future sessions can coach you *with your repo
    loaded*, which produces better plans than this cold run can. Both paths run on **your**
    subscription; cc-audit never sends your sessions to a model of ours.
+
+   The plans are kept locally in `~/.cc-audit/history/advice/`, next to the aggregate
+   snapshot they were written about. That is what makes a **weekly** run compound: the
+   skill reads the prior plans and opens with follow-through — which field each one
+   targeted, and whether it moved. It reports movement without claiming credit, because a
+   quiet week moves the same numbers. Local only; no egress path reads that directory.
 2. **Create a shareable link?** Uploads the web report — including the three plans your
    agent just wrote — to a URL you can send to anyone, **and switches on data sharing with
    Promptster**. The full disclaimer for both prints immediately above the prompt, so you
