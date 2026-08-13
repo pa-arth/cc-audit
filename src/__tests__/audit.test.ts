@@ -529,6 +529,38 @@ describe('always-on tax: spawn economics (subagents re-WRITE the standing block)
     expect(collectSpawnStats([session, subSession])).toHaveLength(2);
   });
 
+  it('counts what turn 1 READ from cache, not only what it wrote', () => {
+    // A session resuming in a project it has run in before finds its prefix already
+    // cached: it reads ~everything and writes ~nothing. Excluding cacheRead reported
+    // 4,200 for a 54,200-token prefix — smallest exactly where the standing context
+    // is largest. Measured over 522 local sessions, turn 1 reads from cache in 97.9%
+    // of them, so this is the common shape, not an edge case.
+    const WARM = [
+      { type: 'user', promptId: 'w1', message: { content: 'continue where we left off' } },
+      {
+        type: 'assistant',
+        message: {
+          id: 'w1a',
+          model: 'claude-opus-4-8',
+          usage: {
+            input_tokens: 4000,
+            output_tokens: 300,
+            cache_read_input_tokens: 50000,
+            cache_creation_input_tokens: 200,
+          },
+          content: [{ type: 'text', text: 'resuming' }],
+        },
+      },
+    ]
+      .map((e) => JSON.stringify(e))
+      .join('\n');
+    const warm = parseTranscript('/tmp/warm.jsonl', WARM, 'p', new Set())!;
+    const w = computeAlwaysOn([warm]);
+    expect(w.standingContextTokens).toBe(54200);
+    // The specific regression: dropping the cacheRead term again lands here.
+    expect(w.standingContextTokens).not.toBe(4200);
+  });
+
   it('prices 1h cache-write tokens at the 1h rate, not the 5-min rate', () => {
     // Same spawn shape but the 17k write lands in the 1h bucket (Opus 4.8: $10 vs $6.25).
     const FX_1H = [

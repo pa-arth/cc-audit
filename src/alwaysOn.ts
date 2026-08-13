@@ -210,8 +210,21 @@ export function computeAlwaysOn(sessions: Session[]): AlwaysOnTax {
     // several per main session — sampling spans[0] blindly would let subagent
     // prefixes dominate the "observed standing context" median.
     const firstMain = s.spans.find((sp) => !sp.isSidechain && sp.turns.length > 0)?.turns[0];
+    // The prefix includes what turn 1 READ from cache, not only what it wrote. A
+    // session resuming in a project it has run in before finds the whole prefix
+    // already cached and writes almost nothing — so omitting cacheRead reported a
+    // large standing context as a small one, on exactly the sessions where it is
+    // largest. Measured over 522 local sessions: turn 1 reads from cache in 97.9%
+    // of them, and including the term moves the median 40,272 -> 59,645 (1.48x),
+    // landing within 1.8% of the same quantity measured independently by
+    // differencing `claude -p` runs with one context component removed (60,738).
     if (firstMain)
-      prefixes.push(firstMain.usage.input + firstMain.usage.cacheWrite5m + firstMain.usage.cacheWrite1h);
+      prefixes.push(
+        firstMain.usage.input +
+          firstMain.usage.cacheWrite5m +
+          firstMain.usage.cacheWrite1h +
+          firstMain.usage.cacheRead,
+      );
 
     let projMd = 0;
     if (s.cwd) {
