@@ -386,11 +386,32 @@ describe('always-on tax: config cost vs observed + MCP framing', () => {
     expect(a.projectClaudeMdTokens).toBeGreaterThan(900); // ~1000 tok
   });
 
-  it('always-on config = global + project + skill + plugin listings (additive, file-measured)', () => {
+  it('always-on config = memory + MEASURED injected listings, and does NOT re-add plugin listings', () => {
     expect(a.alwaysOnConfigTokensPerTurn).toBeCloseTo(
-      a.globalClaudeMdTokens + a.projectClaudeMdTokens + a.skillDescriptionTokens + a.pluginListingTokens,
+      a.globalClaudeMdTokens +
+        a.projectClaudeMdTokens +
+        (a.autoMemoryTokens ?? 0) +
+        (a.skillListingTokens ?? 0) +
+        (a.hookOutputTokens ?? 0) +
+        (a.mcpInstructionTokens ?? 0) +
+        (a.deferredToolTokens ?? 0) +
+        (a.agentListingTokens ?? 0),
       6,
     );
+    // Written as the INVERSE of the line it replaced. Plugin assets appear INSIDE the
+    // injected skill listing (`claude-hud:setup` is in it verbatim), so the old additive
+    // formula counted them twice the moment the listing became measured. A deletion that
+    // leaves no assertion behind is one somebody re-does in three months.
+    if (a.pluginListingTokens > 0 && a.skillListingTokens != null) {
+      expect(a.alwaysOnConfigTokensPerTurn).not.toBeCloseTo(
+        a.globalClaudeMdTokens +
+          a.projectClaudeMdTokens +
+          (a.autoMemoryTokens ?? 0) +
+          (a.skillListingTokens ?? 0) +
+          a.pluginListingTokens,
+        6,
+      );
+    }
     // Config $ and observed $ are priced with the same per-token rate.
     if (a.standingContextTokens > 0 && a.alwaysOnConfigTokensPerTurn > 0) {
       expect(a.alwaysOnConfigMonthlyUsd / a.alwaysOnConfigTokensPerTurn).toBeCloseTo(
@@ -400,17 +421,29 @@ describe('always-on tax: config cost vs observed + MCP framing', () => {
     }
   });
 
-  it('treats MCP as deferred (~$0 standing) and reports a real invoked rate', () => {
+  it('a transcript with NO attachments does not vote on MCP deferral', () => {
+    // The fixture predates attachment records. `sawDeferredTools: false` there means "we
+    // never got to ask", not "tool search was off" — so the env default must survive.
+    // Reading the absence as a vote-against is the zero-means-unknown trap, and this
+    // assertion exists because the implementation had exactly that bug for one commit.
+    expect(session.injected?.sawAnyAttachment).toBe(false);
     expect(a.mcpDeferred).toBe(true); // default — ENABLE_TOOL_SEARCH not "false"
     expect(a.mcpInvokedRate).toBe(1); // the one session invoked an mcp__ tool
   });
 
-  it('per-skill carry sums to the total skill-description tokens (refactor regression-lock)', () => {
-    // skillCarry is the per-skill breakdown skillListingTokens used to collapse; the
-    // sum must still equal skillDescriptionTokens exactly.
-    const sum = a.skillCarry.reduce((n, s) => n + s.descTokens, 0);
-    expect(sum).toBe(a.skillDescriptionTokens);
-    expect(a.skillCarry.length).toBe(a.skillCount);
+  it('per-skill carry does NOT sum to the listing — it attributes inside it', () => {
+    // The inverse of the old lock, deliberately. skillCarry covers only skills we can
+    // find on disk; the injected listing also carries built-in skills that ship inside
+    // the Claude Code binary and can never be on disk. Asserting equality again would
+    // re-impose the census as the source of truth.
+    const sum = a.skillCarry.reduce((n, s) => n + (s.loaded ? s.descTokens : 0), 0);
+    if (a.skillListingTokens != null) expect(sum).toBeLessThanOrEqual(a.skillListingTokens);
+    // Every skill row is either loading, or not-loading WITH a reason. Neither state is
+    // allowed to be silent: a skill that vanished from the listing is information.
+    for (const s of a.skillCarry) {
+      if (!s.loaded) expect(s.notLoadedReason).toBeTruthy();
+      if (!s.loaded) expect(s.monthlyUsd).toBe(0); // a skill that never loads costs nothing
+    }
     // mcpServerNames is the deduped list behind mcpServerCount.
     expect(a.mcpServerNames.length).toBe(a.mcpServerCount);
   });
@@ -932,8 +965,8 @@ describe('aggregate record (privacy)', () => {
     expect(JSON.stringify(shared)).not.toContain('fix the thing');
   });
 
-  it('is schema v9 with roiLedger/temporal/friction blocks and spawn economics present', () => {
-    expect(aggregate.schemaVersion).toBe(9);
+  it('is schema v10 with roiLedger/temporal/friction blocks and spawn economics present', () => {
+    expect(aggregate.schemaVersion).toBe(10);
     // v9: which dollar figures are estimates, not just how much of the total is.
     expect(Array.isArray(aggregate.dataQuality.unpricedModels)).toBe(true);
     expect(aggregate.roiLedger).toBeTruthy();
@@ -943,6 +976,34 @@ describe('aggregate record (privacy)', () => {
     expect(typeof aggregate.alwaysOn.spawnsPerMonth).toBe('number');
     expect(typeof aggregate.alwaysOn.spawnPrefixTokens).toBe('number');
     expect(typeof aggregate.alwaysOn.spawnTaxMonthlyUsd).toBe('number');
+    // v10: the disk-censused skill figure is GONE, not kept alongside the measured one.
+    // Shipping both would let a downstream reader compare two different quantities under
+    // names one letter apart — the exact defect this change closes.
+    expect('skillDescriptionTokens' in aggregate.alwaysOn).toBe(false);
+    expect('skillListingTokens' in aggregate.alwaysOn).toBe(true);
+    expect('hookOutputTokens' in aggregate.alwaysOn).toBe(true);
+    expect('fixedPrefixTokens' in aggregate.alwaysOn).toBe(true);
+  });
+
+  it('v10 carries unknown as null, never as 0, and names the reason', () => {
+    // These fixtures predate attachment records, so every measured component is
+    // genuinely unmeasurable here — the exact case where reporting 0 would tell the
+    // reader "you carry no hook output" about a question we never got to ask.
+    const ao = aggregate.alwaysOn;
+    for (const f of ['skillListingTokens', 'hookOutputTokens', 'fixedPrefixTokens'] as const) {
+      expect(ao[f]).toBeNull();
+      expect(typeof ao.unmeasured?.[f]).toBe('string');
+    }
+  });
+
+  it('v10 uploads reconciliation as a COUNT — session ids stay local', () => {
+    expect(typeof aggregate.alwaysOn.reconciliationFailureCount).toBe('number');
+    // The rich failure rows exist locally and must not have a home in the payload.
+    expect('reconciliationFailures' in aggregate.alwaysOn).toBe(false);
+    // Residual kind names are vendor enum strings, never user content.
+    for (const k of aggregate.alwaysOn.otherInjectedKinds ?? []) {
+      expect(k).toMatch(/^[a-z_]+$/);
+    }
   });
 
   it('ships roiLedger as COUNTS ONLY — every value numeric/boolean, no skill/server names', () => {

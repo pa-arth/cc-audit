@@ -5,6 +5,8 @@
 // triggered — because cost must be attributed per-span (a naive "invocation to
 // end of session" attribution was 4x wrong during exploration).
 
+import type { InjectedPrefix } from './injectedPrefix.js';
+
 /** Token usage for a single assistant turn, split the way pricing needs it. */
 export interface TurnUsage {
   input: number;
@@ -103,6 +105,12 @@ export interface Session {
   /** Distinct permission/agent modes seen (e.g. 'plan') — fluency signal. */
   modes: string[];
   spans: Span[];
+  /** The injected turn-1 prefix, MEASURED from the transcript's `attachment` rows rather
+   *  than censused from disk. Optional: only the Claude Code adapter populates it, and
+   *  hand-built Sessions in tests omit it — treat missing as "not measured", NEVER as
+   *  zero. `measuredPrefixTokens` is filled by computeAlwaysOn, which owns the turn-1
+   *  selection, so the reconciliation cannot disagree with standingContextTokens. */
+  injected?: InjectedPrefix;
 }
 
 /** Flatten every assistant turn across a session's spans. */

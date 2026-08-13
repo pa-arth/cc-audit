@@ -48,7 +48,20 @@ import type { AnonTopSession } from './topSessions.js';
 // of its own dollar figures are estimates. A bare unpricedShare could not: a mispriced
 // model that is a small slice of one user's bill is the SAME missing table row for
 // everyone, and the aggregate is where that shows up as a pattern rather than a blip.
-export const AGGREGATE_SCHEMA_VERSION = 9;
+// v10: alwaysOn's injected-prefix components, MEASURED from the transcript's first-turn
+// attachment records instead of censused from disk — skillListingTokens (replacing
+// skillDescriptionTokens, which was a floor ~5.9x low and is REMOVED rather than kept
+// alongside, because a field that keeps its name while changing meaning lets a
+// downstream comparison silently mix two quantities), hookOutputTokens (no field at all
+// before), autoMemoryTokens (split out of projectClaudeMdTokens), mcp/deferred/agent
+// listing sizes, the named residual, and fixedPrefixTokens. Nothing new about the USER
+// leaves: these are token COUNTS of blocks Claude Code generated, and the only strings
+// are vendor-defined attachment-kind names and tool-authored reason constants. The
+// per-skill and per-hook breakdowns stay LOCAL, same bar as skillCarry.
+//
+// Every new field is nullable-and-optional so `unknown` survives the wire. A v9 client
+// posting to a v10 server omits them and they read as unknown, not as zero.
+export const AGGREGATE_SCHEMA_VERSION = 10;
 
 // Well-known public command/skill names kept verbatim; everything else is hashed
 // so a custom name like `acme-deploy` can't leak project/company info.
@@ -160,8 +173,28 @@ export const AggregateRecordSchema = z.object({
     alwaysOnConfigMonthlyUsd: z.number(),
     globalClaudeMdTokens: z.number(),
     projectClaudeMdTokens: z.number(),
-    skillDescriptionTokens: z.number(),
-    skillCount: z.number(),
+    // MEASURED components, read from the transcript's first-turn attachment records.
+    // Every one is nullable-and-optional: `null` means the tool could not size it and
+    // ABSENT means an older client that predates the field. Neither is 0 — a reader
+    // seeing 0 concludes "you carry none of this", which is a stronger and more wrong
+    // claim than saying nothing. The server must preserve that distinction.
+    autoMemoryTokens: z.number().nullable().optional(),
+    skillListingTokens: z.number().nullable().optional(),
+    skillCount: z.number().nullable(),
+    userCommandTokens: z.number().optional(),
+    skillListingUnattributedTokens: z.number().nullable().optional(),
+    hookOutputTokens: z.number().nullable().optional(),
+    mcpInstructionTokens: z.number().nullable().optional(),
+    deferredToolTokens: z.number().nullable().optional(),
+    agentListingTokens: z.number().nullable().optional(),
+    otherInjectedTokens: z.number().nullable().optional(),
+    /** Kind NAMES only — vendor-defined enum strings, no user content. */
+    otherInjectedKinds: z.array(z.string()).optional(),
+    fixedPrefixTokens: z.number().nullable().optional(),
+    /** COUNT only. The failure detail names session ids and stays local. */
+    reconciliationFailureCount: z.number().optional(),
+    /** Field name → reason. Reasons are tool-authored constants, never user content. */
+    unmeasured: z.record(z.string()).optional(),
     pluginSkillTokens: z.number(),
     pluginCommandTokens: z.number(),
     pluginAgentTokens: z.number(),
@@ -323,8 +356,22 @@ export function buildAggregateRecord(
       alwaysOnConfigMonthlyUsd: alwaysOn.alwaysOnConfigMonthlyUsd,
       globalClaudeMdTokens: alwaysOn.globalClaudeMdTokens,
       projectClaudeMdTokens: alwaysOn.projectClaudeMdTokens,
-      skillDescriptionTokens: alwaysOn.skillDescriptionTokens,
+      autoMemoryTokens: alwaysOn.autoMemoryTokens,
+      skillListingTokens: alwaysOn.skillListingTokens,
       skillCount: alwaysOn.skillCount,
+      userCommandTokens: alwaysOn.userCommandTokens,
+      skillListingUnattributedTokens: alwaysOn.skillListingUnattributedTokens,
+      hookOutputTokens: alwaysOn.hookOutputTokens,
+      mcpInstructionTokens: alwaysOn.mcpInstructionTokens,
+      deferredToolTokens: alwaysOn.deferredToolTokens,
+      agentListingTokens: alwaysOn.agentListingTokens,
+      otherInjectedTokens: alwaysOn.otherInjectedTokens,
+      otherInjectedKinds: alwaysOn.otherInjectedKinds,
+      fixedPrefixTokens: alwaysOn.fixedPrefixTokens,
+      // COUNT, not the rows. The failure detail carries session ids, which stay local —
+      // same bar as skillCarry and mcpServerNames.
+      reconciliationFailureCount: alwaysOn.reconciliationFailures.length,
+      unmeasured: alwaysOn.unmeasured,
       pluginSkillTokens: alwaysOn.pluginSkillTokens,
       pluginCommandTokens: alwaysOn.pluginCommandTokens,
       pluginAgentTokens: alwaysOn.pluginAgentTokens,
