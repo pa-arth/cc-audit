@@ -346,8 +346,16 @@ export interface ComputeOpenAICostParams {
   outputTokens: number;
 }
 
-// Static OpenAI pricing table (verified July 2026).
+// Static OpenAI pricing table (terra/luna re-verified 2026-08-14; rest July 2026).
 // Source: https://openai.com/api/pricing/ and https://developers.openai.com/codex/pricing
+//
+// THIS TABLE IS A HAND-COPIED MIRROR of promptster-backend `packages/config-cost`,
+// and it has no subscriber to that repo — cc-audit deliberately does not depend on it.
+// So the mirror goes stale silently, and did: the backend corrected gpt-5.6-terra and
+// gpt-5.6-luna on 2026-07-31 and this copy kept the launch tiers for two more weeks.
+// `pricingDrift.test.ts` is the only thing that notices, which is why a red run there
+// is not a test to relax. Its own instruction, from the commit that fixed the backend
+// side: find out who is right, do not update the expectation.
 // Cached input is 10% of the standard input rate across the GPT-5 family.
 // Codex variants (e.g. gpt-5.2-codex) are priced identically to their base model.
 // The `pro` tiers publish no cached-input rate in either registry (they do not
@@ -355,12 +363,14 @@ export interface ComputeOpenAICostParams {
 // stray cached-token count can never under-bill them — the discount has to be
 // published before we apply it.
 export const OPENAI_PRICING: Record<string, OpenAIModelPricing> = {
-  // ── GPT-5.6 (GA 2026-07-09; rates unchanged from the 2026-06-25 preview) ──
-  // Sol matches the GPT-5.5 tier, Terra the GPT-5.4 tier, Luna a new $1/$6 tier.
+  // ── GPT-5.6 (GA 2026-07-09) ──
+  // Sol matches the GPT-5.5 tier. Terra and Luna were REPRICED after GA — the launch
+  // tiers were 2.5/15 and 1/6, and this table carried them until 2026-08-14. Do not
+  // "restore" them from a launch-day source; the numbers below are the current ones.
   'gpt-5.6': { input: 5, cachedInput: 0.5, output: 30 },
   'gpt-5.6-sol': { input: 5, cachedInput: 0.5, output: 30 },
-  'gpt-5.6-terra': { input: 2.5, cachedInput: 0.25, output: 15 },
-  'gpt-5.6-luna': { input: 1, cachedInput: 0.1, output: 6 },
+  'gpt-5.6-terra': { input: 2, cachedInput: 0.2, output: 12 },
+  'gpt-5.6-luna': { input: 0.2, cachedInput: 0.02, output: 1.2 },
   // ── GPT-5.5 ──
   'gpt-5.5': { input: 5, cachedInput: 0.5, output: 30 },
   'gpt-5.5-codex': { input: 5, cachedInput: 0.5, output: 30 },
