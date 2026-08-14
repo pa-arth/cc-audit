@@ -14,7 +14,7 @@ import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { countTokens } from './configFiles.js';
-import { skillListingTokens } from './alwaysOn.js';
+import { diskSkillListingTokens } from './alwaysOn.js';
 import type { Session } from './model.js';
 
 /** One installed+enabled plugin's standing cost and usage status. LOCAL detail — the
@@ -147,7 +147,7 @@ export function computePluginTax(sessions: Session[]): PluginTax {
     const name = at >= 0 ? key.slice(0, at) : key;
     const marketplace = at >= 0 ? key.slice(at + 1) : '';
 
-    const skills = skillListingTokens(join(installPath, 'skills'));
+    const skills = diskSkillListingTokens(join(installPath, 'skills'));
     const commandTokens = flatListingTokens(join(installPath, 'commands'));
     const agentTokens = flatListingTokens(join(installPath, 'agents'));
 

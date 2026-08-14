@@ -272,40 +272,154 @@ export function renderReport(r: AuditResult, opts: { rows?: number; delta?: Hist
   // Reframed: this is what your CHOSEN context costs every turn, not "savings" to cut.
   const a = r.alwaysOn;
   const mcpDesc = a.mcpDeferred ? 'deferred by default (~$0 standing)' : 'eagerly loaded';
-  // One row per asset kind that actually contributes tokens — a commands-only plugin set
-  // shouldn't print an empty "plugin skills ≥0 tok" line. The enabled-plugin count rides
-  // on whichever row renders first.
-  const pluginRows: string[] = [];
-  if (a.pluginCount > 0) {
-    const kinds: { label: string; tokens: number; usd: number; desc: string }[] = [
-      { label: 'plugin skills  ', tokens: a.pluginSkillTokens, usd: a.pluginSkillUsd, desc: 'bundled skills' },
-      { label: 'plugin commands', tokens: a.pluginCommandTokens, usd: a.pluginCommandUsd, desc: 'bundled slash commands' },
-      { label: 'plugin agents  ', tokens: a.pluginAgentTokens, usd: a.pluginAgentUsd, desc: 'bundled subagents' },
-    ];
-    for (const k of kinds.filter((k) => k.tokens > 0)) {
-      const note = pluginRows.length === 0 ? `${a.pluginCount} enabled plugins load every turn` : k.desc;
-      pluginRows.push(
-        `  ${k.label}    ≥${padL(Math.round(k.tokens).toLocaleString() + ' tok', 8)}  ` +
-          `${money(padL(usd(k.usd) + '/mo', 9))}  ${c.dim(note)}`,
-      );
-    }
+  // Plugin and user-command listings are ATTRIBUTION INSIDE the measured skill listing —
+  // `claude-hud:setup` and `opsx:apply` appear in that block verbatim. They are rendered
+  // as an indented breakdown UNDER the listing rather than as sibling rows, because a
+  // sibling row in the same column reads as an addend and the reader would double-count
+  // exactly the way the code used to. No `≥`: these are slices of a measured number now,
+  // not floors under an estimated one.
+  const attributionRows: string[] = [];
+  const slice = (label: string, tokens: number, usdVal: number, desc: string) =>
+    `      ${c.dim('·')} ${pad(label, 16)} ${padL(Math.round(tokens).toLocaleString() + ' tok', 9)}  ` +
+    `${money(padL(usd(usdVal) + '/mo', 9))}  ${c.dim(desc)}`;
+  // EVERY slice is printed, including the unattributable remainder, so the indented rows
+  // ADD UP to the measured listing above them. A breakdown that silently omits a slice
+  // invites the reader to conclude the parent number is wrong.
+  const loadedSkills = a.skillCarry.filter((sk) => sk.loaded);
+  if (loadedSkills.length > 0) {
+    attributionRows.push(
+      slice(
+        'your skills',
+        loadedSkills.reduce((n, sk) => n + sk.descTokens, 0),
+        loadedSkills.reduce((n, sk) => n + sk.monthlyUsd, 0),
+        `${loadedSkills.length} in ~/.claude/skills`,
+      ),
+    );
   }
+  if (a.userCommandTokens > 0) {
+    attributionRows.push(
+      slice('your commands', a.userCommandTokens, a.userCommandUsd, '~/.claude/commands'),
+    );
+  }
+  if (a.pluginCount > 0 && a.pluginListingTokens > 0) {
+    attributionRows.push(
+      slice(
+        'plugin listings',
+        a.pluginListingTokens,
+        a.pluginListingUsd,
+        `${a.pluginCount} enabled plugin${a.pluginCount === 1 ? '' : 's'}`,
+      ),
+    );
+  }
+  if (a.skillListingUnattributedTokens != null && a.skillListingUnattributedTokens > 0) {
+    attributionRows.push(
+      // Priced honestly rather than blanked: built-in skills DO cost money every turn.
+      // The point is that the cost is not yours to cut, not that it is zero.
+      slice(
+        'built-in / other',
+        a.skillListingUnattributedTokens,
+        a.skillListingUsd == null
+          ? 0
+          : (a.skillListingUsd * a.skillListingUnattributedTokens) / Math.max(1, a.skillListingTokens ?? 1),
+        'ships inside Claude Code — not on disk, not yours to cut',
+      ),
+    );
+  }
+  // A measured component prints its number plainly. An UNMEASURED one prints "unknown"
+  // with its reason — never 0, which a reader takes as "you carry none of this".
+  const compRow = (
+    label: string,
+    field: string,
+    tokens: number | null,
+    usdVal: number | null,
+    desc: string,
+  ): string =>
+    tokens == null
+      ? `  ${label} ${padL('unknown', 9)}  ${padL('—', 9)}  ${c.dim(a.unmeasured[field] ?? 'not measurable')}`
+      : `  ${label} ${padL(Math.round(tokens).toLocaleString() + ' tok', 9)}  ` +
+        `${money(padL(usdVal == null ? '—' : usd(usdVal) + '/mo', 9))}  ${c.dim(desc)}`;
+
   const taxRows = [
     c.dim('always-on config — context you chose, re-paid every turn (useful ≠ free):'),
     `  project memory     ${padL(Math.round(a.projectClaudeMdTokens).toLocaleString() + ' tok', 9)}  ` +
-      `${money(padL(usd(a.projectClaudeMdUsd) + '/mo', 9))}  ${c.dim('← CLAUDE.md/.local/rules + auto-memory, cwd→root')}`,
+      `${money(padL(usd(a.projectClaudeMdUsd) + '/mo', 9))}  ${c.dim('← CLAUDE.md/.local/rules, cwd→root')}`,
+    compRow('auto-memory       ', 'autoMemoryTokens', a.autoMemoryTokens, a.autoMemoryUsd, '← MEMORY.md, first 200 lines / 25KB'),
     `  global memory      ${padL(a.globalClaudeMdTokens.toLocaleString() + ' tok', 9)}  ` +
       `${money(padL(usd(a.globalClaudeMdUsd) + '/mo', 9))}  ${c.dim('→ ~/.claude/CLAUDE.md (+ .local, managed policy)')}`,
-    `  skill listings     ≥${padL(a.skillDescriptionTokens.toLocaleString() + ' tok', 8)}  ` +
-      `${money(padL(usd(a.skillDescriptionUsd) + '/mo', 9))}  ${c.dim(`${a.skillCount} user skills load every turn`)}`,
-    ...pluginRows,
+    // No `≥` any more. It was honest about a floor and read as a measurement anyway; the
+    // number under it is now the measured block, so the marker would be the lie.
+    compRow(
+      'skill listing     ',
+      'skillListingTokens',
+      a.skillListingTokens,
+      a.skillListingUsd,
+      `${a.skillCount ?? '?'} skills load every turn (measured from the injected listing)`,
+    ),
+    ...attributionRows,
+    compRow('hook output       ', 'hookOutputTokens', a.hookOutputTokens, a.hookOutputUsd, '← your hooks; 100% yours, 100% removable'),
+    // Naming the hook is what makes the line actionable — LOCAL-only, never uploaded.
+    // Each row is that hook's MEDIAN over the sessions it fired in, so the rows do NOT
+    // sum to the line above (medians don't add, and a hook that fires in 20 of 500
+    // sessions has a large median and a small contribution). The session count is printed
+    // for exactly that reason: without it a reader tries to add them up and concludes the
+    // parent is wrong.
+    ...a.hookCarry
+      .slice(0, 3)
+      .map(
+        (h) =>
+          `      ${c.dim('·')} ${pad(h.hookName, 16)} ${padL(Math.round(h.tokens).toLocaleString() + ' tok', 9)}  ` +
+          `${money(padL(usd(h.monthlyUsd) + '/mo', 9))}  ${c.dim(`median of ${h.sessions} session${h.sessions === 1 ? '' : 's'}`)}`,
+      ),
+    compRow('MCP instructions  ', 'mcpInstructionTokens', a.mcpInstructionTokens, a.mcpInstructionUsd, `← ${a.mcpServerCount} configured servers`),
+    compRow('deferred tools    ', 'deferredToolTokens', a.deferredToolTokens, a.deferredToolUsd, '← ToolSearch stub list'),
+    compRow('agent listing     ', 'agentListingTokens', a.agentListingTokens, a.agentListingUsd, '← subagent types available'),
+    ...(a.otherInjectedTokens != null && a.otherInjectedTokens > 0
+      ? [
+          compRow(
+            'other injected    ',
+            'otherInjectedTokens',
+            a.otherInjectedTokens,
+            null,
+            `← ${a.otherInjectedKinds.join(', ')}`,
+          ),
+        ]
+      : []),
     rule(),
     `  ${c.emerald(`your config adds ≈ ${c.bold(usd(a.alwaysOnConfigMonthlyUsd) + '/mo')} of standing context`)}`,
     c.dim(
       `observed standing context: ${a.standingContextTokens.toLocaleString()} tok/turn ` +
         `(~${usd(a.observedMonthlyUsd)}/mo of spend)`,
     ),
-    c.dim("  — the rest is FIXED system prompt + tool schemas you can't trim; see /context"),
+    // The fixed remainder gets its own line with a number. Without it the breakdown above
+    // reads as "delete all of this" when the vendor owns the large majority of the floor.
+    ...(a.fixedPrefixTokens != null
+      ? [
+          c.dim(
+            `  — of which ${Math.round(a.fixedPrefixTokens).toLocaleString()} tok is FIXED system prompt + ` +
+              `tool schemas (~${usd(a.fixedPrefixUsd ?? 0)}/mo). NOT yours to trim; see /context`,
+          ),
+        ]
+      : [c.dim("  — the rest is FIXED system prompt + tool schemas you can't trim; see /context")]),
+    ...(a.reconciliationFailures.length > 0
+      ? [
+          c.gold(
+            `  ⚠ ${a.reconciliationFailures.length} session(s) did not reconcile — components exceed the ` +
+              `measured prefix. Reported, not clamped; see --json reconciliationFailures.`,
+          ),
+        ]
+      : []),
+    // Skills on disk that never load. Previously billed a per-turn cost they don't have;
+    // now shown as what they are, so the user can delete them or re-enable them knowingly.
+    ...(() => {
+      const off = a.skillCarry.filter((s) => !s.loaded);
+      if (off.length === 0) return [];
+      return [
+        c.dim(
+          `${off.length} skill${off.length === 1 ? '' : 's'} on disk never appeared in a skill listing ` +
+            `(${off.slice(0, 4).map((s) => s.slug).join(', ')}${off.length > 4 ? ', …' : ''}) — not charged`,
+        ),
+      ];
+    })(),
     ...(a.spawnsPerMonth > 0
       ? wrap(
           `subagent spawns re-WRITE that context: ${a.spawnsPerMonth.toFixed(1)}/mo × ` +

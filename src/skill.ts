@@ -82,10 +82,25 @@ The record is large. These are the ones that carry the diagnosis:
 **Standing overhead — paid on every single turn**
 - \`alwaysOn.standingContextTokens\`, \`alwaysOnConfigTokensPerTurn\`,
   \`alwaysOnConfigMonthlyUsd\`.
-- \`alwaysOn.globalClaudeMdTokens\` / \`projectClaudeMdTokens\` — the CLAUDE.md tax.
-- \`alwaysOn.skillCount\`, \`skillDescriptionTokens\`, \`pluginCount\`,
-  \`unusedPluginCount\`, \`pluginListingTokens\`, \`mcpServerCount\`, \`mcpDeferred\`,
-  \`mcpInvokedRate\` — installed surface that costs tokens whether or not it is used.
+- \`alwaysOn.globalClaudeMdTokens\` / \`projectClaudeMdTokens\` / \`autoMemoryTokens\` —
+  the memory tax, split three ways because they are edited by different people on
+  different cadences.
+- \`alwaysOn.skillListingTokens\`, \`hookOutputTokens\`, \`mcpInstructionTokens\`,
+  \`deferredToolTokens\`, \`agentListingTokens\`, \`otherInjectedTokens\` — the injected
+  blocks, MEASURED from each session's first-turn attachment records. \`hookOutputTokens\`
+  is usually the most actionable line: it is entirely user-authored and entirely
+  removable, and \`hookCarry\` names the hook.
+- \`alwaysOn.fixedPrefixTokens\` — system prompt + tool schemas, the remainder. Usually
+  MOST of the floor. Say so: without it a breakdown reads as "delete all of this".
+- A component reading \`null\` is UNKNOWN, not zero — \`alwaysOn.unmeasured\` names why.
+  Never present a null as 0 or as "none".
+- \`alwaysOn.skillCount\` counts the injected LISTING, not directories on disk, and
+  \`skillCarry[].loaded\` is false for a skill that is installed but not loading (e.g.
+  \`skillOverrides: off\`). Those cost nothing — do not advise deleting them to save money.
+- \`alwaysOn.pluginCount\`, \`unusedPluginCount\`, \`pluginListingTokens\`,
+  \`mcpServerCount\`, \`mcpDeferred\`, \`mcpInvokedRate\` — installed surface that costs
+  tokens whether or not it is used. NB \`pluginListingTokens\` and \`userCommandTokens\`
+  are slices INSIDE \`skillListingTokens\`, not additions to it.
 - \`alwaysOn.spawnsPerMonth\`, \`spawnPrefixTokens\`, \`spawnTaxMonthlyUsd\` — subagent
   respawn overhead.
 - \`roiLedger.deadWeightSkillCount\`, \`deadWeightSkillCarryUsdPerMonth\`,

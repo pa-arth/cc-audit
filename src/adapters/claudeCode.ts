@@ -7,6 +7,8 @@
 import { readdirSync, readFileSync, statSync, type Dirent } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, join } from 'node:path';
+import { countTokens } from '../configFiles.js';
+import { emptyInjectedPrefix, foldAttachment } from '../injectedPrefix.js';
 import type { AssistantTurn, Session, Span, TurnUsage } from '../model.js';
 
 const COMMAND_RE = /<command-(?:message|name)>([^<\n]+)<\/command-(?:message|name)>/;
@@ -198,6 +200,14 @@ export function parseTranscript(
   // legacy spawns can interleave rows across these splits; that ambiguity is
   // inherent to the old format, and sequential splitting is strictly better than
   // one merged span.
+  // The injected turn-1 prefix, measured from the `attachment` rows Claude Code writes
+  // ahead of the first MAIN-CHAIN assistant turn. `injectedOpen` closes at that turn:
+  // attachments after it are mid-session injections (task reminders, opened files) and
+  // are not standing context. Sidechain rows never contribute — a subagent's prefix is
+  // its own, and folding it in would let several spawns outvote the session.
+  const injected = emptyInjectedPrefix();
+  let injectedOpen = true;
+
   const subSpans = new Map<string, Span>();
   let anonSeq = 0;
   const ensureSubSpan = (agentId: string): Span => {
@@ -263,6 +273,13 @@ export function parseTranscript(
         }
       }
       const text = userText(msg.content);
+      // Everything on a main-chain user row ahead of turn 1 entered the prefix — the
+      // prompt AND the <system-reminder> blocks riding with it, which is where CLAUDE.md
+      // and auto-memory are actually injected. Counted as ONE term because it arrived as
+      // one: the memory fields attribute inside it, they do not add to it. Splitting the
+      // prompt out and then adding disk-measured memory alongside would double-count the
+      // memory against itself.
+      if (injectedOpen && !d.isSidechain) injected.userMessageTokens += countTokens(text);
       // A sidechain user row is the subagent's task instruction — route it to that
       // agent's span (not the main chain) and record what spawned it.
       if (d.isSidechain) {
@@ -311,12 +328,20 @@ export function parseTranscript(
         const span = cur ?? ensureSpan(null);
         for (const s of att.skills) if (s.name) span.invokedSkills.push(s.name);
       }
+      if (injectedOpen && !d.isSidechain) foldAttachment(injected, att as Record<string, unknown>);
       continue;
     }
 
     if (type === 'assistant') {
       const msg = (d.message ?? {}) as { id?: string; model?: string; usage?: RawUsage; content?: unknown };
       if (!msg.usage) continue;
+      // Turn 1 has been reached: the prefix is now fixed and later attachments are
+      // mid-session injections. Closed here rather than after the dedup checks below so
+      // a resumed replay (whose turn-1 row is owned by an earlier transcript) still stops
+      // collecting — otherwise the whole session's attachments would fold into "turn 1".
+      // measuredPrefixTokens is filled by computeAlwaysOn from the SAME turn it medians,
+      // so the reconciliation can never disagree with standingContextTokens.
+      if (!d.isSidechain) injectedOpen = false;
       const key = msg.id ?? (d.requestId as string) ?? (d.uuid as string) ?? '';
       const blocks = Array.isArray(msg.content) ? (msg.content as ContentBlock[]) : [];
 
@@ -393,7 +418,7 @@ export function parseTranscript(
 
   const withTurns = spans.filter((s) => s.turns.length > 0);
   if (withTurns.length === 0) return null;
-  return { sessionId, project, cwd, mtime, modes: [...modes], spans: withTurns };
+  return { sessionId, project, cwd, mtime, modes: [...modes], spans: withTurns, injected };
 }
 
 /** Decode a transcript directory name back to a readable project path. */
