@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { parseTranscript } from '../adapters/claudeCode.js';
-import { computeAlwaysOn } from '../alwaysOn.js';
+import { computeAlwaysOn, MAX_UPLOADED_STRING_CHARS, UNMEASURED_REASONS } from '../alwaysOn.js';
 import {
   attachmentTokens,
   attributedTokens,
@@ -243,5 +243,39 @@ describe('injected prefix: unknown is not zero', () => {
       if (prev === undefined) delete process.env.ENABLE_TOOL_SEARCH;
       else process.env.ENABLE_TOOL_SEARCH = prev;
     }
+  });
+});
+
+describe('unmeasured reasons stay inside the upload bound', () => {
+  // These sentences are the FIRST strings in the aggregate that can approach the
+  // solo-capture endpoint's per-string ceiling. Everything before v10 was a model id or
+  // a hash — 25 chars at the longest — so the bound had no plausible way to bite.
+  //
+  // What a breach costs is why this is a test and not a comment: the server screens
+  // every string leaf and 400s the WHOLE capture on a breach, and `sendCapture()`
+  // ignores the response by design so a local run can never be broken by telemetry. So
+  // the failure mode is the entire record silently not arriving, for every user, from
+  // the release that reworded a sentence. Nothing downstream can detect that; the
+  // corpus just thins.
+  it('every reason is short enough and single-line', () => {
+    for (const [key, reason] of Object.entries(UNMEASURED_REASONS)) {
+      expect(reason.length, `${key} is ${reason.length} chars`).toBeLessThanOrEqual(
+        MAX_UPLOADED_STRING_CHARS,
+      );
+      // A line break is rejected at ANY length — the screen reads a newline as
+      // "this is text, not an identifier", which is exactly right and exactly what a
+      // wrapped multi-line template literal would produce.
+      expect(reason, `${key} contains a line break`).not.toMatch(/[\n\r]/);
+    }
+  });
+
+  it('the reasons a real run emits come from that enumerated set', () => {
+    // The bound above is worth nothing if a call site writes its own literal instead.
+    // An empty-corpus run is the case that populates every field's reason at once.
+    const tax = computeAlwaysOn([]);
+    const reasons = Object.values(tax.unmeasured);
+    expect(reasons.length).toBeGreaterThan(0);
+    const known = new Set<string>(Object.values(UNMEASURED_REASONS));
+    for (const r of reasons) expect(known.has(r), `unenumerated reason: ${r}`).toBe(true);
   });
 });

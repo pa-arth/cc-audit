@@ -64,6 +64,30 @@ export interface SkillCarry {
  *  carries a real measurement, including a real measured zero. */
 export type UnmeasuredReasons = Record<string, string>;
 
+/** Every reason a field can report `null` for, in one enumerable place.
+ *
+ *  Extracted from the call sites so they can be BOUNDED rather than trusted. These
+ *  strings ride into the uploaded aggregate (`alwaysOn.unmeasured`), and the solo-capture
+ *  endpoint screens every string leaf: over 200 chars, or any line break, and the server
+ *  400s **the entire capture** — not the field, the capture, silently, because
+ *  `sendCapture()` ignores the response by design. Before v10 the aggregate's longest
+ *  string was a 25-char model id, so nothing there could come close; these sentences are
+ *  the first strings that can. `injectedPrefix.test.ts` bounds them.
+ *
+ *  They are also printed in the report, which may never use the word "window" — a word it
+ *  cannot define for the reader (`report.test.ts` enforces that separately). */
+export const UNMEASURED_REASONS = {
+  noSessions: 'no sessions on disk to measure',
+  noAttachments:
+    'no session recorded first-turn attachments (transcripts predate the format, or every session was a resumed replay)',
+  noCwd: 'no session recorded a working directory, so no project memory dir could be located',
+} as const;
+
+/** The server's bound, restated here rather than imported — cc-audit does not depend on
+ *  the backend, and a copied constant with a test behind it beats a coupling. Mirrors
+ *  MAX_AGGREGATE_STRING_CHARS in promptster-backend `apps/api/src/lib/soloCaptureScreen.ts`. */
+export const MAX_UPLOADED_STRING_CHARS = 200;
+
 export interface AlwaysOnTax {
   /** OBSERVED: median standing-context size carried into every turn (turn-1 prefix).
    *  Mostly fixed system + tool schemas — NOT all recoverable. */
@@ -549,12 +573,8 @@ export function computeAlwaysOn(sessions: Session[]): AlwaysOnTax {
   // is a measurement, including a measured 0; a field reporting null is a question we
   // could not answer. They are never the same value.
   const unmeasured: UnmeasuredReasons = {};
-  // NB: these strings are printed in the report, which may never use the word "window" —
-  // a word it could not define for the reader (report.test.ts enforces it).
   const noInjection =
-    sessions.length === 0
-      ? 'no sessions on disk to measure'
-      : 'no session recorded first-turn attachments (transcripts predate the format, or every session was a resumed replay)';
+    sessions.length === 0 ? UNMEASURED_REASONS.noSessions : UNMEASURED_REASONS.noAttachments;
   const med = (xs: number[], field: string): number | null => {
     if (xs.length === 0) {
       unmeasured[field] = noInjection;
@@ -576,7 +596,7 @@ export function computeAlwaysOn(sessions: Session[]): AlwaysOnTax {
   // arrived as 0. Distinguish them by whether we ever had a cwd to ask about at all.
   const autoMemory = cwdKnownTurns ? autoMemoryTokenTurns / cwdKnownTurns : null;
   if (autoMemory == null) {
-    unmeasured.autoMemoryTokens = 'no session recorded a working directory, so no project memory dir could be located';
+    unmeasured.autoMemoryTokens = UNMEASURED_REASONS.noCwd;
   }
 
   // ---- Attribution INSIDE the measured listing (never added to it). ---------------
