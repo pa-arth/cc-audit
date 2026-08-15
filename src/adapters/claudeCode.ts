@@ -207,6 +207,10 @@ export function parseTranscript(
   // its own, and folding it in would let several spawns outvote the session.
   const injected = emptyInjectedPrefix();
   let injectedOpen = true;
+  /** Message key of the row that CLOSED the injection window (the true turn 1). */
+  let prefixCloseKey: string | null = null;
+  /** Message key of the first RETAINED main-chain turn — the one `firstMain` picks. */
+  let firstRetainedMainKey: string | null = null;
 
   const subSpans = new Map<string, Span>();
   let anonSeq = 0;
@@ -335,14 +339,27 @@ export function parseTranscript(
     if (type === 'assistant') {
       const msg = (d.message ?? {}) as { id?: string; model?: string; usage?: RawUsage; content?: unknown };
       if (!msg.usage) continue;
+      const key = msg.id ?? (d.requestId as string) ?? (d.uuid as string) ?? '';
       // Turn 1 has been reached: the prefix is now fixed and later attachments are
       // mid-session injections. Closed here rather than after the dedup checks below so
       // a resumed replay (whose turn-1 row is owned by an earlier transcript) still stops
       // collecting — otherwise the whole session's attachments would fold into "turn 1".
-      // measuredPrefixTokens is filled by computeAlwaysOn from the SAME turn it medians,
-      // so the reconciliation can never disagree with standingContextTokens.
+      //
+      // THAT IS ONLY HALF THE PROBLEM, and the other half went unnoticed until review.
+      // `computeAlwaysOn` pairs these attachments with `firstMain` — the first RETAINED
+      // main-chain turn. On a resumed transcript the row closing this window is a replay
+      // owned by an earlier file, so `seen` drops it below and `firstMain` lands on a
+      // LATER turn whose prefix has the whole replayed conversation folded into its
+      // cacheRead. Attributed stays turn-1-sized while measured grows, so
+      // `fixedPrefixTokens` INFLATES — and `reconcile()` cannot catch that, because it
+      // only fires on a NEGATIVE remainder. Inflation is the silent direction.
+      //
+      // So record which row closed the window; the retain path below records the row
+      // `firstMain` will pick. If they differ, the session cannot answer "what did turn 1
+      // carry", and computeAlwaysOn declines to measure it rather than pairing two halves
+      // that came from different turns.
+      if (!d.isSidechain && injectedOpen) prefixCloseKey = key;
       if (!d.isSidechain) injectedOpen = false;
-      const key = msg.id ?? (d.requestId as string) ?? (d.uuid as string) ?? '';
       const blocks = Array.isArray(msg.content) ? (msg.content as ContentBlock[]) : [];
 
       // A single streamed assistant message is logged across MULTIPLE rows sharing
@@ -403,6 +420,9 @@ export function parseTranscript(
       } else {
         const span = cur ?? ensureSpan(null);
         span.turns.push(turn);
+        // First RETAINED main-chain turn — exactly what `firstMain` resolves to, so the
+        // comparison against prefixCloseKey is against the real selection, not a proxy.
+        firstRetainedMainKey ??= key;
         // Model-invoked skills (the `Skill` tool, e.g. "ship this" → commit-push-pr)
         // carry no slash marker — record the skill name so attribution can surface
         // the leak board's natural-language blind spot.
@@ -418,6 +438,10 @@ export function parseTranscript(
 
   const withTurns = spans.filter((s) => s.turns.length > 0);
   if (withTurns.length === 0) return null;
+  // Do the attachments and the usage describe the SAME turn? Both null (no main-chain
+  // assistant row at all) is not agreement — there is no turn to describe, and
+  // `firstMain` is undefined anyway, so the session is skipped upstream regardless.
+  injected.prefixTurnIsFirst = prefixCloseKey !== null && prefixCloseKey === firstRetainedMainKey;
   return { sessionId, project, cwd, mtime, modes: [...modes], spans: withTurns, injected };
 }
 

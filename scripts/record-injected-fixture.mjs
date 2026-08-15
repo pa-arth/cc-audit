@@ -8,9 +8,9 @@
 // list is thirteen long where the design doc said five. A fixture written from that
 // design doc would have passed while the parser was wrong. So fixtures are RECORDED.
 //
-// WHAT IS PRESERVED, EXACTLY: every row up to and including the first main-chain
-// assistant turn, in order; every `type` and `attachment.type`; every field NAME; every
-// string LENGTH; and all usage numbers verbatim.
+// WHAT IS PRESERVED, EXACTLY: every row up to and including the Nth main-chain assistant
+// TURN (N defaults to 1), in order; every `type` and `attachment.type`; every field NAME;
+// every string LENGTH; all usage numbers verbatim; and the distinctness of every id.
 //
 // WHAT IS REPLACED: the content of every string. Hook output on this machine contains
 // other sessions' prompts and prompts contain work in progress, and neither belongs in a
@@ -29,11 +29,20 @@
 import { createReadStream, writeFileSync } from 'node:fs';
 import { createInterface } from 'node:readline';
 
-const [src, dest] = process.argv.slice(2);
+const [src, dest, turnsArg] = process.argv.slice(2);
 if (!src || !dest) {
-  console.error('usage: record-injected-fixture.mjs <transcript.jsonl> <out.jsonl>');
+  console.error('usage: record-injected-fixture.mjs <transcript.jsonl> <out.jsonl> [mainTurns=1]');
   process.exit(1);
 }
+/** How many main-chain assistant turns to keep. 1 (the default) records the turn-1
+ *  prefix, which is all the original fixtures needed. 2 is required for the
+ *  resumed-transcript case: it needs a SECOND turn for the dedup to leave behind. */
+const stopAfterTurns = turnsArg ? Number(turnsArg) : 1;
+if (!Number.isInteger(stopAfterTurns) || stopAfterTurns < 1) {
+  console.error('mainTurns must be a positive integer');
+  process.exit(1);
+}
+const mainTurnIds = new Set();
 
 // Deterministic, obviously-synthetic filler. Not random: a fixture that changes on every
 // recording makes a diff unreadable and invites `-u`-ing a real regression green.
@@ -71,11 +80,32 @@ const STRUCTURAL = new Set([
   'speed',
 ]);
 
+// Identity keys. These do NOT get flat filler, and the reason is a bug this script
+// shipped: `message.id` was filled to a constant, so every assistant row in a recording
+// carried the SAME id — and the parser merges same-id rows into one turn. A two-turn
+// recording came back as one turn with one prefix, which is a shape Claude Code cannot
+// emit. (The old comment here said ids "key nothing across fixtures". They key the
+// cross-file `seen` dedup and the streamed-row merge, which is most of what this parser
+// does.)
+//
+// So identity is replaced by a BIJECTION: each distinct real value gets one distinct
+// synthetic value, memoized, so rows that shared an id still share one and rows that did
+// not still differ. Carries no real value, preserves every property the parser reads.
+const IDENTITY = new Set(['id', 'requestId', 'uuid', 'parentUuid', 'leafUuid', 'toolUseID']);
+const idMap = new Map();
+const synthId = (real) => {
+  let s = idMap.get(real);
+  if (!s) {
+    s = `fixture-id-${String(idMap.size + 1).padStart(4, '0')}`;
+    idMap.set(real, s);
+  }
+  return s;
+};
+
 function redact(v, key) {
   if (typeof v === 'string') {
     if (STRUCTURAL.has(key)) return v;
-    // uuids/ids: keep the shape, drop the value. They key nothing across fixtures.
-    if (/^[0-9a-f]{8}-[0-9a-f]{4}-/.test(v)) return v;
+    if (IDENTITY.has(key)) return synthId(v);
     return filler(v.length);
   }
   if (Array.isArray(v)) return v.map((x) => redact(x, key));
@@ -97,7 +127,14 @@ for await (const line of rl) {
   } catch {
     continue;
   }
-  const isFirstAssistant = d.type === 'assistant' && !d.isSidechain && d.message?.usage;
+  const isMainAssistant = d.type === 'assistant' && !d.isSidechain && d.message?.usage;
+  // Count TURNS, not rows. One streamed assistant message spans several rows sharing a
+  // message.id and the parser merges them, so counting rows records fewer turns than it
+  // reports — the first attempt at a two-turn fixture was one turn in two rows.
+  const msgId = d.message?.id ?? d.requestId ?? d.uuid ?? '';
+  if (isMainAssistant && !mainTurnIds.has(msgId)) mainTurnIds.add(msgId);
+  const mainAssistantsSeen = mainTurnIds.size;
+  const isFirstAssistant = isMainAssistant && mainAssistantsSeen === 1;
   const out = {};
   for (const [k, v] of Object.entries(d)) {
     // cwd and paths identify the machine and the work; drop them to a stable stand-in.
@@ -105,15 +142,18 @@ for await (const line of rl) {
       out[k] = '/fixture/project';
       continue;
     }
-    // usage is the whole point of the reconciliation — never touched.
-    if (k === 'message' && isFirstAssistant) {
+    // usage is the whole point of the reconciliation — never touched. Kept on EVERY
+    // main-chain assistant turn, not only the first: the resumed-transcript fixture needs
+    // turn 2's usage to be real, because the defect it reproduces is precisely that
+    // turn 2's prefix is larger than turn 1's.
+    if (k === 'message' && isMainAssistant) {
       out[k] = { ...redact(v, k), usage: v.usage };
       continue;
     }
     out[k] = redact(v, k);
   }
   rows.push(out);
-  if (isFirstAssistant) break;
+  if (mainAssistantsSeen >= stopAfterTurns) break;
 }
 writeFileSync(dest, rows.map((r) => JSON.stringify(r)).join('\n') + '\n');
 console.error(`wrote ${rows.length} rows -> ${dest}`);

@@ -356,12 +356,22 @@ export interface ComputeOpenAICostParams {
 // `pricingDrift.test.ts` is the only thing that notices, which is why a red run there
 // is not a test to relax. Its own instruction, from the commit that fixed the backend
 // side: find out who is right, do not update the expectation.
-// Cached input is 10% of the standard input rate across the GPT-5 family.
+//
+// Cached input is 10% of the standard input rate across the GPT-5 family, with THREE
+// exceptions — all re-verified against LiteLLM 2026-08-14 and pinned by
+// pricingPinned.test.ts, which fails if a fourth appears without a reason:
+//   gpt-5-pro, gpt-5.2-pro  no published cached rate, so cachedInput is set EQUAL to
+//                           input; a stray cached-token count then cannot under-bill.
+//                           The discount has to be published before we apply it.
+//   codex-mini-latest       genuinely 25%, not 10%.
+//
+// THIS COMMENT USED TO SAY "the `pro` tiers publish no cached-input rate". That is now
+// FALSE: gpt-5.4-pro and gpt-5.5-pro DO publish one (3/M — the ordinary 10%) and the rows
+// below correctly carry it. Do not "restore" them to equal-input on the strength of a
+// tier-name rule; it would over-bill every cached token they read. The exception is a
+// property of what the vendor PUBLISHES, not of the word "pro" in the model name.
+//
 // Codex variants (e.g. gpt-5.2-codex) are priced identically to their base model.
-// The `pro` tiers publish no cached-input rate in either registry (they do not
-// support prompt caching). cachedInput is set EQUAL to input for those so that a
-// stray cached-token count can never under-bill them — the discount has to be
-// published before we apply it.
 export const OPENAI_PRICING: Record<string, OpenAIModelPricing> = {
   // ── GPT-5.6 (GA 2026-07-09) ──
   // Sol matches the GPT-5.5 tier. Terra and Luna were REPRICED after GA — the launch

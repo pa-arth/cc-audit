@@ -108,6 +108,22 @@ export interface InjectedPrefix {
    *  about deferral, and counting it as evidence-against is the zero-means-unknown trap
    *  in miniature. Only sessions with `sawAnyAttachment` vote. */
   sawAnyAttachment: boolean;
+
+  /** Did the turn whose usage the prefix is measured from also END this collection?
+   *
+   *  On a RESUMED transcript it does not. The turn-1 row is a replay owned by an earlier
+   *  file, so it closes collection and is then dropped by the cross-file `seen` dedup,
+   *  leaving `firstMain` on a later turn whose cacheRead has the entire replayed
+   *  conversation folded in. Pairing the two does not error — it gives a turn-1-sized
+   *  `attributed` against a much larger `measured`, which INFLATES `fixedPrefixTokens`.
+   *  `reconcile()` cannot catch that: it only fires on a NEGATIVE remainder, so
+   *  inflation is the silent direction and the wrong number looks entirely plausible.
+   *
+   *  False ⇒ excluded from the component medians rather than contributing a mismatched
+   *  pair. This costs nothing on the observed side: `standingContextTokens` keeps using
+   *  that turn as it always has, because a resumed prefix genuinely IS what that turn
+   *  carried. The unanswerable question is only the BREAKDOWN. */
+  prefixTurnIsFirst: boolean;
 }
 
 export function emptyInjectedPrefix(): InjectedPrefix {
@@ -126,6 +142,7 @@ export function emptyInjectedPrefix(): InjectedPrefix {
     measuredPrefixTokens: null,
     sawDeferredTools: false,
     sawAnyAttachment: false,
+    prefixTurnIsFirst: false,
   };
 }
 
