@@ -81,6 +81,8 @@ export const UNMEASURED_REASONS = {
   noAttachments:
     'no session recorded first-turn attachments (transcripts predate the format, or every session was a resumed replay)',
   noCwd: 'no session recorded a working directory, so no project memory dir could be located',
+  allResumed:
+    'every session with attachments was a resumed transcript, whose turn-1 usage belongs to an earlier file',
 } as const;
 
 /** The server's bound, restated here rather than imported — cc-audit does not depend on
@@ -426,6 +428,9 @@ export function computeAlwaysOn(sessions: Session[]): AlwaysOnTax {
   let deferredSessions = 0;
   let deferralEvidenceSessions = 0;
   let sessionsWithInjection = 0;
+  /** Sessions that HAD attachments but whose prefix turn is not the one they preceded —
+   *  resumed transcripts. Excluded from the medians; counted so the exclusion is visible. */
+  let resumedPrefixSessions = 0;
 
   // Project memory, turn-weighted by cwd. CC walks cwd→root loading every CLAUDE.md +
   // CLAUDE.local.md, so we do too (projectMemoryTokens) — counting only the file at
@@ -475,7 +480,19 @@ export function computeAlwaysOn(sessions: Session[]): AlwaysOnTax {
     // to ask" as "you carry none of this", which is the whole defect this change closes.
     // Once the format IS present, a missing KIND is a real zero and does count: a session
     // with attachments but no hook_success genuinely ran no hooks.
-    if (s.injected?.sawAnyAttachment && prefixTokens != null) {
+    //
+    // `prefixTurnIsFirst` is the second half of that gate, and it guards the opposite
+    // failure. A RESUMED transcript's turn-1 row is a replay dropped by the cross-file
+    // dedup, so `firstMain` above is a LATER turn carrying the replayed conversation in
+    // its cacheRead — pairing it with turn-1-sized attachments inflates
+    // `fixedPrefixTokens` and reads as a perfectly ordinary number, since `reconcile()`
+    // only fires on a negative remainder. Excluded and COUNTED, never silently dropped:
+    // a coverage figure that quietly shrinks is how "we measured 200 sessions" becomes
+    // untrue without anything saying so.
+    if (s.injected?.sawAnyAttachment && prefixTokens != null && !s.injected.prefixTurnIsFirst) {
+      resumedPrefixSessions += 1;
+    }
+    if (s.injected?.sawAnyAttachment && prefixTokens != null && s.injected.prefixTurnIsFirst) {
       const inj = { ...s.injected, measuredPrefixTokens: prefixTokens };
       sessionsWithInjection += 1;
       measured.skill.push(inj.skillListingTokens);
@@ -573,8 +590,17 @@ export function computeAlwaysOn(sessions: Session[]): AlwaysOnTax {
   // is a measurement, including a measured 0; a field reporting null is a question we
   // could not answer. They are never the same value.
   const unmeasured: UnmeasuredReasons = {};
+  // Three causes, three sentences. "All of your sessions were resumed" and "your
+  // transcripts predate the format" both end in a null, and telling a user the second
+  // when the first is true sends them to look for a version problem they do not have.
+  // Ordered by specificity: a corpus that IS all-resumed also has attachments, so the
+  // resumed case has to be tested before the generic no-attachments one.
   const noInjection =
-    sessions.length === 0 ? UNMEASURED_REASONS.noSessions : UNMEASURED_REASONS.noAttachments;
+    sessions.length === 0
+      ? UNMEASURED_REASONS.noSessions
+      : resumedPrefixSessions > 0
+        ? UNMEASURED_REASONS.allResumed
+        : UNMEASURED_REASONS.noAttachments;
   const med = (xs: number[], field: string): number | null => {
     if (xs.length === 0) {
       unmeasured[field] = noInjection;

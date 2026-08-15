@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { parseTranscript } from '../adapters/claudeCode.js';
 import { computeAlwaysOn, MAX_UPLOADED_STRING_CHARS, UNMEASURED_REASONS } from '../alwaysOn.js';
@@ -277,5 +277,145 @@ describe('unmeasured reasons stay inside the upload bound', () => {
     expect(reasons.length).toBeGreaterThan(0);
     const known = new Set<string>(Object.values(UNMEASURED_REASONS));
     for (const r of reasons) expect(known.has(r), `unenumerated reason: ${r}`).toBe(true);
+  });
+});
+
+describe('resumed transcripts: attachments and usage must describe the same turn', () => {
+  // THE CASE THIS GUARDS HAS ZERO INSTANCES IN THE AUTHORING CORPUS — 0 of 483 sessions
+  // with attachments, out of 926. So it cannot be recorded, and it cannot be observed
+  // regression-testing the CLI end to end: the guard is inert on real local data and a
+  // suite that only runs real data would stay green with the guard deleted.
+  //
+  // It is still built from RECORDED bytes rather than hand-authored, because the failure
+  // is a property of the cross-file `seen` dedup and not of any field's shape. A resumed
+  // replay is exactly "rows this parse has already seen, followed by rows it has not".
+  // Seeding `seen` from a PREFIX of a recorded transcript and then parsing the WHOLE of
+  // that same transcript reproduces that precisely — no invented rows, only a chosen
+  // split point.
+  const rawOf = (name: string) =>
+    readFileSync(join(FIXTURES, `injected-prefix-${name}.jsonl`), 'utf8');
+
+  /** Parse `raw` after seeding `seen` with everything up to and including the first
+   *  main-chain assistant row — i.e. the same transcript arriving as a resumption. */
+  function parseAsResumed(name: string) {
+    const raw = rawOf(name);
+    const lines = raw.split('\n').filter(Boolean);
+    const firstAssistant = lines.findIndex((l) => {
+      const d = JSON.parse(l) as { type?: string; isSidechain?: boolean; message?: { usage?: unknown } };
+      return d.type === 'assistant' && !d.isSidechain && d.message?.usage != null;
+    });
+    expect(firstAssistant, 'fixture must contain a main-chain assistant turn').toBeGreaterThan(-1);
+    // Everything through that turn is "owned by the earlier file".
+    const seen = new Set<string>();
+    parseTranscript(`/tmp/${name}-earlier.jsonl`, lines.slice(0, firstAssistant + 1).join('\n'), 'fixture', seen);
+    return parseTranscript(`/tmp/${name}-resumed.jsonl`, raw, 'fixture', seen);
+  }
+
+  it('the fixture still has teeth: turn 2 carries a bigger prefix than turn 1', () => {
+    // Everything below rests on this. If `two-turn` is ever re-recorded from a transcript
+    // whose two turns happen to carry the SAME prefix, both tests below keep passing while
+    // proving nothing — the guard could be deleted and nothing would go red. That is the
+    // corpus-bounded-guard failure, so the precondition is asserted, not assumed.
+    const prefixes: number[] = [];
+    const seenIds = new Set<string>();
+    for (const line of rawOf('two-turn').split('\n').filter(Boolean)) {
+      const d = JSON.parse(line) as {
+        type?: string;
+        isSidechain?: boolean;
+        message?: {
+          id?: string;
+          usage?: {
+            input_tokens?: number;
+            cache_read_input_tokens?: number;
+            cache_creation?: {
+              ephemeral_5m_input_tokens?: number;
+              ephemeral_1h_input_tokens?: number;
+            };
+          };
+        };
+      };
+      if (d.type !== 'assistant' || d.isSidechain || !d.message?.usage) continue;
+      const id = d.message.id ?? '';
+      if (seenIds.has(id)) continue; // streamed rows share one id and are ONE turn
+      seenIds.add(id);
+      const u = d.message.usage;
+      prefixes.push(
+        (u.input_tokens ?? 0) +
+          (u.cache_creation?.ephemeral_5m_input_tokens ?? 0) +
+          (u.cache_creation?.ephemeral_1h_input_tokens ?? 0) +
+          (u.cache_read_input_tokens ?? 0),
+      );
+    }
+    expect(prefixes.length, 'fixture must hold two DISTINCT main-chain turns').toBe(2);
+    // Turn 2 reads turn 1's exchange back out of cache, so it is strictly larger, and the
+    // gap IS the inflation this guard prevents — 61,014 -> 61,863 (+849) as recorded.
+    expect(prefixes[1]!).toBeGreaterThan(prefixes[0]!);
+  });
+
+  it('flags the session when the prefix turn was replayed from an earlier file', () => {
+    const fresh = parseTranscript(`/tmp/two-turn.jsonl`, rawOf('two-turn'), 'fixture', new Set());
+    expect(fresh?.injected.prefixTurnIsFirst).toBe(true);
+
+    const resumed = parseAsResumed('two-turn');
+    // The attachments are still collected — they are genuinely turn 1's.
+    expect(resumed?.injected.sawAnyAttachment).toBe(true);
+    expect(resumed?.injected.skillListingTokens).toBe(fresh?.injected.skillListingTokens);
+    // But the turn `firstMain` will pick is NOT the one they preceded.
+    expect(resumed?.injected.prefixTurnIsFirst).toBe(false);
+  });
+
+  it('excludes a resumed session from the medians instead of inflating fixedPrefix', () => {
+    // Why exclusion rather than a best-effort number: the mismatch inflates, and
+    // `reconcile()` only fires on a NEGATIVE remainder, so an inflated fixedPrefix is
+    // indistinguishable from a correct one at every downstream reader.
+    const resumed = parseAsResumed('two-turn');
+    expect(resumed).not.toBeNull();
+    const tax = computeAlwaysOn([resumed as Session]);
+    expect(tax.skillListingTokens).toBeNull();
+    expect(tax.hookOutputTokens).toBeNull();
+    expect(tax.fixedPrefixTokens).toBeNull();
+    // Named cause, and specifically NOT the no-attachments one — this corpus HAS
+    // attachments, and reporting the generic reason would send a reader to look for a
+    // transcript-format problem they do not have.
+    expect(tax.unmeasured.skillListingTokens).toBe(UNMEASURED_REASONS.allResumed);
+
+    // The OBSERVED prefix is deliberately still reported: a resumed turn really did
+    // carry that much. Only the BREAKDOWN is unanswerable.
+    expect(tax.standingContextTokens).toBeGreaterThan(0);
+  });
+});
+
+describe('recorded fixtures preserve the joins the parser reads', () => {
+  // A recorded fixture is only worth more than a hand-written one while it stays a shape
+  // the producer can actually emit. The redactor breaks that whenever it treats one HALF
+  // of a join as ordinary text: `tool_result.tool_use_id` names a `tool_use.id`, and the
+  // adapter folds is_error/timestamp back onto the issuing turn through it.
+  //
+  // This is not hypothetical — the two-turn fixture shipped in this PR's first commit with
+  // both results reading the same filler, `redacted-fixture-content redac`, because filler
+  // is length-preserving and the two real ids were the same length. So it was not merely a
+  // severed link: two DISTINCT calls collapsed onto one key, and a tool_result pointing at
+  // a tool_use that does not exist is a transcript Claude Code cannot produce.
+  //
+  // Asserted over EVERY fixture rather than the one that regressed, because the next
+  // recording is the one nobody will re-check.
+  const files = readdirSync(FIXTURES).filter((f) => f.startsWith('injected-prefix-'));
+
+  it.each(files)('%s: every tool_use_id resolves to a tool_use in the same file', (file) => {
+    const calls = new Set<string>();
+    const refs: string[] = [];
+    for (const line of readFileSync(join(FIXTURES, file), 'utf8').split('\n').filter(Boolean)) {
+      const d = JSON.parse(line) as { message?: { content?: unknown } };
+      const content = d.message?.content;
+      if (!Array.isArray(content)) continue;
+      for (const b of content as Array<{ type?: string; id?: string; tool_use_id?: string }>) {
+        if (b.type === 'tool_use' && b.id) calls.add(b.id);
+        if (b.type === 'tool_result' && b.tool_use_id) refs.push(b.tool_use_id);
+      }
+    }
+    for (const r of refs) expect(calls, `${file}: dangling tool_use_id ${r}`).toContain(r);
+    // Distinct results must still name distinct calls — the collapse above passed a
+    // containment check on its own, once the filler happened to match a real id.
+    expect(new Set(refs).size).toBe(refs.length);
   });
 });
