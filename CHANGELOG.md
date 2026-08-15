@@ -3,6 +3,150 @@
 Notable changes to `@promptster/cc-audit`. GitHub Releases carry the same notes
 (the publish workflow attaches binaries per `v*` tag — see MAINTAINING.md).
 
+## 0.8.0 — 2026-08-15
+
+> **Two numbers you have been reading are wrong in 0.7.0, and both are corrected here.**
+> The always-on breakdown was censused off disk instead of measured off the transcript,
+> and the OpenAI table still carried `gpt-5.6`'s launch-day rates. If you audit Codex
+> sessions, the second one has been overstating `gpt-5.6-luna` turns **5x** ever since
+> the vendor repriced — recorded in our backend on 2026-07-31, two days after 0.7.0
+> shipped. Upgrade before you cite a Codex figure.
+
+### Fixed
+
+- **`gpt-5.6-terra` / `gpt-5.6-luna` carried the launch tiers.** Both were repriced
+  after GA; this copy of the table never got the correction.
+
+  ```
+  terra  2.5 / 15 / 0.25  ->  2   / 12  / 0.2
+  luna   1   /  6 / 0.1   ->  0.2 /  1.2 / 0.02
+  ```
+
+  So luna turns were billed **5x** over and terra **1.25x** over in every report
+  0.7.0 produced. A wrong-but-present rate is the quiet failure of this table — a
+  missing model bills $0 and disappears, a bad prefix match bills 12x under, but a
+  stale rate leaves every downstream number still looking like a number.
+
+  The defect is not the two rows. `src/vendor/pricing.ts` is a hand-copied mirror of
+  the backend's `config-cost` with **no subscriber** to it, so it can only go stale
+  silently, and did, for two weeks. Diffed the two tables in full: 29 OpenAI rows and
+  16 Anthropic rows on both sides, identical key sets, these two the only divergence —
+  one missed sync, not a pattern. `pricingDrift.test.ts` is the one thing that noticed,
+  and it did its job: it went red on the first CI run after the repricing and stayed
+  red rather than being relaxed to green. It now says in its own header that a red run
+  means *find out who is right*, never *update the expectation*.
+
+  Added `pricingPinned.test.ts`, a deterministic companion: drift asks whether the
+  VENDOR moved and degrades to pass offline, this asks whether OUR table moved
+  underneath us and runs everywhere. Only rows with a reason to be pinned are in it.
+
+- **A `pro`-tier pricing comment that would have caused the next mis-pricing.** The
+  header claimed the `pro` tiers publish no cached-input rate and must be set to
+  `cachedInput == input`. False since `gpt-5.4-pro` / `gpt-5.5-pro` — both publish
+  3/M, the ordinary 10%, and the table correctly carries it. A reader trusting the
+  comment would have "restored" them and over-billed every cached token they read.
+  The real exception set is three rows, now named with reasons instead of derived
+  from the word "pro": `gpt-5-pro` and `gpt-5.2-pro` (genuinely no published rate)
+  and `codex-mini-latest` (genuinely 25%).
+
+- **The turn-1 prefix now includes what it READ from cache.** `computeAlwaysOn`
+  sampled `input + cacheWrite` from the first main-chain turn, which is the prefix
+  only when the session opened **cold**. A session resuming in a project it has run in
+  before finds the prefix already cached — it reads everything and writes nothing — so
+  the observed standing context came out smallest exactly where it is largest.
+
+  Turn 1 reads from cache in **97.9%** of 522 local sessions. The median prefix moves
+  40,272 → 59,645 (1.48x), landing within 1.8% of the same quantity measured
+  independently by differencing `claude -p` runs (60,738). Every existing fixture
+  carried `cache_read: 0`, which is why nothing caught it.
+
+- **A resumed transcript no longer inflates `fixedPrefixTokens`.** Attachment
+  collection closes at the first main-chain assistant row, which on a resumed
+  transcript is a replay owned by an earlier file and is then dropped by the cross-file
+  dedup — leaving the measured prefix on a *later* turn that has the whole replayed
+  conversation folded into its cache read. Turn-1-sized attribution against a much
+  larger measurement inflates the residual, and the reconciliation check cannot catch
+  it because it only fires on a negative remainder.
+
+  Such a session is now declined and counted rather than measured wrongly. The
+  observed `standingContextTokens` is deliberately unaffected — a resumed turn really
+  did carry that much; only the breakdown is unanswerable, and `unmeasured` says so
+  with its own reason. **Zero instances in the 926-session authoring corpus**, so this
+  corrects no number today; it closes a path that would have been invisible when it
+  did fire.
+
+### Changed
+
+- **The always-on breakdown is measured from the transcript, not censused off disk.**
+  It used to answer "what did you put in your context" by walking `~/.claude`. The
+  context is not assembled from disk — Claude Code assembles it and records it,
+  itemised, as typed `attachment` rows ahead of the first assistant turn, and none of
+  those were being read. Over 501 local sessions:
+
+  ```
+  skill listing    967 tok  ->   5,683 tok   (skillCount 15 -> 78)
+  hook output     no field  ->     948 tok
+  auto-memory       folded  ->   2,990 tok
+  fixedPrefix     no field  ->  49,623 tok   (82% of the floor, and not yours to cut)
+  ```
+
+  This is a class, not four bugs: a disk census has **no subscriber to a Claude Code
+  release**. Built-in skills ship inside the binary and are never on disk; the agent
+  listing and deferred-tool delta move when the tool updates while nothing in
+  `~/.claude` does. It cannot be wrong once and then fixed — it goes stale every
+  release, silently.
+
+  It was also not stale in one direction. It never read `settings.json >
+  skillOverrides`, so six skills you had switched **off** were sized and billed every
+  turn, and `readdirSync().isDirectory()` is false for a symlinked directory, so four
+  more were invisible. The membership set was wrong, not just the magnitude, so
+  scaling the floor up would not have fixed it. The listing's own `names[]` is now the
+  authority and `skillCarry[].loaded` says so.
+
+  The disk census is **retained and demoted**: it attributes a measured block to your
+  files, it no longer decides how big the block is. Plugin and user-command listings
+  turn out to appear *inside* the injected skill listing, so they are slices of it
+  rather than addends — the old formula would have double-counted them the moment the
+  listing became measured.
+
+  Also in this area: `~/.claude/commands/**` is walked at all now (six `opsx:*`
+  commands load into every listing and had never been counted); `mcpDeferred` is read
+  from `deferred_tools_delta` in the sessions **as they ran** rather than inferred from
+  the auditing process's own environment; unknown is `null` plus a named reason and
+  never `0`, so a session that recorded no attachments votes neither a zero into a
+  median nor an opinion on deferral; and a negative reconciliation remainder now FAILS
+  and is reported per session, because clamping is how this whole defect class hides.
+
+- **Aggregate `schemaVersion` 9 → 10.** `skillDescriptionTokens` is **removed** rather
+  than kept beside `skillListingTokens`: a field that keeps its name while changing
+  meaning lets a downstream comparison silently mix two quantities. Consumers should
+  treat its absence as "this run measured the listing" — not as a zero.
+
+### Internal
+
+- Fixtures for this area are **recorded from real transcripts** by
+  `scripts/record-injected-fixture.mjs`, never hand-authored — structure, field names,
+  string lengths and usage numbers preserved, content replaced with same-length filler
+  (size-faithful under `CharCountTokenizer`). A fixture written from the design doc
+  would have passed against a broken parser, because the doc had both the kind list and
+  the per-kind content field wrong.
+
+  Two recorder defects were found and fixed by using it: identity fields were filled
+  with *constant* filler, so a two-turn recording collapsed into one turn, and
+  `tool_result.tool_use_id` was filled while the `tool_use.id` it names was not —
+  severing a join the parser reads, and, because filler is length-preserving, pointing
+  two distinct results at one key. Both produced fixtures encoding a shape Claude Code
+  cannot emit, which is the exact failure recording fixtures exists to prevent.
+  Identity is now a memoized bijection, and every fixture is asserted to keep the join
+  intact.
+
+- The unmeasured-reason strings are bounded and enumerable (`UNMEASURED_REASONS`).
+  v10 put the first sentence-shaped strings into the uploaded aggregate, and the
+  upload endpoint screens every string leaf and rejects the **whole capture** on a
+  breach — while `sendCapture()` ignores the response by design so telemetry can never
+  break a local run. Unbounded, the failure mode is every user's record silently not
+  arriving from the release that lengthened a sentence.
+
 ## 0.7.0 — 2026-07-28
 
 > **The two gaps named in 0.6.0 are closed.** The share page now renders the agent's
