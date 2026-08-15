@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { parseTranscript } from '../adapters/claudeCode.js';
 import { computeAlwaysOn, MAX_UPLOADED_STRING_CHARS, UNMEASURED_REASONS } from '../alwaysOn.js';
@@ -382,5 +382,40 @@ describe('resumed transcripts: attachments and usage must describe the same turn
     // The OBSERVED prefix is deliberately still reported: a resumed turn really did
     // carry that much. Only the BREAKDOWN is unanswerable.
     expect(tax.standingContextTokens).toBeGreaterThan(0);
+  });
+});
+
+describe('recorded fixtures preserve the joins the parser reads', () => {
+  // A recorded fixture is only worth more than a hand-written one while it stays a shape
+  // the producer can actually emit. The redactor breaks that whenever it treats one HALF
+  // of a join as ordinary text: `tool_result.tool_use_id` names a `tool_use.id`, and the
+  // adapter folds is_error/timestamp back onto the issuing turn through it.
+  //
+  // This is not hypothetical — the two-turn fixture shipped in this PR's first commit with
+  // both results reading the same filler, `redacted-fixture-content redac`, because filler
+  // is length-preserving and the two real ids were the same length. So it was not merely a
+  // severed link: two DISTINCT calls collapsed onto one key, and a tool_result pointing at
+  // a tool_use that does not exist is a transcript Claude Code cannot produce.
+  //
+  // Asserted over EVERY fixture rather than the one that regressed, because the next
+  // recording is the one nobody will re-check.
+  const files = readdirSync(FIXTURES).filter((f) => f.startsWith('injected-prefix-'));
+
+  it.each(files)('%s: every tool_use_id resolves to a tool_use in the same file', (file) => {
+    const calls = new Set<string>();
+    const refs: string[] = [];
+    for (const line of readFileSync(join(FIXTURES, file), 'utf8').split('\n').filter(Boolean)) {
+      const d = JSON.parse(line) as { message?: { content?: unknown } };
+      const content = d.message?.content;
+      if (!Array.isArray(content)) continue;
+      for (const b of content as Array<{ type?: string; id?: string; tool_use_id?: string }>) {
+        if (b.type === 'tool_use' && b.id) calls.add(b.id);
+        if (b.type === 'tool_result' && b.tool_use_id) refs.push(b.tool_use_id);
+      }
+    }
+    for (const r of refs) expect(calls, `${file}: dangling tool_use_id ${r}`).toContain(r);
+    // Distinct results must still name distinct calls — the collapse above passed a
+    // containment check on its own, once the filler happened to match a real id.
+    expect(new Set(refs).size).toBe(refs.length);
   });
 });

@@ -91,7 +91,22 @@ const STRUCTURAL = new Set([
 // So identity is replaced by a BIJECTION: each distinct real value gets one distinct
 // synthetic value, memoized, so rows that shared an id still share one and rows that did
 // not still differ. Carries no real value, preserves every property the parser reads.
-const IDENTITY = new Set(['id', 'requestId', 'uuid', 'parentUuid', 'leafUuid', 'toolUseID']);
+// `tool_use_id` is here because it is one HALF of a join: a `tool_result` block names the
+// `tool_use` block's `id`, and the adapter folds is_error/timestamp back onto the issuing
+// turn through `turnByToolId`. Redacting one side and not the other severs it — and worse
+// than severing, because filler is length-preserving: two DISTINCT tool_use_ids of equal
+// length collapse to the SAME filler, so a fixture can fold two results onto one call. The
+// first recording did exactly that (both reading `redacted-fixture-content redac`), which
+// is again a shape the producer cannot emit — a tool_result pointing at no tool_use.
+const IDENTITY = new Set([
+  'id',
+  'requestId',
+  'uuid',
+  'parentUuid',
+  'leafUuid',
+  'toolUseID',
+  'tool_use_id',
+]);
 const idMap = new Map();
 const synthId = (real) => {
   let s = idMap.get(real);
