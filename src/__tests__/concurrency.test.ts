@@ -1,6 +1,9 @@
 import { describe, it, expect } from 'vitest';
 import { parseTranscript } from '../adapters/claudeCode.js';
 import { computeConcurrency } from '../concurrency.js';
+import { renderConcurrency, renderReport } from '../report.js';
+import { runAudit } from '../audit.js';
+import { BOX_WIDTH, visLen } from '../theme.js';
 import { concurrencyKey, type Session, type Span } from '../model.js';
 
 const MIN = 60_000;
@@ -206,5 +209,78 @@ describe('computeConcurrency', () => {
     expect(p.meanConcurrent).toBe(0);
     expect(p.sessionWeightedMean).toBe(0);
     expect(p.histogram).toEqual([]);
+  });
+});
+
+describe('renderConcurrency', () => {
+  /** 10 minutes solo then 10 minutes three-up, with the prompts placed by the caller.
+   *  Both sets wrap inside their own window — a prompt landing in a minute where
+   *  nothing was running is dropped, so it must not be placed past minute 19. */
+  const shaped = (soloPrompts: number, multiPrompts: number) => {
+    const a = session('a', Array.from({ length: 20 }, (_, i) => i), {
+      prompts: [
+        ...Array.from({ length: soloPrompts }, (_, i) => i % 10),
+        ...Array.from({ length: multiPrompts }, (_, i) => 10 + (i % 10)),
+      ],
+    });
+    return computeConcurrency([a, session('b', [10, 11, 12, 13, 14, 15, 16, 17, 18, 19]),
+      session('c', [10, 11, 12, 13, 14, 15, 16, 17, 18, 19])]);
+  };
+
+  // The card is fixed-width, and three lines overflowed it the first time it rendered
+  // against a real corpus. Padding hides an underflow but nothing catches an overflow.
+  it('every line fits the card, at every steering verdict', () => {
+    for (const p of [shaped(5, 1), shaped(1, 10), shaped(5, 15)]) {
+      for (const line of renderConcurrency(p)) {
+        expect(visLen(line)).toBe(BOX_WIDTH + 4);
+      }
+    }
+  });
+
+  it('names the direction of the steering finding rather than assuming one', () => {
+    // solo 5 prompts / 10 agent-min = 30/hr; three-up 15 / 30 agent-min = 30/hr
+    expect(renderConcurrency(shaped(5, 15)).join('\n')).toContain('flat: parallelism buys calendar time');
+    // solo 30/hr → three-up 2/hr
+    expect(renderConcurrency(shaped(5, 1)).join('\n')).toContain('needs less of you as you add more');
+    // solo 6/hr → three-up 20/hr
+    expect(renderConcurrency(shaped(1, 10)).join('\n')).toContain('needs more of you as you add more');
+  });
+
+  it('prints both prompt rates, because they move in opposite directions', () => {
+    const out = renderConcurrency(shaped(5, 15)).join('\n');
+    expect(out).toContain('per agent-hour');
+    expect(out).toContain('prompts per hour of YOUR time');
+  });
+});
+
+describe('renderReport wiring', () => {
+  const events = [
+    { type: 'user', promptId: 'p1', cwd: '/tmp/proj', timestamp: iso(T0), message: { content: 'do a task' } },
+    {
+      type: 'assistant',
+      timestamp: iso(T0 + 1000),
+      message: {
+        id: 'r1',
+        model: 'claude-opus-4-8',
+        usage: { input_tokens: 100, output_tokens: 50, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
+        content: [{ type: 'text', text: 'ok' }],
+      },
+    },
+  ];
+  const one = parseTranscript('/tmp/cc-conc.jsonl', jsonl(events), 'proj', new Set())!;
+  const base = runAudit([one], '2026-07-16T00:00:00.000Z');
+
+  it('runAudit carries a concurrency profile', () => {
+    expect(base.concurrency.sessionsCounted).toBe(1);
+    expect(base.concurrency.meanConcurrent).toBe(1);
+  });
+
+  it('omits the card when one session can never have been concurrent', () => {
+    expect(renderReport(base)).not.toContain('CONCURRENCY');
+  });
+
+  it('prints the card once there are two', () => {
+    const out = renderReport({ ...base, concurrency: computeConcurrency([session('a', [0, 1, 2]), session('b', [1, 2])]) });
+    expect(out).toContain('CONCURRENCY');
   });
 });

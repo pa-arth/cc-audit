@@ -12,6 +12,7 @@ import { computeTemporal, computeWeeklySpend, type TemporalProfile, type WeeklyS
 import { computeFriction, type FrictionTaxonomy } from './friction.js';
 import { anonymizeTopSessions, topSessions, type TopSession } from './topSessions.js';
 import { computeContextKnee, type ContextKnee } from './contextKnee.js';
+import { computeConcurrency, type ConcurrencyProfile } from './concurrency.js';
 import type { Session } from './model.js';
 
 export interface AuditResult {
@@ -49,6 +50,10 @@ export interface AuditResult {
    *  friction first climb ≥2× the low-context baseline, merged across the window. The
    *  same number the live-guardrail statusline arms against. Counts/rates only. */
   contextKnee: ContextKnee;
+  /** How many sessions ran at the same time, and what the overlap bought. Counts and
+   *  ratios only — de-identified by construction, but it stays OUT of the uploaded
+   *  aggregate until that schema is versioned for it. */
+  concurrency: ConcurrencyProfile;
   sessionCount: number;
 }
 
@@ -76,6 +81,8 @@ export function runAudit(
   // Sessions are already loaded, so fitting the knee here is near-free (the statusline
   // pays the scan separately because it runs without a full audit in scope).
   const contextKnee = computeContextKnee(sessions);
+  // Reads only turn timestamps, so it costs a pass over turns already in memory.
+  const concurrency = computeConcurrency(sessions);
   // The leaderboard enters the UPLOADED aggregate ONLY on explicit opt-in, and even
   // then anonymized (no gist/project/raw $). Default: stays local in the TUI.
   const anonTop = opts.shareSessions ? anonymizeTopSessions(top, spend.totalUsd) : [];
@@ -94,6 +101,7 @@ export function runAudit(
     aggregate,
     topSessions: top,
     contextKnee,
+    concurrency,
     topRedundantFiles: topRedundantFiles(sessions, 3),
     sessionCount: sessions.length,
   };

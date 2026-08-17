@@ -4,7 +4,7 @@
 // first; the model is tool-agnostic so Codex/Cursor adapters drop in later.
 
 export type { Session, Span, AssistantTurn, TurnUsage } from './model.js';
-export { allTurns } from './model.js';
+export { allTurns, concurrencyKey } from './model.js';
 
 export { loadClaudeCodeSessions, parseTranscript } from './adapters/claudeCode.js';
 export type { LoadOptions } from './adapters/claudeCode.js';
@@ -49,6 +49,14 @@ export { buildRoiLedger } from './roiLedger.js';
 export type { RoiLedger, SkillRoiRow, McpRoiRow, SkillVerdict } from './roiLedger.js';
 export { computeTemporal, computeWeeklySpend } from './temporal.js';
 export type { TemporalProfile, HourBucket, StratifiedTime, WeeklySpendBucket } from './temporal.js';
+export { computeConcurrency } from './concurrency.js';
+export type {
+  ConcurrencyProfile,
+  ConcurrencyLevel,
+  ConcurrencyOptions,
+  BridgeSensitivity,
+  SteeringLevel,
+} from './concurrency.js';
 export { computeFriction, spanSkillKey, spanFrictionEvents, sessionFrictionEvents } from './friction.js';
 export type { FrictionTaxonomy, SkillFriction, FrictionKind, LocatedFriction } from './friction.js';
 
@@ -59,7 +67,7 @@ export { runAudit } from './audit.js';
 export type { AuditResult } from './audit.js';
 export { buildConfigSuggestions, renderConfigSuggestions } from './configSuggestions.js';
 export type { ConfigSuggestion } from './configSuggestions.js';
-export { renderReport, renderRightSizing } from './report.js';
+export { renderReport, renderRightSizing, renderConcurrency } from './report.js';
 export { buildFootprints } from './footprint.js';
 export type { SessionFootprint } from './footprint.js';
 export { judgeFootprints } from './judgeClient.js';
