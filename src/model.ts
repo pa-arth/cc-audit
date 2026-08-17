@@ -94,6 +94,13 @@ export interface Span {
 export interface Session {
   /** Transcript file basename (uuid), stable per session. */
   sessionId: string;
+  /** For a subagent transcript (`<session>/subagents/agent-*.jsonl`), the sessionId of
+   *  the parent that spawned it; null/undefined for a top-level session. The loader
+   *  makes one Session per FILE, which is right for spend (message-id dedup keeps the
+   *  total honest) and wrong for anything that counts SESSIONS: a parent with six
+   *  subagents would otherwise read as seven concurrent sessions. Anything counting
+   *  sessions must group on `concurrencyKey(session)`, never on sessionId. */
+  parentSessionId?: string | null;
   /** Human-ish project label decoded from the transcript directory. */
   project: string;
   /** Absolute working directory this session ran in (from the transcript `cwd`).
@@ -116,4 +123,11 @@ export interface Session {
 /** Flatten every assistant turn across a session's spans. */
 export function allTurns(session: Session): AssistantTurn[] {
   return session.spans.flatMap((s) => s.turns);
+}
+
+/** The id to group by when counting SESSIONS rather than transcripts: a subagent folds
+ *  into the session that spawned it. Subagents are parallelism INSIDE a session, so
+ *  counting them separately double-counts the thing a concurrency measure is measuring. */
+export function concurrencyKey(session: Session): string {
+  return session.parentSessionId ?? session.sessionId;
 }

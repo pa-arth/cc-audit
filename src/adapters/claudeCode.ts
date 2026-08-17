@@ -148,6 +148,7 @@ export function parseTranscript(
   seen?: Set<string>,
 ): Session | null {
   const sessionId = filePath.split('/').pop()?.replace(/\.jsonl$/, '') ?? filePath;
+  const parentSessionId = parentOf(filePath);
   let mtime = 0;
   try {
     mtime = statSync(filePath).mtimeMs;
@@ -442,7 +443,19 @@ export function parseTranscript(
   // assistant row at all) is not agreement — there is no turn to describe, and
   // `firstMain` is undefined anyway, so the session is skipped upstream regardless.
   injected.prefixTurnIsFirst = prefixCloseKey !== null && prefixCloseKey === firstRetainedMainKey;
-  return { sessionId, project, cwd, mtime, modes: [...modes], spans: withTurns, injected };
+  return { sessionId, parentSessionId, project, cwd, mtime, modes: [...modes], spans: withTurns, injected };
+}
+
+/** Claude Code 2.1.x moved subagent turns out of the parent transcript and into
+ *  `<project>/<parentSessionId>/subagents/agent-*.jsonl`. The loader walks recursively
+ *  and makes a Session per file, so the parent link only survives if we read it off the
+ *  path here. Returns null for a top-level transcript. */
+function parentOf(filePath: string): string | null {
+  const parts = filePath.split('/');
+  // .../<parentSessionId>/subagents/<agent>.jsonl
+  return parts.length >= 3 && parts[parts.length - 2] === 'subagents'
+    ? (parts[parts.length - 3] ?? null)
+    : null;
 }
 
 /** Decode a transcript directory name back to a readable project path. */
