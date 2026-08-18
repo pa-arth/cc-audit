@@ -147,7 +147,7 @@ export function parseTranscript(
   project: string,
   seen?: Set<string>,
 ): Session | null {
-  const sessionId = filePath.split('/').pop()?.replace(/\.jsonl$/, '') ?? filePath;
+  const sessionId = pathParts(filePath).pop()?.replace(/\.jsonl$/, '') ?? filePath;
   const parentSessionId = parentOf(filePath);
   let mtime = 0;
   try {
@@ -446,12 +446,20 @@ export function parseTranscript(
   return { sessionId, parentSessionId, project, cwd, mtime, modes: [...modes], spans: withTurns, injected };
 }
 
+/** Split a transcript path into segments on EITHER separator. The loader builds these
+ *  with `join()` from node:path, which emits backslashes on Windows — so splitting on
+ *  '/' alone yields one segment there, which silently turns the whole absolute path
+ *  into the sessionId and every subagent into an independent top-level session. */
+function pathParts(filePath: string): string[] {
+  return filePath.split(/[\\/]/);
+}
+
 /** Claude Code 2.1.x moved subagent turns out of the parent transcript and into
  *  `<project>/<parentSessionId>/subagents/agent-*.jsonl`. The loader walks recursively
  *  and makes a Session per file, so the parent link only survives if we read it off the
  *  path here. Returns null for a top-level transcript. */
 function parentOf(filePath: string): string | null {
-  const parts = filePath.split('/');
+  const parts = pathParts(filePath);
   // .../<parentSessionId>/subagents/<agent>.jsonl
   return parts.length >= 3 && parts[parts.length - 2] === 'subagents'
     ? (parts[parts.length - 3] ?? null)

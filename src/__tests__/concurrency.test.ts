@@ -76,6 +76,20 @@ describe('parentSessionId', () => {
     expect(concurrencyKey(s!)).toBe('parent-uuid');
   });
 
+  // The loader builds paths with join() from node:path, so on Windows both the parent
+  // link AND the sessionId arrive backslash-delimited. Splitting on '/' alone made every
+  // subagent a top-level session there — inflating session count, peak and mean.
+  it('reads the parent off a Windows backslash path too', () => {
+    const s = parseTranscript(
+      'C:\\Users\\me\\.claude\\projects\\-proj\\parent-uuid\\subagents\\agent-abc.jsonl',
+      jsonl([user('p1', T0), asst(T0 + 1000)]),
+      'proj',
+    );
+    expect(s?.parentSessionId).toBe('parent-uuid');
+    expect(s?.sessionId).toBe('agent-abc');
+    expect(concurrencyKey(s!)).toBe('parent-uuid');
+  });
+
   it('is null for a top-level transcript', () => {
     const s = parseTranscript('/root/-proj/plain-uuid.jsonl', jsonl([user('p1', T0), asst(T0 + 1000)]), 'proj');
     expect(s?.parentSessionId).toBeNull();
