@@ -1,6 +1,6 @@
 {
   "name": "@promptster/cc-audit",
-  "version": "0.8.0",
+  "version": "0.9.0",
   "description": "Audit Claude Code (and other agent) usage from local transcripts: spend attribution, model right-sizing, and AI-fluency signals.",
   "license": "MIT",
   "private": true,

@@ -3,6 +3,86 @@
 Notable changes to `@promptster/cc-audit`. GitHub Releases carry the same notes
 (the publish workflow attaches binaries per `v*` tag — see MAINTAINING.md).
 
+## 0.9.0 — 2026-08-18
+
+> **A third axis.** 0.8.0 could tell you what your sessions cost and how long they ran.
+> It could not tell you how many were running at the same time — and if you run more
+> than one, that single fact reframes every other number in the report. Adds the
+> measurement, the report section, and a Windows path fix that predates this release.
+
+### Added
+
+- **`computeConcurrency()` + a `CONCURRENCY` section in the report.** Two totals over
+  the same minutes: `agentMinutes` (each session's active minutes summed — how long the
+  work would have taken back to back) and `wallMinutes` (their union — how long it
+  actually took). Their ratio is the mean number of sessions live whenever anything was
+  live.
+
+  ```
+  ╭─ CONCURRENCY  ·  how many ran at once, and what it bought ───────────────────╮
+  │ 2.7× average — sessions live whenever anything was live                      │
+  │ 180.2h of your time carried 484.9h of agent work (+304.6h)                   │
+  │ live     yours    agent  share              /agent-hr                        │
+  │ 1        58.8h    58.8h  █████████████  33%       6.4                        │
+  │ 2        41.8h    83.6h  █████████▎     23%       6.9                        │
+  │ 3-4      51.0h   174.8h  ███████████▍   28%       7.2                        │
+  │ 5-7      25.6h   141.8h  █████▊         14%       6.6                        │
+  │ 8+        3.0h    25.9h  ▊               2%       5.1                        │
+  │ solo 33% of your time · two or more 67%  — the tallest bar, still a minority │
+  ╰──────────────────────────────────────────────────────────────────────────────╯
+  ```
+
+  The card prints the **shape**, not just the average, because the average is the part
+  that misleads. Solo is routinely the tallest single bar while being a minority of the
+  time, and a reader handed only "2.7×" reads it as *mostly alone*. The solo line says
+  outright which it is.
+
+  Three things a single number would have hidden, all reported:
+
+  - **`sensitivity`** sweeps the bridge threshold (1/2/5/10 min) instead of reporting one
+    flattering value. The bridge — how long a gap still counts as working — is the
+    method's only free parameter. A finding that dies inside its plausible range was
+    never a finding, and a reader cannot tell the two apart without the sweep.
+  - **`sessionWeightedMean`** beside `meanConcurrent`. The first is how crowded it is
+    from inside a running session, the second is what you experience. On the development
+    corpus they are 3.8 and 2.7 — they answer different questions and neither is the
+    "real" one.
+  - **Both prompt rates.** Per **agent** hour asks whether each session needs less of you
+    when there are more of them; per **wall** hour is what the day feels like. They move
+    in opposite directions (6.4 → 5.1 against 6.4 → 44.1 here), so either alone tells
+    half the story. The verdict line is *derived from the ratio*, so a corpus where
+    attention does not hold flat gets the opposite sentence rather than the flattering
+    one.
+
+  Idle time is excluded rather than averaged in as zero: this measures how many ran when
+  anything ran, not an average over the calendar. Prompts counted for steering skip
+  sidechain spans — a subagent's task instruction is the machine talking to itself, not
+  you steering.
+
+  Local-only for now. Every field is a count or a ratio with no paths, project labels or
+  session ids, so it *could* be uploaded — but adding it to the aggregate is a
+  schema-version decision, not a rendering one, and is deliberately not made here.
+
+- **`Session.parentSessionId` + `concurrencyKey()`.** Claude Code 2.1.x moved subagent
+  turns out of the parent transcript and into `<session>/subagents/agent-*.jsonl`. The
+  loader makes one `Session` per **file**, which is right for spend — message-id dedup
+  keeps the total honest — and wrong for anything that counts sessions: a parent with six
+  subagents reads as **seven** concurrent sessions. Anything counting sessions groups on
+  `concurrencyKey()`, and a test asserts the naive version says 7 where the correct one
+  says 1.
+
+### Fixed
+
+- **Transcript paths were split on `/` only.** The loader builds them with `join()` from
+  `node:path`, which emits backslashes on Windows, so the split returned a single
+  segment there: the whole absolute path became the `sessionId`, and — with the new
+  parent link — every subagent became an independent top-level session, inflating
+  session count, peak, mean concurrency and minutes bought by however many subagents a
+  run spawned.
+
+  The `sessionId` half of this predates this release and shipped in every prior version.
+  Both sites now go through one helper, so a third caller cannot reintroduce it.
+
 ## 0.8.0 — 2026-08-15
 
 > **Two numbers you have been reading are wrong in 0.7.0, and both are corrected here.**
