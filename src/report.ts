@@ -4,6 +4,7 @@
 // surface premium-model share as the lever indicator.
 
 import type { AuditResult } from './audit.js';
+import type { ConcurrencyProfile } from './concurrency.js';
 import type { ContextBucket, ContextKnee } from './contextKnee.js';
 import type { SessionFootprint } from './footprint.js';
 import type { RefinedHygiene } from './hygieneFootprint.js';
@@ -625,6 +626,12 @@ export function renderReport(r: AuditResult, opts: { rows?: number; delta?: Hist
   blank();
   out.push(...card('FLUENCY  ·  the habits behind the bill', fluencyRows, c.cyan));
 
+  // ── How many sessions ran at once (needs two sessions to be a question at all) ──
+  if (r.concurrency.sessionsCounted >= 2 && r.concurrency.wallMinutes > 0) {
+    blank();
+    out.push(...renderConcurrency(r.concurrency));
+  }
+
   // ── Context degradation knee (the number the live-guardrail statusline arms against) ──
   blank();
   out.push(...renderContextKnee(r.contextKnee));
@@ -768,6 +775,104 @@ export function renderContextKnee(knee: ContextKnee): string[] {
   }
   rows.push(c.dim(`fitted from ${knee.sessionsWithSignal} sessions carrying per-turn telemetry`));
   return card('CONTEXT DEGRADATION KNEE', rows, onset != null ? c.amber : c.emerald);
+}
+
+/**
+ * How many sessions ran at the same time, and what the overlap bought.
+ *
+ * The two totals are the whole section: `wallMinutes` is time you spent, `agentMinutes`
+ * is work delivered, and their gap is the only thing parallelism actually buys. The
+ * per-level table is printed because the SINGLE average hides the shape — solo is
+ * routinely the tallest bar while being a minority of the time, and a reader given only
+ * the mean reads it as "mostly alone".
+ *
+ * Two numbers are deliberately printed side by side rather than one being chosen:
+ * prompts per AGENT hour (does each session need less of you when there are more of
+ * them?) and prompts per WALL hour (what the day feels like). They move in opposite
+ * directions, and either alone tells half the story.
+ *
+ * LOCAL-ONLY today: every field is a count or a ratio, but it is not in the uploaded
+ * aggregate — putting it there is a schema-version decision, not a rendering one.
+ */
+export function renderConcurrency(cc: ConcurrencyProfile): string[] {
+  const hrs = (mins: number) => `${(mins / 60).toFixed(1)}h`;
+  const rows: string[] = [];
+
+  rows.push(
+    `${c.bold(lever(`${cc.meanConcurrent.toFixed(1)}×`))} average ` +
+      c.dim('— sessions live whenever anything was live'),
+  );
+  rows.push(
+    `${c.bold(hrs(cc.wallMinutes))} of your time carried ${c.bold(hrs(cc.agentMinutes))} of agent work ` +
+      (cc.minutesBought > 0 ? c.emerald(`(+${hrs(cc.minutesBought)})`) : ''),
+  );
+  rows.push(rule());
+
+  // Per-level shape. Bars are scaled to the busiest bucket, so the tallest is full.
+  const maxWall = Math.max(...cc.steering.map((b) => b.wallMinutes), 1e-9);
+  rows.push(c.dim(`${'live'.padEnd(6)}${padL('yours', 8)}${padL('agent', 9)}  ${'share'.padEnd(18)}${padL('/agent-hr', 10)}`));
+  for (const b of cc.steering) {
+    rows.push(
+      `${b.bucket.padEnd(6)}${padL(hrs(b.wallMinutes), 8)}${padL(hrs(b.agentMinutes), 9)}  ` +
+        `${lever(kneeBar(b.wallMinutes, maxWall, 13).padEnd(13))} ${padL(pct(b.wallMinutes / cc.wallMinutes), 4)}` +
+        `${padL(b.promptsPerAgentHour.toFixed(1), 10)}`,
+    );
+  }
+  rows.push(rule());
+
+  // Solo is the classic misreading — name whether it is a majority or merely the
+  // tallest bar, rather than leaving the reader to infer it from the mean.
+  const soloBiggest = cc.steering.length > 0 && cc.steering[0]!.wallMinutes === maxWall;
+  rows.push(
+    `solo ${lever(pct(cc.soloShare))} of your time · two or more ${lever(pct(cc.multiShare))}` +
+      (soloBiggest && cc.soloShare < 0.5 ? c.dim('  — the tallest bar, still a minority') : ''),
+  );
+  rows.push(
+    c.dim(
+      `inside a session it is busier: ${cc.sessionWeightedMean.toFixed(1)}× · ` +
+        `busiest minute ${cc.peakConcurrent} · median ${cc.medianConcurrent}`,
+    ),
+  );
+
+  // Steering: the finding is the DIRECTION, so state which one this run shows.
+  const lo = cc.steering[0];
+  const hi = cc.steering[cc.steering.length - 1];
+  if (lo && hi && lo !== hi && lo.promptsPerAgentHour > 0) {
+    const ratio = hi.promptsPerAgentHour / lo.promptsPerAgentHour;
+    const verdict =
+      ratio > 1.3
+        ? 'each session needs more of you as you add more'
+        : ratio < 0.7
+          ? 'each session needs less of you as you add more'
+          : 'flat: parallelism buys calendar time, not attention';
+    rows.push(
+      c.dim(
+        `steering ${lo.promptsPerAgentHour.toFixed(1)} → ${hi.promptsPerAgentHour.toFixed(1)} prompts ` +
+          `per agent-hour (${lo.bucket} → ${hi.bucket} live)`,
+      ),
+    );
+    rows.push(c.dim(`  ${verdict}`));
+    rows.push(
+      c.dim(
+        `out of you: ${lo.promptsPerWallHour.toFixed(1)} → ${c.bold(hi.promptsPerWallHour.toFixed(1))} ` +
+          `prompts per hour of YOUR time`,
+      ),
+    );
+  }
+
+  // The bridge is the only free parameter in the method. Printing the sweep is what
+  // lets a reader tell a finding from an artifact of one flattering threshold.
+  rows.push(
+    c.dim(
+      `bridge ${cc.sensitivity.map((s) => `${s.bridgeMinutes}m`).join('/')} → ` +
+        `${cc.sensitivity.map((s) => s.meanConcurrent.toFixed(1)).join(' / ')}× ` +
+        `(${Math.round(cc.bridgeMs / 60_000)}m used above)`,
+    ),
+  );
+  if (cc.sessionsUntimed > 0) {
+    rows.push(c.dim(`${cc.sessionsUntimed} session(s) carried no usable timestamp and are not counted`));
+  }
+  return card('CONCURRENCY  ·  how many ran at once, and what it bought', rows, c.cyan);
 }
 
 /**
