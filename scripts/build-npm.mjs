@@ -31,16 +31,29 @@ function run(cmd, args, opts = {}) {
   }
 }
 
+// Re-enter the SAME package manager that invoked us. `npm_execpath` is set by
+// npm/pnpm/yarn alike and points at that manager's own JS entry point.
+// Spawning a bare `pnpm` instead picks up whatever is on PATH, and under
+// corepack that trips pnpm's version-switch guard:
+//   "Corepack invoked pnpm with this version, and pnpm does not switch
+//    versions when running under corepack."
+// Observed for real while migrating this repo to pnpm.
+function pm(args) {
+  const execpath = process.env.npm_execpath;
+  if (execpath) run(process.execPath, [execpath, ...args]);
+  else run('pnpm', args);
+}
+
 mkdirSync(outDir, { recursive: true });
 
 // 1. Compile TS → dist/cli.js (esbuild bundles from there).
-run('npm', ['run', 'build']);
+pm(['run', 'build']);
 
 // 2. esbuild bundle → bundles/npm/cc-audit.mjs (inlines @clack/prompts + zod).
 //    esbuild passes through the #!/usr/bin/env node shebang from the entry file.
 //    --define bakes the version into the single file (src/version.ts) so the
 //    published bundle reports it without shipping or reading a package.json.
-run('npx', [
+pm(['exec',
   'esbuild', 'dist/cli.js',
   '--bundle', '--platform=node', '--format=esm', '--target=node18',
   `--define:__CC_AUDIT_VERSION__=${JSON.stringify(srcPkg.version)}`,

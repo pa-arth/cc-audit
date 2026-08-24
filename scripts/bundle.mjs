@@ -34,8 +34,21 @@ function run(cmd, args, opts = {}) {
   }
 }
 
+// Re-enter the SAME package manager that invoked us. `npm_execpath` is set by
+// npm/pnpm/yarn alike and points at that manager's own JS entry point.
+// Spawning a bare `pnpm` instead picks up whatever is on PATH, and under
+// corepack that trips pnpm's version-switch guard:
+//   "Corepack invoked pnpm with this version, and pnpm does not switch
+//    versions when running under corepack."
+// Observed for real while migrating this repo to pnpm.
+function pm(args) {
+  const execpath = process.env.npm_execpath;
+  if (execpath) run(process.execPath, [execpath, ...args]);
+  else run('pnpm', args);
+}
+
 // 1. Compile TS (the bundlers consume dist/cli.js).
-run('npm', ['run', 'build']);
+pm(['run', 'build']);
 
 // 2. Self-contained binaries via bun --compile.
 const bunPath = path.join(homedir(), '.bun/bin/bun');
@@ -52,7 +65,7 @@ for (const [target, name] of targets) {
 
 // 3. Node ESM fallback via esbuild.
 console.log('\nbundle: esbuild Node fallback (cc-audit.mjs)…');
-run('npx', [
+pm(['exec',
   'esbuild', 'dist/cli.js',
   '--bundle', '--platform=node', '--format=esm', '--target=node18',
   esbuildDefine,

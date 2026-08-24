@@ -17,3 +17,10 @@ bundles/
 
 # Local MCP server config (personal tooling, not project-wide)
 /.mcp.json
+
+# enforce pnpm — see the package.json preinstall guard
+package-lock.json
+yarn.lock
+
+# agent worktrees / local session state
+/.claude/
