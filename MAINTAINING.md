@@ -37,7 +37,7 @@ tables that silently mis-priced `claude-sonnet-5`/`claude-mythos-5` as Sonnet fa
   sibling backend checkout (probes `../promptster-backend/packages/config-cost/src/pricing.ts`;
   override with `--from <path>`), prepends the vendor header, and prints a diff summary
   (model keys added/removed). Idempotent: re-running against the same source is a no-op.
-  After a sync, review `git diff src/vendor/pricing.ts`, run `npm test`, and update the
+  After a sync, review `git diff src/vendor/pricing.ts`, run `pnpm test`, and update the
   offline pins in the drift test if models were added/removed.
 
 **Proper fix (follow-up):** publish `@promptster/config-cost` as a standalone npm package
@@ -102,7 +102,7 @@ Required repo secret: **`NPM_TOKEN`** — an npm automation token with publish r
 the `@promptster` scope.
 
 ```bash
-npm version patch          # bumps package.json + creates vX.Y.Z tag
+pnpm version patch         # bumps package.json + creates vX.Y.Z tag
 git push --follow-tags     # CI builds, tests, and publishes
 ```
 
@@ -112,7 +112,7 @@ manually via the Actions tab (workflow_dispatch → dry_run).
 Local equivalent (needs `npm login`):
 
 ```bash
-npm run build:npm
+pnpm run build:npm
 npm publish ./bundles/npm --access public   # the leading ./ matters
 ```
 
@@ -131,7 +131,7 @@ so a bun/release hiccup can't block publish. Release creation uses the automatic
 Cutting a release manually (needs `gh` + `bun`):
 
 ```bash
-npm run bundle
+pnpm run bundle
 ( cd bundles && sha256sum cc-audit-* cc-audit.mjs > SHA256SUMS.txt )
 gh release create vX.Y.Z --generate-notes bundles/cc-audit-* bundles/cc-audit.mjs bundles/SHA256SUMS.txt
 ```

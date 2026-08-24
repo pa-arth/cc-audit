@@ -8,8 +8,12 @@ name: Publish to npm
 #               @promptster scope (Settings → Secrets and variables → Actions).
 #
 # Cut a release:
-#   npm version patch    # bumps package.json + creates the vX.Y.Z tag
+#   pnpm version patch   # bumps package.json + creates the vX.Y.Z tag
 #   git push --follow-tags
+#
+# `npm publish` below stays npm on purpose: it publishes the generated,
+# dependency-free artifact in bundles/npm, and npm is what setup-node wires
+# registry-url + NODE_AUTH_TOKEN for. Only the repo's own installs are pnpm.
 on:
   push:
     tags:
@@ -29,22 +33,27 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Setup pnpm
+        # Version pinned by package.json `packageManager`.
+        uses: pnpm/action-setup@v4
+
       - uses: actions/setup-node@v4
         with:
           node-version: 20
           registry-url: 'https://registry.npmjs.org'
+          cache: pnpm
 
       - name: Install dependencies
-        run: npm ci
+        run: pnpm install --frozen-lockfile
 
       - name: Lint + typecheck + test
         run: |
-          npm run lint
-          npm run typecheck
-          npm test
+          pnpm run lint
+          pnpm run typecheck
+          pnpm test
 
       - name: Build npm artifact
-        run: npm run build:npm
+        run: pnpm run build:npm
 
       - name: Verify tag matches package version
         if: github.event_name == 'push'
@@ -82,7 +91,7 @@ jobs:
 
       - name: Build standalone binaries
         if: github.event_name == 'push'
-        run: npm run bundle
+        run: pnpm run bundle
 
       - name: Checksums
         if: github.event_name == 'push'

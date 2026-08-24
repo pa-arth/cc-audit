@@ -3,6 +3,7 @@
   "version": "0.9.0",
   "description": "Audit Claude Code (and other agent) usage from local transcripts: spend attribution, model right-sizing, and AI-fluency signals.",
   "license": "MIT",
+  "packageManager": "pnpm@10.12.1",
   "private": true,
   "type": "module",
   "main": "dist/index.js",
@@ -18,6 +19,7 @@
     }
   },
   "scripts": {
+    "preinstall": "node scripts/only-pnpm.mjs",
     "dev": "tsc -p tsconfig.json --watch --preserveWatchOutput",
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",

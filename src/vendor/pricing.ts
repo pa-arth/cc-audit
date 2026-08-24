@@ -346,13 +346,18 @@ export interface ComputeOpenAICostParams {
   outputTokens: number;
 }
 
-// Static OpenAI pricing table (terra/luna re-verified 2026-08-14; rest July 2026).
+// Static OpenAI pricing table (gpt-5.6/sol re-verified 2026-08-24; terra/luna
+// 2026-08-14; rest July 2026).
 // Source: https://openai.com/api/pricing/ and https://developers.openai.com/codex/pricing
 //
 // THIS TABLE IS A HAND-COPIED MIRROR of promptster-backend `packages/config-cost`,
 // and it has no subscriber to that repo — cc-audit deliberately does not depend on it.
-// So the mirror goes stale silently, and did: the backend corrected gpt-5.6-terra and
-// gpt-5.6-luna on 2026-07-31 and this copy kept the launch tiers for two more weeks.
+// So the mirror goes stale silently, and has now done so TWICE: the backend corrected
+// gpt-5.6-terra and gpt-5.6-luna on 2026-07-31 and this copy kept the launch tiers for
+// two more weeks; the backend corrected gpt-5.6 and gpt-5.6-sol on 2026-08-22 (#780,
+// d2357e89) and this copy kept the GPT-5.5 tier for two more days. Twice is a
+// mechanism, not an accident — the fix is the follow-up below (depend on the package),
+// not more care.
 // `pricingDrift.test.ts` is the only thing that notices, which is why a red run there
 // is not a test to relax. Its own instruction, from the commit that fixed the backend
 // side: find out who is right, do not update the expectation.
@@ -374,11 +379,21 @@ export interface ComputeOpenAICostParams {
 // Codex variants (e.g. gpt-5.2-codex) are priced identically to their base model.
 export const OPENAI_PRICING: Record<string, OpenAIModelPricing> = {
   // ── GPT-5.6 (GA 2026-07-09) ──
-  // Sol matches the GPT-5.5 tier. Terra and Luna were REPRICED after GA — the launch
-  // tiers were 2.5/15 and 1/6, and this table carried them until 2026-08-14. Do not
-  // "restore" them from a launch-day source; the numbers below are the current ones.
-  'gpt-5.6': { input: 5, cachedInput: 0.5, output: 30 },
-  'gpt-5.6-sol': { input: 5, cachedInput: 0.5, output: 30 },
+  // EVERY row here has been repriced since GA, none of them at GA. Terra and Luna fell
+  // from the launch tiers (2.5/15 and 1/6) and this table carried those until
+  // 2026-08-14. Sol then fell from the GPT-5.5 tier (5/0.5/30) when OpenAI repriced it
+  // on 2026-08-22, and this table carried THAT until 2026-08-24. Do not "restore" any
+  // of them from a launch-day source; the numbers below are the current ones.
+  //
+  // The Sol correction is the same lag as the Terra/Luna one, one model over: backend
+  // config-cost fixed it in promptster-backend#780 (d2357e89) on 2026-08-22, and this
+  // mirror has no subscriber to that repo, so it stayed 25% over on input and 50% over
+  // on output for two days. Confirmed against BOTH sources before editing — OpenAI's
+  // own pricing page (developers.openai.com/api/docs/pricing: Sol $4.00 / $0.40 /
+  // $20.00) and LiteLLM, which is what pricingDrift.test.ts reads. Upstream and this
+  // file now agree on all 29 OpenAI and all 16 Anthropic keys.
+  'gpt-5.6': { input: 4, cachedInput: 0.4, output: 20 },
+  'gpt-5.6-sol': { input: 4, cachedInput: 0.4, output: 20 },
   'gpt-5.6-terra': { input: 2, cachedInput: 0.2, output: 12 },
   'gpt-5.6-luna': { input: 0.2, cachedInput: 0.02, output: 1.2 },
   // ── GPT-5.5 ──
