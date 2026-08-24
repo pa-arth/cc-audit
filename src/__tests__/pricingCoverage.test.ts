@@ -83,7 +83,11 @@ describe('pricing table coverage', () => {
     // gpt-5-pro billed at gpt-5 rates was 12x under; gpt-5-nano was 25x over.
     expect(getOpenAIPricing('gpt-5-pro')!.input).toBe(15);
     expect(getOpenAIPricing('gpt-5-nano')!.input).toBe(0.05);
-    expect(getOpenAIPricing('gpt-5.6')!.input).toBe(5);
+    // 4, not gpt-5's 1.25. The literal tracks the current rate and moved once already
+    // (5 -> 4 on 2026-08-22); what this line is actually asserting is NON-INHERITANCE,
+    // and pricingPinned.test.ts is what pins the value itself.
+    expect(getOpenAIPricing('gpt-5.6')!.input).toBe(4);
+    expect(getOpenAIPricing('gpt-5.6')!.input).not.toBe(getOpenAIPricing('gpt-5')!.input);
     // A dated variant still resolves to its base model.
     expect(getOpenAIPricing('gpt-5.2-codex-2026-05-01')!.input).toBe(1.75);
     // An unknown id resolves to null rather than silently inheriting.

@@ -29,6 +29,21 @@ describe('OpenAI rates that have already regressed once', () => {
     expect(OPENAI_PRICING['gpt-5.6-luna']!.input).not.toBe(1);
   });
 
+  // Then it happened AGAIN, one model over, and the pin above could not see it because
+  // it names two keys rather than the family. OpenAI repriced gpt-5.6 / gpt-5.6-sol off
+  // the GPT-5.5 tier on 2026-08-22; promptster-backend corrected config-cost the same
+  // day (#780, d2357e89) and this mirror carried 5/0.5/30 until 2026-08-24 — 25% over on
+  // input, 50% over on output. Same mechanism as terra/luna: a hand-copied table with no
+  // subscriber to the repo it was copied from.
+  it('gpt-5.6 and gpt-5.6-sol hold the POST-repricing rates, not the GPT-5.5 tier', () => {
+    expect(OPENAI_PRICING['gpt-5.6']).toEqual({ input: 4, cachedInput: 0.4, output: 20 });
+    expect(OPENAI_PRICING['gpt-5.6-sol']).toEqual({ input: 4, cachedInput: 0.4, output: 20 });
+    // The GPT-5.5 tier they used to be pegged to, named so a diff that restores it —
+    // e.g. by re-deriving Sol's price from "Sol matches GPT-5.5" — is unmistakable.
+    expect(OPENAI_PRICING['gpt-5.6']!.input).not.toBe(OPENAI_PRICING['gpt-5.5']!.input);
+    expect(OPENAI_PRICING['gpt-5.6-sol']!.output).not.toBe(30);
+  });
+
   it('cached input stays 10% of input, except where the vendor says otherwise', () => {
     // The table header states this as an invariant. A repricing that breaks it is far
     // more likely a transcription slip than a real vendor change, so failing here makes
