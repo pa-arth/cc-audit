@@ -3,6 +3,60 @@
 Notable changes to `@promptster/cc-audit`. GitHub Releases carry the same notes
 (the publish workflow attaches binaries per `v*` tag — see MAINTAINING.md).
 
+## Unreleased
+
+> **A second rail, and a rate that was missing rather than wrong.** cc-audit can now read
+> Codex rollouts, and the OpenAI pricing table grew the cache-write axis it had been
+> missing since the GPT-5.6 GA.
+
+### Added
+
+- **Codex adapter** (`adapters/codex.ts`, `--codex`). Parses
+  `~/.codex/sessions/**/rollout-*.jsonl` into the same `Session`/`Span` model. Verified
+  against the whole local corpus: 25 rollouts, 2499 turns, and every token bucket matches an
+  independent walk of the logs exactly.
+
+  Two things the format makes easy to get wrong:
+
+  - **The token conventions are inverted.** `TurnUsage` is additive (Anthropic: `input`
+    excludes the cache buckets); Codex is subset (`input_tokens` is the total, with
+    `cached_input_tokens` / `cache_write_input_tokens` inside it). Reading it straight
+    through double-counts the biggest bucket in the file — cache reads are 303M of 313M
+    tokens locally.
+  - **`token_count` rows repeat.** Costs come from `last_token_usage` (per request), never a
+    difference of the cumulative `total_token_usage`, with an exact repeat of the previous
+    row suppressed. Repeats are not always adjacent — observed at gaps of 0 to 7 records,
+    one spanning a task boundary — so anything buffered in the gap belongs to the NEXT
+    request. With the suppression, all 25 rollouts reconcile to the token; without it, two
+    are over.
+
+  **Opt-in on purpose.** Codex encrypts reasoning, has no `Read` tool and no plan mode, so
+  `thinkingChars` / `reads` / `modes` come back empty — indistinguishable from "measured and
+  found absent". `Session.source` now exists so a signal can select its rail. `--codex`
+  writes no history snapshot, never transmits, and is refused with `--judge`/`--open`, whose
+  aggregate is labelled `claude_code` by schema.
+
+### Fixed
+
+- **OpenAI cache writes were billed at the plain input rate.** `pricing.ts` carried the
+  comment "no separate write bucket" and priced written tokens at `input`. True until the
+  GPT-5.6 GA (2026-07-09), when OpenAI added a write premium — so every 5.6 cache write was
+  **20% under** (sol: `cacheWrite` 5, `input` 4). The same premise understated the
+  compaction counterfactual's write cost, which biases the recommendation *toward*
+  compacting. Fixed by re-syncing `src/vendor/pricing.ts` from `@promptster/config-cost`,
+  which grew the `cacheWrite` axis on 2026-08-12; rates are otherwise unchanged (all 29
+  OpenAI and 16 Anthropic keys already agreed), and the re-sync also picks up upstream's
+  longest-key-first Anthropic lookup.
+
+  Nothing noticed this for six weeks because `pricingDrift` compares `input`/`cachedInput`/
+  `output` — the fields present on both sides — so a missing rate **axis** is invisible to it.
+  `pricingPinned` now asserts the axis as a rule rather than per-row, and the mirror's drift
+  history moved to `MAINTAINING.md` (a verbatim mirror deletes any note written into it).
+
+### Changed
+
+- `CLAUDE.md` said the package manager was npm; it has been pnpm since #34.
+
 ## 0.9.0 — 2026-08-18
 
 > **A third axis.** 0.8.0 could tell you what your sessions cost and how long they ran.

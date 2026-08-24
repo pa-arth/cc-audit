@@ -73,13 +73,26 @@ export function turnCostTariffs(
   }
   const o = model ? getOpenAIPricing(model) : null;
   if (o) {
-    // OpenAI auto-cache: cached input billed at cachedInput; no separate write bucket.
-    // No OpenAI model carries a dated introductory rate, so steady-state == billed.
+    // OpenAI auto-cache: cached input bills at `cachedInput`, written input at
+    // `cacheWrite`. No OpenAI model carries a dated introductory rate, so
+    // steady-state == billed.
+    //
+    // THIS USED TO SAY "no separate write bucket" and bill writes at `o.input`.
+    // That was true until the GPT-5.6 GA (2026-07-09), when OpenAI started charging
+    // a write premium; `cacheWrite` is 1.25x input on 5.6+ and EQUALS input below it,
+    // so the old line was exactly right on every pre-5.6 model and 20% under on 5.6+.
+    // The rate is per-model precisely so the cutover is not a version check here.
+    //
+    // `u` is the ADDITIVE five-bucket shape (see TurnUsage): `input` is the UNCACHED
+    // remainder, disjoint from cacheRead/cacheWrite. OpenAI's wire format is the
+    // opposite — `input_tokens` is the total and the cache buckets are subsets — so
+    // the Codex adapter subtracts them out. Do not add a subset clamp here; by this
+    // point the split has already happened.
     const usd =
       (u.input * o.input +
         u.output * o.output +
         u.cacheRead * o.cachedInput +
-        (u.cacheWrite5m + u.cacheWrite1h) * o.input) /
+        (u.cacheWrite5m + u.cacheWrite1h) * o.cacheWrite) /
       1_000_000;
     return { usd, priced: true, steadyStateUsd: usd };
   }
@@ -112,14 +125,18 @@ export function turnTokens(u: TurnUsage): number {
 /** Per-TOKEN cache-read and cache-write ($/token) rates for a model — the two prices the
  *  compact counterfactual turns on: carried context is cache-READ into every later turn,
  *  and the compacted summary is cache-WRITTEN once (Anthropic's 5-minute write bucket, the
- *  1.25× input rate). OpenAI has no separate cache write, so re-caching the compacted
- *  context is priced at its uncached input rate. Unknown model ⇒ the Sonnet-tier fallback,
- *  matching turnCostUsd. */
+ *  1.25× input rate). OpenAI bills its own write rate — `cacheWrite`, equal to input below
+ *  GPT-5.6 and 1.25x input from 5.6 on. Unknown model ⇒ the Sonnet-tier fallback, matching
+ *  turnCostUsd.
+ *
+ *  This used to read "OpenAI has no separate cache write" and price re-caching at the
+ *  uncached input rate. Understating the write side biases the counterfactual TOWARD
+ *  compacting, which is the direction that costs the reader money. */
 export function cacheRatesUsdPerToken(model: string | null): { cacheRead: number; cacheWrite: number } {
   const a = model ? getAnthropicPricing(model) : null;
   if (a) return { cacheRead: a.cacheRead / 1_000_000, cacheWrite: a.cacheWrite5min / 1_000_000 };
   const o = model ? getOpenAIPricing(model) : null;
-  if (o) return { cacheRead: o.cachedInput / 1_000_000, cacheWrite: o.input / 1_000_000 };
+  if (o) return { cacheRead: o.cachedInput / 1_000_000, cacheWrite: o.cacheWrite / 1_000_000 };
   return { cacheRead: FALLBACK.cacheRead / 1_000_000, cacheWrite: FALLBACK.cacheWrite5min / 1_000_000 };
 }
 

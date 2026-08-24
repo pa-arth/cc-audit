@@ -22,8 +22,8 @@ describe('OpenAI rates that have already regressed once', () => {
   // out with luna 5x over. Restoring the launch numbers from a launch-day source is the
   // specific regression this pins.
   it('gpt-5.6-terra and gpt-5.6-luna hold the POST-repricing rates', () => {
-    expect(OPENAI_PRICING['gpt-5.6-terra']).toEqual({ input: 2, cachedInput: 0.2, output: 12 });
-    expect(OPENAI_PRICING['gpt-5.6-luna']).toEqual({ input: 0.2, cachedInput: 0.02, output: 1.2 });
+    expect(OPENAI_PRICING['gpt-5.6-terra']).toEqual({ input: 2, cachedInput: 0.2, output: 12, cacheWrite: 2.5 });
+    expect(OPENAI_PRICING['gpt-5.6-luna']).toEqual({ input: 0.2, cachedInput: 0.02, output: 1.2, cacheWrite: 0.25 });
     // The launch tiers, named so a diff that reintroduces them is unmistakable.
     expect(OPENAI_PRICING['gpt-5.6-terra']!.input).not.toBe(2.5);
     expect(OPENAI_PRICING['gpt-5.6-luna']!.input).not.toBe(1);
@@ -36,12 +36,37 @@ describe('OpenAI rates that have already regressed once', () => {
   // input, 50% over on output. Same mechanism as terra/luna: a hand-copied table with no
   // subscriber to the repo it was copied from.
   it('gpt-5.6 and gpt-5.6-sol hold the POST-repricing rates, not the GPT-5.5 tier', () => {
-    expect(OPENAI_PRICING['gpt-5.6']).toEqual({ input: 4, cachedInput: 0.4, output: 20 });
-    expect(OPENAI_PRICING['gpt-5.6-sol']).toEqual({ input: 4, cachedInput: 0.4, output: 20 });
+    expect(OPENAI_PRICING['gpt-5.6']).toEqual({ input: 4, cachedInput: 0.4, output: 20, cacheWrite: 5 });
+    expect(OPENAI_PRICING['gpt-5.6-sol']).toEqual({ input: 4, cachedInput: 0.4, output: 20, cacheWrite: 5 });
     // The GPT-5.5 tier they used to be pegged to, named so a diff that restores it —
     // e.g. by re-deriving Sol's price from "Sol matches GPT-5.5" — is unmistakable.
     expect(OPENAI_PRICING['gpt-5.6']!.input).not.toBe(OPENAI_PRICING['gpt-5.5']!.input);
     expect(OPENAI_PRICING['gpt-5.6-sol']!.output).not.toBe(30);
+  });
+
+  // The cacheWrite AXIS, added to this table on the 2026-08-24 re-sync from config-cost
+  // (upstream added it 2026-08-12). It is pinned as a RULE rather than per-row because the
+  // failure it guards is structural: OpenAI introduced a cache-write premium at the GPT-5.6
+  // GA (2026-07-09), and a table with no field for it priced every 5.6 write at the plain
+  // input rate — 20% under. Note what could NOT have caught that: pricingDrift compares
+  // input / cachedInput / output, the fields present on both sides, so a missing rate AXIS
+  // is invisible to it however green it runs. The review that matters is "did the vendor add
+  // a new KIND of charge", not "did a number move".
+  //
+  // `cacheWrite` equal to input is NOT the same as free — a written token is an ordinary
+  // input token below 5.6, and setting it to 0 would make real input free on any row that
+  // reports a write count.
+  it('cacheWrite is 1.25x input on GPT-5.6+, and equal to input below it', () => {
+    for (const [model, p] of Object.entries(OPENAI_PRICING)) {
+      const premium = model.startsWith('gpt-5.6');
+      expect(p.cacheWrite, `${model} carries a cacheWrite rate`).toBeTypeOf('number');
+      expect(p.cacheWrite, `${model}: ${premium ? '5.6+ premium' : 'no write fee'}`).toBeCloseTo(
+        premium ? p.input * 1.25 : p.input,
+        6,
+      );
+      // Never 0. A rate meaning "no special price" must still bill.
+      expect(p.cacheWrite, `${model} cacheWrite must not be 0`).toBeGreaterThan(0);
+    }
   });
 
   it('cached input stays 10% of input, except where the vendor says otherwise', () => {

@@ -1,13 +1,15 @@
 // @promptster/cc-audit — trajectory-level audit of AI coding tool usage from
 // local transcripts: spend attribution, model right-sizing signals, AI-fluency.
-// Importable lib surface (the CLI lives in cli.ts). Claude Code adapter ships
-// first; the model is tool-agnostic so Codex/Cursor adapters drop in later.
+// Importable lib surface (the CLI lives in cli.ts). Claude Code and Codex adapters
+// ship; the model is tool-agnostic so a Cursor adapter drops in later.
 
 export type { Session, Span, AssistantTurn, TurnUsage } from './model.js';
 export { allTurns, concurrencyKey } from './model.js';
 
 export { loadClaudeCodeSessions, parseTranscript } from './adapters/claudeCode.js';
 export type { LoadOptions } from './adapters/claudeCode.js';
+export { loadCodexSessions, parseRollout, toTurnUsage } from './adapters/codex.js';
+export type { CodexLoadOptions } from './adapters/codex.js';
 
 export { turnCostUsd, turnTokens, isPremiumModel } from './pricing.js';
 export { attributeSpend } from './attribute.js';

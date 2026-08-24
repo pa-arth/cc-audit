@@ -112,6 +112,16 @@ export interface Session {
   /** Distinct permission/agent modes seen (e.g. 'plan') — fluency signal. */
   modes: string[];
   spans: Span[];
+  /** Which tool's transcript this came from. Absent means Claude Code — the only rail
+   *  that existed when the field was added, and the one every analysis was written
+   *  against. It exists because the rails do not observe the same things: Codex ships
+   *  reasoning encrypted (no `thinkingChars`), has no `Read` tool (no `reads`, so no
+   *  redundant-read rate) and no plan mode (no `modes`). Those fields come back as 0 /
+   *  [] on a Codex session, which is INDISTINGUISHABLE from "measured and found
+   *  absent" — so any signal built on them must select on this field rather than
+   *  averaging both rails together. Spend, tokens, tools and file ops are fully
+   *  observable on both and need no such care. */
+  source?: 'claude-code' | 'codex';
   /** The injected turn-1 prefix, MEASURED from the transcript's `attachment` rows rather
    *  than censused from disk. Optional: only the Claude Code adapter populates it, and
    *  hand-built Sessions in tests omit it — treat missing as "not measured", NEVER as

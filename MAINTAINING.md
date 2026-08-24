@@ -40,6 +40,51 @@ tables that silently mis-priced `claude-sonnet-5`/`claude-mythos-5` as Sonnet fa
   After a sync, review `git diff src/vendor/pricing.ts`, run `pnpm test`, and update the
   offline pins in the drift test if models were added/removed.
 
+### The drift history, and what it teaches
+
+This section holds what used to be commentary inside `src/vendor/pricing.ts`. It was moved
+here on the 2026-08-24 re-sync for a structural reason: the mirror is copied **verbatim**,
+so any note written into it is deleted by the next sync — and those notes were themselves
+what made the sync script refuse to run (`--force` was required to land the cache-write
+axis). Notes about the mirror belong beside the mirror, not inside it.
+
+The mirror has gone stale **three** times, and every one was the same mechanism — a
+hand-copied table has no subscriber to the repo it was copied from:
+
+1. **2026-07-31 → 2026-08-14, terra/luna.** The backend corrected `gpt-5.6-terra` and
+   `gpt-5.6-luna`; this copy kept the launch tiers for two more weeks. Published 0.7.0 went
+   out with luna 5x over.
+2. **2026-08-22 → 2026-08-24, gpt-5.6/sol.** OpenAI repriced them off the GPT-5.5 tier,
+   the backend fixed config-cost the same day (#780, `d2357e89`), and this copy carried
+   5/0.5/30 for two more days — 25% over on input, 50% over on output.
+3. **2026-07-09 → 2026-08-24, the cacheWrite AXIS.** The worst of the three, and invisible
+   to everything above. OpenAI added a cache-write premium at the GPT-5.6 GA; upstream grew
+   a `cacheWrite` field for it on 2026-08-12; this mirror had no such field, so
+   `pricing.ts` billed written tokens at the plain input rate — 20% under on every 5.6
+   write, for six weeks.
+
+**The lesson is #3, not #1 or #2.** `pricingDrift` compares `input` / `cachedInput` /
+`output`: the fields that exist on **both** sides. A missing rate **axis** is invisible to
+it however green it runs, and `pricingPinned` was pinning per-row objects that simply had no
+such key. So the review that matters is *"did the vendor add a new KIND of charge"*, not
+*"did a number move"*. `pricingPinned.test.ts` now asserts the axis as a rule
+(`cacheWrite === input * 1.25` on 5.6+, `=== input` below), which is the shape that fails
+when a fourth model family arrives with a fifth kind of rate.
+
+Two invariants that look like bugs and are not:
+
+- **`cachedInput === input` on `gpt-5-pro` / `gpt-5.2-pro`** — those tiers publish no cached
+  rate, and a discount is never applied before the vendor publishes it. Do NOT extend this
+  to other `*-pro` keys on the strength of the name: `gpt-5.4-pro` and `gpt-5.5-pro` DO
+  publish an ordinary 10% cached rate, and "correcting" them would over-bill every cached
+  token they read. The exception is a property of what the vendor PUBLISHES.
+- **`cacheWrite === input` below GPT-5.6** — a written token is an ordinary input token
+  there. Setting it to `0` would make real input free on any row reporting a write count.
+
+When the drift test goes red: **find out who is right, then fix the wrong side.** Do not
+update the expectation to match the code — that is the exact habit that lets a wrong rate
+ship.
+
 **Proper fix (follow-up):** publish `@promptster/config-cost` as a standalone npm package
 during pricing centralization, depend on it here, and delete `src/vendor/` + the script.
 
