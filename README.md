@@ -112,6 +112,7 @@ as a complete one.
 | --- | --- |
 | `--since-days N` | Only look at the last N days. |
 | `--root DIR` | Point at a transcript root other than `~/.claude/projects`. |
+| `--codex` | Also read Codex rollouts from `~/.codex/sessions`. Local-only: writes no history and never transmits (see below). |
 | `--rows N` | How many rows to show in the leaderboards. |
 | `--aggressiveness conservative\|balanced\|aggressive` | How eagerly to flag over-modeled tasks as cuts (default `balanced`). |
 | `--judge` | Hosted right-sizing — sends task *gists + metadata*, never code. |
@@ -131,6 +132,27 @@ cc-audit score   <file>    # score your labels vs. the judge (precision/recall)
 cc-audit fix               # turn recommendations into reviewable patches (never auto-applied)
 ```
 </details>
+
+### Codex sessions (`--codex`)
+
+Spend, tokens, models, tools and applied edits are measured on Codex exactly as they are on
+Claude Code. Three things are **not measurable** on that rail, and cc-audit reports them as
+absent rather than as zero:
+
+| Signal | Why not |
+| --- | --- |
+| reasoning length | Codex ships reasoning as `encrypted_content` — there is no plaintext to count. The token count is real and is already inside the cost. |
+| file reads / redundant reads | Codex has no `Read` tool; it reads through `exec`, so there is no path-level read event. |
+| plan-mode rate | Codex has no plan mode. |
+
+That is why the flag is opt-in: folded in silently, those empty fields would drag a
+Codex-heavy user's fluency signals down for a reason that is a property of the log format
+rather than of how they work. It also keeps your `~/.cc-audit` history comparable — adding a
+second rail moves every total at once.
+
+`--codex` writes no history snapshot, never transmits, and is refused alongside `--judge` /
+`--open`: the uploaded aggregate is labelled `claude_code` by schema and could not honestly
+describe a mixed corpus.
 
 ## What leaves your machine
 

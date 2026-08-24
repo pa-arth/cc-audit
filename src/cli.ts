@@ -32,6 +32,7 @@
 import { readFileSync, writeFileSync } from 'node:fs';
 import * as p from '@clack/prompts';
 import { loadClaudeCodeSessions } from './adapters/claudeCode.js';
+import { loadCodexSessions } from './adapters/codex.js';
 import { computeAndWriteKneeCache } from './kneeCache.js';
 import { runStatusline } from './statusline.js';
 import { runAudit } from './audit.js';
@@ -72,6 +73,8 @@ import { VERSION } from './version.js';
 interface Args {
   root?: string;
   sinceDays?: number;
+  /** Also ingest ~/.codex rollouts. OPT-IN — see loadSessionsOrExit. */
+  codex: boolean;
   json: boolean;
   judge: boolean;
   open: boolean;
@@ -93,10 +96,11 @@ function ordinal(n: number): string {
 }
 
 function parseArgs(argv: string[]): Args {
-  const args: Args = { json: false, judge: false, open: false, printPrompt: false, shareSessions: false, aggressiveness: 'balanced' };
+  const args: Args = { codex: false, json: false, judge: false, open: false, printPrompt: false, shareSessions: false, aggressiveness: 'balanced' };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]!;
     if (a === '--json') args.json = true;
+    else if (a === '--codex') args.codex = true;
     else if (a === '--print-prompt') args.printPrompt = true;
     else if (a === '--judge') args.judge = true;
     else if (a === '--open') args.open = true;
@@ -114,7 +118,7 @@ function parseArgs(argv: string[]): Args {
       process.stdout.write(
         'Usage:\n' +
           '  cc-audit [--since-days N] [--root DIR] [--rows N] [--json] [--judge] [--open]\n' +
-          '          [--share-sessions] [--aggressiveness conservative|balanced|aggressive]\n' +
+          '          [--codex] [--share-sessions] [--aggressiveness conservative|balanced|aggressive]\n' +
           '      Analyze ~/.claude transcripts locally. In a terminal, a bare run then asks\n' +
           '      two things, both default Yes:\n' +
           '        1. Run the analysis now on YOUR agent (claude -p / codex exec) — three\n' +
@@ -139,6 +143,16 @@ function parseArgs(argv: string[]): Args {
           '          plan-mode, trajectory — never gists, projects, or $) to the shared report.\n' +
           '      --judge/--open are never prompted for — the flag IS the consent.\n' +
           '      --aggressiveness gates which over-modeled tasks are recommended as cuts (default balanced).\n' +
+          '      --codex ALSO reads ~/.codex/sessions rollouts. Off by default: Codex cannot\n' +
+          '          report reasoning length (encrypted), file reads (no Read tool) or plan\n' +
+          '          mode (it has none), so those fluency signals would be diluted by\n' +
+          '          sessions that never could have scored on them. Spend, tokens, models,\n' +
+          '          tools and edits are fully measured on both. Mixing rails also breaks\n' +
+          '          comparability with your own ~/.cc-audit history, so turning this on\n' +
+          '          moves your numbers for a reason that is not a change in your habits.\n' +
+          '          Local-only: it writes no history snapshot and never transmits, and it is\n' +
+          '          refused alongside --judge/--open, because the uploaded aggregate is\n' +
+          '          labelled claude_code by schema and could not describe a mixed corpus.\n' +
           '  cc-audit skill [--print]\n' +
           '      Install the analysis skill to ~/.claude/skills/cc-audit/SKILL.md so your own\n' +
           '      agent can read `cc-audit --json` and write three improvement plans. The text\n' +
@@ -225,10 +239,44 @@ async function ensureLocalReadConsent(interactive: boolean): Promise<void> {
   writeConsent({ localRead: true });
 }
 
+/**
+ * Load the corpus. Claude Code always; Codex only under `--codex`.
+ *
+ * Codex is OPT-IN rather than automatic, for two reasons that are about honesty
+ * rather than caution:
+ *
+ *  1. The rails do not observe the same things. Codex encrypts reasoning, has no
+ *     `Read` tool and no plan mode, so `thinkingChars`/`reads`/`modes` come back
+ *     empty — and an empty measurement is indistinguishable from a measurement of
+ *     zero. Averaged in silently, a Codex-heavy user's plan-mode rate and
+ *     redundant-read rate fall because of what the format omits, and the report
+ *     would read that as a habit worth fixing.
+ *  2. It moves the totals. `~/.cc-audit` history and the `--open` corpus compare a
+ *     user against their own past runs; folding in a second rail shifts every
+ *     figure at once for a reason that is not a change in behaviour. A flag makes
+ *     that a decision with a date on it.
+ *
+ * `--root` retargets the CLAUDE CODE projects root only — Codex rollouts always come
+ * from `~/.codex/sessions`, since the two layouts are unrelated.
+ */
 function loadSessionsOrExit(args: Args, interactive: boolean) {
   const sessions = loadClaudeCodeSessions({ root: args.root, sinceDays: args.sinceDays });
+  if (args.codex) {
+    const codex = loadCodexSessions({ sinceDays: args.sinceDays });
+    if (codex.length > 0) {
+      // stderr, not stdout — `--json` must stay pure JSON.
+      process.stderr.write(
+        `cc-audit: +${codex.length} Codex session${codex.length === 1 ? '' : 's'} from ~/.codex/sessions. ` +
+          'Spend, tokens, models, tools and edits are measured; reasoning length, file reads and ' +
+          'plan mode are NOT observable on that rail and are absent rather than zero.\n',
+      );
+    }
+    sessions.push(...codex);
+  }
   if (sessions.length === 0) {
-    const msg = 'No Claude Code transcripts found under ~/.claude/projects.';
+    const msg = args.codex
+      ? 'No transcripts found under ~/.claude/projects or ~/.codex/sessions.'
+      : 'No Claude Code transcripts found under ~/.claude/projects.';
     if (interactive) p.cancel(msg);
     else process.stderr.write(`${msg}\n`);
     process.exit(1);
@@ -668,6 +716,21 @@ async function run(): Promise<void> {
   }
 
   const args = parseArgs(argv);
+  // --codex cannot ride the egress paths. `AggregateRecord.tool` is a frozen
+  // `z.literal('claude_code')`, so an aggregate built from a two-rail corpus would be
+  // uploaded under a label that is simply false — and `--judge`/`--open` are flag-as-consent
+  // paths with no prompt in which to explain the discrepancy. Refused rather than silently
+  // dropping the Codex half, which would make the shared report differ from the one on
+  // screen. Lifting this is a schema-version change coordinated with the backend, not a
+  // local edit.
+  if (args.codex && (args.open || args.judge)) {
+    process.stderr.write(
+      'cc-audit: --codex cannot be combined with --judge or --open. The uploaded aggregate is\n' +
+        '  labelled claude_code by schema and cannot describe a mixed Claude Code + Codex corpus.\n' +
+        '  Run --codex on its own for the local report, or drop --codex to share.\n',
+    );
+    process.exit(2);
+  }
   const interactive = isInteractive(args.json);
   await ensureLocalReadConsent(interactive);
   const sessions = interactive
@@ -678,7 +741,11 @@ async function run(): Promise<void> {
 
   // Run history (LOCAL, best-effort, silent — --json stdout purity holds by construction).
   // An alternate --root corpus would pollute the ~/.cc-audit timeline, so history is off there.
-  const historyOn = !args.root;
+  // `--codex` is excluded for the same reason, plus a sharper one: the aggregate's
+  // `tool` field is a frozen `z.literal('claude_code')`, so a two-rail corpus cannot be
+  // LABELLED honestly in the current schema version. A snapshot written under that label
+  // would also break the run-to-run comparison the timeline exists for.
+  const historyOn = !args.root && !args.codex;
   const key = windowKey(args.sinceDays);
   const today = new Date().toISOString().slice(0, 10);
   const baseline = historyOn ? readBaseline(key, today) : undefined;
@@ -689,7 +756,7 @@ async function run(): Promise<void> {
   // would pollute the timeline, and in the fixture case the corpus too); the gists are
   // still built so the disclosure can state a truthful count.
   const captureGists = () => buildFootprints(sessions);
-  const mayTransmit = !args.root;
+  const mayTransmit = !args.root && !args.codex;
 
   // Inspectable instructions: print the EXACT prompt that would be sent to their agent
   // and invoke nothing. Required by the spec, and it is the cheapest way for a

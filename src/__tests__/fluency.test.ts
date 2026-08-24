@@ -25,8 +25,8 @@ function span(turns: AssistantTurn[], over: Partial<Span> = {}): Span {
     ...over,
   };
 }
-function session(spans: Span[], modes: string[] = []): Session {
-  return { sessionId: 's', project: 'p', cwd: null, mtime: 0, modes, spans };
+function session(spans: Span[], modes: string[] = [], source?: Session['source']): Session {
+  return { sessionId: 's', project: 'p', cwd: null, mtime: 0, modes, spans, source };
 }
 
 // n turns on the given model, as one main-chain span.
@@ -60,6 +60,17 @@ describe('planModeRate anti-gaming', () => {
     const realNoPlan = session([work(6)]);
     const f = computeFluency([realPlan, realNoPlan]);
     expect(f.planModeRate).toBe(0.5); // 1 of 2 substantive sessions planned
+  });
+
+  it('excludes Codex sessions from both sides — plan mode is unobservable there, not zero', () => {
+    // A substantive Claude Code session that planned, plus several substantive
+    // Codex sessions (modes: [] always — the adapter cannot see plan mode). Old
+    // behavior: 1/4 = 0.25, understating the rate by diluting the denominator with
+    // sessions that were never measured. New: Codex sessions excluded → 1/1 = 1.
+    const ccPlan = session([work(6)], ['plan']);
+    const codexSessions = Array.from({ length: 3 }, () => session([work(6)], [], 'codex'));
+    const f = computeFluency([ccPlan, ...codexSessions]);
+    expect(f.planModeRate).toBe(1);
   });
 });
 

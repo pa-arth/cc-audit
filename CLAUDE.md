@@ -12,26 +12,51 @@ a code path that phones home on a bare/non-interactive run.
 ## Commands
 
 ```bash
-npm run build      # tsc → dist/  (run before node dist/cli.js or the bundlers)
-npm run typecheck  # tsc --noEmit
-npm run lint       # oxlint
-npm test           # vitest run   (npm run test:watch for watch)
-npm run dev        # tsc --watch
+pnpm build      # tsc → dist/  (run before node dist/cli.js or the bundlers)
+pnpm typecheck  # tsc --noEmit
+pnpm lint       # oxlint
+pnpm test       # vitest run   (pnpm test:watch for watch)
+pnpm dev        # tsc --watch
 
-npm run build:npm  # → bundles/npm/  (esbuild single file + clean package.json; the npm artifact)
-npm run bundle     # → bundles/      (bun --compile binaries + esbuild .mjs fallback; needs bun)
+pnpm build:npm  # → bundles/npm/  (esbuild single file + clean package.json; the npm artifact)
+pnpm bundle     # → bundles/      (bun --compile binaries + esbuild .mjs fallback; needs bun)
 ```
 
-Package manager is **npm** (`package-lock.json` is the committed lockfile; `npm ci` in CI).
-Always `npm run build` before running `node dist/cli.js`.
+Package manager is **pnpm**, pinned by the `packageManager` field (`pnpm-lock.yaml` is the
+committed lockfile; `pnpm install --frozen-lockfile` in CI). `scripts/only-pnpm.mjs` runs on
+`preinstall` and REJECTS npm/yarn — this package is not published with that guard active
+elsewhere, but here it is the rule. Use `corepack pnpm` if a stale pnpm shadows the pinned
+one on PATH. Always `pnpm build` before running `node dist/cli.js`.
 
 ## Architecture
 
 `src/cli.ts` is the entry point and the only place that orchestrates I/O, prompts, and the
 consent flow. Everything it calls is a pure-ish module:
 
-- **Ingest** — `adapters/claudeCode.ts` reads `~/.claude/projects` → `model.ts` `Session`/`Span`
-  types. The model is tool-agnostic so Codex/Cursor adapters can drop in later.
+- **Ingest** — `adapters/claudeCode.ts` reads `~/.claude/projects` and
+  `adapters/codex.ts` reads `~/.codex/sessions` → `model.ts` `Session`/`Span` types. The
+  model is tool-agnostic so a Cursor adapter can drop in later.
+
+  **Codex is opt-in behind `--codex`, and that is a correctness choice, not caution.** The
+  rails do not observe the same things: Codex ships reasoning as `encrypted_content` (no
+  `thinkingChars`), has no `Read` tool (no `reads`, so no redundant-read rate) and no plan
+  mode. Those fields come back 0/`[]`, which is indistinguishable from "measured and found
+  absent" — averaged in silently, a Codex-heavy user's fluency signals fall because of what
+  the FORMAT omits. `Session.source` exists so a signal can select its rail instead.
+  Spend, tokens, models, tools and file ops are fully measured on both.
+
+  `--codex` also writes no history snapshot, never transmits, and is REFUSED alongside
+  `--judge`/`--open`: `AggregateRecord.tool` is a frozen `z.literal('claude_code')`, so a
+  two-rail corpus cannot be labelled honestly at the current schema version.
+
+  **The two rails invert the token conventions.** `TurnUsage` is ADDITIVE (Anthropic:
+  `input` excludes the cache buckets). Codex is SUBSET (`input_tokens` is the total,
+  `cached_input_tokens`/`cache_write_input_tokens` are inside it), so `toTurnUsage`
+  subtracts them back out. Reading Codex's `input_tokens` straight through double-counts
+  the largest bucket in the file — cacheRead is 303M of 313M tokens on the local corpus.
+  Its other trap is `token_count`: use `last_token_usage` (per request), never a difference
+  of `total_token_usage`, and suppress a row that exactly repeats the previous one. That
+  suppression is what makes all 25 local rollouts reconcile to the token.
 - **Analyze (local, deterministic)** — `attribute.ts` (spend by model/command), `pricing.ts` +
   `vendor/` (cost tables), `fluency.ts` / `alwaysOn.ts` / `conditionalContext.ts` (fluency
   signals), `audit.ts` (ties it together into an `AuditResult`), `aggregate.ts` (the
@@ -119,9 +144,13 @@ anyone in. `--root DIR` never transmits (it would pollute both local history and
 - **Theme/color** (`theme.ts`) is the only module that knows ANSI. Color auto-disables when
   not a TTY, under `NO_COLOR`, or in tests — so report assertions match plain text. Use the
   `c.*` helpers; don't emit escapes elsewhere.
-- **Vendored pricing** (`src/vendor/`) is a hand-copied mirror of `@promptster/config-cost`
-  with no drift guard. When Anthropic/OpenAI pricing changes, update here AND upstream. See
-  `MAINTAINING.md`.
+- **Vendored pricing** (`src/vendor/`) is a hand-copied mirror of `@promptster/config-cost`.
+  Mirrored VERBATIM — never hand-edit it; `scripts/sync-pricing.mjs` re-copies from a backend
+  checkout and refuses to overwrite a modified mirror. Two guards watch it: `pricingDrift`
+  (vs LiteLLM, needs network, degrades to pass) and `pricingPinned` (offline, deterministic).
+  Neither can see a missing rate AXIS — that hole cost six weeks of 20%-under GPT-5.6 cache
+  writes. `MAINTAINING.md` has the full drift history and the two invariants that look like
+  bugs and are not.
 - **Version** (`src/version.ts`) — `VERSION` is injected at bundle time via esbuild/bun
   `--define:__CC_AUDIT_VERSION__` (both build scripts read it from `package.json`). The raw
   `tsc` dev build has no define, so it falls back to reading `package.json`. If you add a
