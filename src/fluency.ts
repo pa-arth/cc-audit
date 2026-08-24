@@ -210,7 +210,11 @@ export function computeFluency(sessions: Session[]): FluencySignals {
       0,
     );
     const isSubstantive = ownTurns >= SUBSTANTIVE_MIN_TURNS;
-    if (isSubstantive) {
+    // Plan mode is unobservable on Codex (`modes` comes back `[]` — absent, not
+    // zero; see `Session.source`). Averaging that in would understate the rate for
+    // anyone running `--codex`, so Codex sessions are excluded from BOTH sides of
+    // the ratio rather than counted as "didn't plan".
+    if (isSubstantive && session.source !== 'codex') {
       substantiveSessions += 1;
       if (session.modes.some((m) => PLAN_MODE_VALUES.has(m))) planSessions += 1;
     }
