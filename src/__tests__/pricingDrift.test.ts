@@ -142,11 +142,11 @@ describe('pricing drift vs LiteLLM (network; degrades to pass offline)', () => {
 describe('vendored table covers current models (offline)', () => {
   it('prices claude-sonnet-5 and claude-mythos-5 (non-fallback)', () => {
     expect(getAnthropicPricing('claude-sonnet-5')).toEqual({
-      input: 3,
-      output: 15,
-      cacheRead: 0.3,
-      cacheWrite5min: 3.75,
-      cacheWrite1hr: 6,
+      input: 2,
+      output: 10,
+      cacheRead: 0.2,
+      cacheWrite5min: 2.5,
+      cacheWrite1hr: 4,
     });
     expect(getAnthropicPricing('claude-mythos-5')).toEqual({
       input: 10,
@@ -157,21 +157,27 @@ describe('vendored table covers current models (offline)', () => {
     });
   });
 
-  it('applies Sonnet 5 introductory pricing before the Sept 2026 cutoff', () => {
-    const intro = getAnthropicPricing('claude-sonnet-5', new Date(Date.UTC(2026, 6, 2)));
-    expect(intro).toEqual({
-      input: 2,
-      output: 10,
-      cacheRead: 0.2,
-      cacheWrite5min: 2.5,
-      cacheWrite1hr: 4,
-    });
-    // At/after the cutoff — and with no timestamp — steady-state rates apply.
-    expect(getAnthropicPricing('claude-sonnet-5', new Date(Date.UTC(2026, 8, 1)))?.input).toBe(3);
-    expect(getAnthropicPricing('claude-sonnet-5')?.input).toBe(3);
-    // Intro override also resolves through the vendor prefix, like the base lookup.
+  // Anthropic cancelled the announced 2026-09-01 step-up to $3/$15; $2/$10 is the
+  // standard rate. One rate on both sides of the retired cutoff, with or without a
+  // timestamp, and through the vendor prefix.
+  it('prices Sonnet 5 at one rate across the retired Sept 2026 cutoff', () => {
+    const july = getAnthropicPricing('claude-sonnet-5', new Date(Date.UTC(2026, 6, 2)));
+    expect(july?.input).toBe(2);
+    expect(getAnthropicPricing('claude-sonnet-5', new Date(Date.UTC(2026, 8, 1)))).toEqual(july);
+    expect(getAnthropicPricing('claude-sonnet-5')).toEqual(july);
     expect(
-      getAnthropicPricing('anthropic/claude-sonnet-5', new Date(Date.UTC(2026, 6, 2)))?.input,
-    ).toBe(2);
+      getAnthropicPricing('anthropic/claude-sonnet-5', new Date(Date.UTC(2026, 6, 2))),
+    ).toEqual(july);
+  });
+
+  it('prices the 2026-09 models (non-fallback)', () => {
+    expect(getAnthropicPricing('claude-opus-5-5')).toEqual({
+      input: 4,
+      output: 20,
+      cacheRead: 0.2,
+      cacheWrite5min: 5,
+      cacheWrite1hr: 8,
+    });
+    expect(getAnthropicPricing('claude-fable-5-1')?.cacheRead).toBe(0.25);
   });
 });

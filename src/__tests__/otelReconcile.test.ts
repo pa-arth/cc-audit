@@ -88,9 +88,7 @@ function loadWire(): WireReq[] {
 const loadTranscript = (): TranscriptReq[] =>
   fixture('otel-transcript-tokens.jsonl').map((l) => JSON.parse(l) as TranscriptReq);
 
-// Any instant at/after the cutover resolves the steady-state row; one inside the
-// window resolves the introductory row. Fixed dates, so this stays deterministic
-// after the window closes.
+// Either side of the retired 2026-09-01 Sonnet 5 cutoff. Fixed dates, deterministic.
 const STEADY = Date.UTC(2026, 8, 1);
 const IN_WINDOW = Date.UTC(2026, 6, 26);
 
@@ -139,13 +137,22 @@ describe('the transcript loses no tokens — including streamed and subagent tur
   });
 });
 
-describe('our pricing reproduces Claude Code’s own cost_usd', () => {
-  it('exactly, per request, at the steady-state tariff', () => {
+// Claude Code 2.1.220 priced Sonnet 5 at $3/$15 — the step-up Anthropic announced
+// for 2026-09-01 and then cancelled. Every Sonnet 5 rate scales by exactly 1.5 between
+// the two, so their figure is still an exact external check of our ARITHMETIC: it must
+// equal ours × 1.5, to 1e-9, per request. Any token or tier error breaks that.
+const CLAUDE_CODE_TARIFF_RATIO = 1.5;
+
+describe('our pricing reproduces Claude Code’s own cost_usd, up to its stale tariff', () => {
+  it('exactly, per request', () => {
     for (const w of wire) {
       const ours = turnCostTariffs(w.model, usage(byId.get(w.requestId)!), STEADY);
       // To the cent is not enough: a tariff error hides inside a cent on a small
       // request. Agreement is to 1e-9 — exact in floating point.
-      expect(ours.usd, `cost mismatch on ${w.requestId}`).toBeCloseTo(w.costUsd, 9);
+      expect(ours.usd * CLAUDE_CODE_TARIFF_RATIO, `cost mismatch on ${w.requestId}`).toBeCloseTo(
+        w.costUsd,
+        9,
+      );
     }
   });
 
@@ -155,20 +162,16 @@ describe('our pricing reproduces Claude Code’s own cost_usd', () => {
       (n, w) => n + turnCostTariffs(w.model, usage(byId.get(w.requestId)!), STEADY).usd,
       0,
     );
-    expect(ours).toBeCloseTo(theirs, 9);
+    expect(ours * CLAUDE_CODE_TARIFF_RATIO).toBeCloseTo(theirs, 9);
   });
 
-  it('and shows Claude Code is NOT applying the Sonnet 5 introductory rate', () => {
-    // The reported "cc-audit runs 40% below /cost" defect, in one assertion. Their
-    // figure is exactly 1.5x an introductory-rate recomputation of the same tokens,
-    // which is the intro:steady ratio — so the divergence is entirely tariff choice,
-    // not a token or arithmetic error. See pricingSonnet5Tariff.test.ts.
-    const theirs = wire.reduce((n, w) => n + w.costUsd, 0);
-    const intro = wire.reduce(
-      (n, w) => n + turnCostTariffs(w.model, usage(byId.get(w.requestId)!), IN_WINDOW).usd,
-      0,
-    );
-    expect(theirs / intro).toBeCloseTo(1.5, 9);
+  it('and our rate does not depend on which side of the retired cutoff a turn falls', () => {
+    const at = (ts: number) =>
+      wire.reduce(
+        (n, w) => n + turnCostTariffs(w.model, usage(byId.get(w.requestId)!), ts).usd,
+        0,
+      );
+    expect(at(IN_WINDOW)).toBe(at(STEADY));
   });
 });
 
