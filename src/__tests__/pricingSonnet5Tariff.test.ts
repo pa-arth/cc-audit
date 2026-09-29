@@ -4,33 +4,23 @@ import { attributeSpend } from '../attribute.js';
 import { computeWeeklySpend } from '../temporal.js';
 import type { AssistantTurn, Session, Span, TurnUsage } from '../model.js';
 
-// Tariff pins for claude-sonnet-5, whose price changes ON A DATE.
+// Tariff pins for claude-sonnet-5 — ONE rate, at every timestamp.
 //
-// WHY THIS FILE EXISTS. cc-audit v0.5.2 was reported as "40% below Claude Code's own
-// cost figure". It is not. Measured on two scripted Sonnet 5 sessions (four transcript
-// files, 2 main + 2 subagent), the token totals pinned below price to:
+// HISTORY. Sonnet 5 launched at $2/$10 "introductory" with a step-up to $3/$15
+// announced for 2026-09-01, and this file used to pin that flip. ANTHROPIC CANCELLED
+// THE STEP-UP: $2/$10 is now the standard price (platform.claude.com pricing,
+// re-read 2026-09-22). The upstream table dropped the dated override on 2026-09-01.
 //
-//     introductory rate ($2/$10)   $0.49971950   ← cc-audit, to 7 decimal places
-//     steady-state rate ($3/$15)   $0.74957925
-//     Claude Code's total_cost_usd $0.83613360
+// cc-audit v0.5.2 was reported as "40% below Claude Code's own cost figure". It still
+// is, and that is still Claude Code's error: its 2.1.220 client priced Sonnet 5 at
+// $3/$15 (see otelReconcile.test.ts), which Anthropic never billed.
 //
-// The 1.5x is exactly the intro:steady ratio, so Claude Code's figure prices Sonnet 5
-// at the steady-state sticker and has not picked up the introductory window. Three
-// independent sources say the intro rate is the one Anthropic bills through
-// 2026-08-31: the published rate card, the LiteLLM DB that `ccusage` reads (asserted
-// live by pricingDrift.test.ts, which compares the TIME-AWARE rate), and our own
-// vendored table. Claude Code is the lone dissenter, so we do not follow it — see the
-// SPEND card's introductory-rate disclosure, which names both figures instead.
-//
-// A SEPARATE, UNFIXED DEFECT lives in the residual: $0.74957925 is still 10.35% under
-// Claude Code's $0.83613360 at the SAME rates, and one of those sessions reads 2933
-// output tokens off the transcript against 3845 on Claude Code's OTel wire — a
-// 912-token gap on output alone, after the v0.5.2 per-field max-merge. That is a
-// token-side bug, not a pricing one, and is deliberately not addressed here. Nothing
-// in this file should be read as pinning the totals as CORRECT — only as pinning which
-// TARIFF is applied to whatever tokens the reader hands in.
+// A SEPARATE, UNFIXED DEFECT lives in the residual: on the original corpus the
+// $3/$15 recomputation was still 10.35% under Claude Code's figure, from a 912-token
+// output gap on one session. That is a token-side bug, not a pricing one. Nothing in
+// this file pins the totals as CORRECT — only which TARIFF applies.
 
-/** Token totals measured across the four transcripts described above. */
+/** Token totals measured across four Sonnet 5 transcripts (2 main + 2 subagent). */
 const MEASURED: TurnUsage = {
   input: 90,
   output: 3736,
@@ -39,64 +29,42 @@ const MEASURED: TurnUsage = {
   cacheWrite1h: 55_675,
 };
 
-// Exact, not rounded: every rate is a terminating decimal, so both figures are exact
-// rationals. (The bug report quotes $0.7495793 — that is the second figure rounded to
-// 7dp, which is why the pin below carries the extra digit.)
-const INTRO_USD = 0.4997195; //     90*2 + 3736*10 + 657985*0.2 + 43153*2.5  + 55675*4
-const STEADY_USD = 0.74957925; //   90*3 + 3736*15 + 657985*0.3 + 43153*3.75 + 55675*6
+// Exact: every rate is a terminating decimal.
+const SONNET5_USD = 0.4997195; //   90*2 + 3736*10 + 657985*0.2 + 43153*2.5  + 55675*4
+const SONNET46_USD = 0.74957925; // 90*3 + 3736*15 + 657985*0.3 + 43153*3.75 + 55675*6
 
-// The published window: introductory pricing applies THROUGH 2026-08-31, so the first
-// instant of steady-state pricing is 2026-09-01T00:00:00Z.
+// Either side of the retired cutoff.
 const LAST_INTRO_MS = Date.UTC(2026, 7, 31, 23, 59, 59, 999);
 const FIRST_STEADY_MS = Date.UTC(2026, 8, 1, 0, 0, 0, 0);
 
-describe('claude-sonnet-5 dated tariff (pins the rate, not the tokens)', () => {
-  it('prices the measured corpus at the introductory rate inside the window', () => {
-    const { usd, priced } = turnCostUsd('claude-sonnet-5', MEASURED, LAST_INTRO_MS);
-    expect(priced).toBe(true);
-    expect(usd).toBeCloseTo(INTRO_USD, 9);
+describe('claude-sonnet-5 tariff (pins the rate, not the tokens)', () => {
+  it('prices the measured corpus at $2/$10 on both sides of the retired cutoff', () => {
+    for (const ts of [LAST_INTRO_MS, FIRST_STEADY_MS]) {
+      const { usd, priced } = turnCostUsd('claude-sonnet-5', MEASURED, ts);
+      expect(priced).toBe(true);
+      expect(usd).toBeCloseTo(SONNET5_USD, 9);
+    }
   });
 
-  it('prices the measured corpus at the steady-state rate from 2026-09-01', () => {
-    const { usd, priced } = turnCostUsd('claude-sonnet-5', MEASURED, FIRST_STEADY_MS);
-    expect(priced).toBe(true);
-    expect(usd).toBeCloseTo(STEADY_USD, 9);
+  it('prices at the same rate when no timestamp is supplied', () => {
+    expect(turnCostUsd('claude-sonnet-5', MEASURED).usd).toBeCloseTo(SONNET5_USD, 9);
   });
 
-  it('flips tariff across the cutover on a single millisecond', () => {
-    const before = turnCostUsd('claude-sonnet-5', MEASURED, LAST_INTRO_MS).usd;
-    const after = turnCostUsd('claude-sonnet-5', MEASURED, FIRST_STEADY_MS).usd;
-    expect(after / before).toBeCloseTo(1.5, 12);
-    // FIRST_STEADY_MS is one ms after LAST_INTRO_MS — the boundary is exact, not fuzzy.
-    expect(FIRST_STEADY_MS - LAST_INTRO_MS).toBe(1);
-  });
-
-  it('falls back to the steady-state rate when no timestamp is supplied', () => {
-    // An omitted timestamp must never be read as "now". A caller that forgets it gets
-    // the forward-looking rate, which is the safe direction (over-, not under-bill).
-    expect(turnCostUsd('claude-sonnet-5', MEASURED).usd).toBeCloseTo(STEADY_USD, 9);
-  });
-
-  it('reports both tariffs, and marks them equal when no intro rate applies', () => {
-    const inWindow = turnCostTariffs('claude-sonnet-5', MEASURED, LAST_INTRO_MS);
-    expect(inWindow.usd).toBeCloseTo(INTRO_USD, 9);
-    expect(inWindow.steadyStateUsd).toBeCloseTo(STEADY_USD, 9);
-
-    // A model with no dated window: the two figures must be identical, which is what
-    // keeps the report's disclosure silent for everyone else.
+  it('reports equal tariffs, and does not collapse into Sonnet 4.6', () => {
+    const t = turnCostTariffs('claude-sonnet-5', MEASURED, LAST_INTRO_MS);
+    expect(t.steadyStateUsd).toBe(t.usd);
+    // Sonnet 4.6 really is $3/$15. The retired Sonnet 5 row was identical to it; they
+    // must now differ.
     const flat = turnCostTariffs('claude-sonnet-4-6', MEASURED, LAST_INTRO_MS);
     expect(flat.steadyStateUsd).toBe(flat.usd);
-    // ...and Sonnet 4.6's flat rate equals Sonnet 5's POST-cutover rate, which is the
-    // arithmetic check that the intro override is not leaking across table keys.
-    expect(flat.usd).toBeCloseTo(STEADY_USD, 9);
+    expect(flat.usd).toBeCloseTo(SONNET46_USD, 9);
   });
 
-  it('does not sweep a dated Sonnet 5 variant out of the introductory window', () => {
-    // A date-suffixed id resolves to the "claude-sonnet-5" table key and must inherit
-    // the intro rate with it.
-    expect(
-      turnCostUsd('claude-sonnet-5-20260901', MEASURED, LAST_INTRO_MS).usd,
-    ).toBeCloseTo(INTRO_USD, 9);
+  it('prices a dated Sonnet 5 variant like its base key', () => {
+    expect(turnCostUsd('claude-sonnet-5-20260901', MEASURED, LAST_INTRO_MS).usd).toBeCloseTo(
+      SONNET5_USD,
+      9,
+    );
   });
 });
 
@@ -137,38 +105,23 @@ const session = (ts: number, model?: string): Session => ({
   spans: [span(ts, model)],
 });
 
-describe('introductory rate is surfaced, and applied consistently across the card', () => {
-  it('attributeSpend reports the intro spend alongside its steady-state twin', () => {
-    const s = attributeSpend([session(LAST_INTRO_MS)]);
-    expect(s.totalUsd).toBeCloseTo(INTRO_USD, 9);
-    expect(s.introPricedModels).toHaveLength(1);
-    const [m] = s.introPricedModels;
-    expect(m!.model).toBe('claude-sonnet-5');
-    expect(m!.costUsd).toBeCloseTo(INTRO_USD, 9);
-    expect(m!.steadyStateCostUsd).toBeCloseTo(STEADY_USD, 9);
-    expect(m!.turns).toBe(1);
-  });
-
-  it('leaves introPricedModels empty when no turn is inside a window', () => {
-    // Same corpus, one ms later. Nothing to disclose, so the report block vanishes —
-    // this is what makes the disclosure self-retiring rather than date-maintained.
-    const s = attributeSpend([session(FIRST_STEADY_MS)]);
-    expect(s.totalUsd).toBeCloseTo(STEADY_USD, 9);
-    expect(s.introPricedModels).toEqual([]);
-    // A model that never had an intro rate is likewise absent.
-    expect(attributeSpend([session(LAST_INTRO_MS, 'claude-sonnet-4-6')]).introPricedModels).toEqual(
-      [],
-    );
+describe('no intro disclosure, and one tariff across the card', () => {
+  it('attributeSpend discloses no intro-priced model on either side of the cutoff', () => {
+    for (const ts of [LAST_INTRO_MS, FIRST_STEADY_MS]) {
+      const s = attributeSpend([session(ts)]);
+      expect(s.totalUsd).toBeCloseTo(SONNET5_USD, 9);
+      expect(s.introPricedModels).toEqual([]);
+    }
   });
 
   it('weekly buckets use the same tariff as the SPEND headline', () => {
-    // Regression: computeWeeklySpend called turnCostUsd WITHOUT the turn timestamp, so
-    // the weekly run-rate row priced Sonnet 5 at $3/$15 while the "actual" line above it
-    // priced the same turns at $2/$10 — two figures 1.5x apart in the same card.
+    // Regression: computeWeeklySpend once called turnCostUsd WITHOUT the turn
+    // timestamp, so the weekly row and the headline could price the same turns
+    // differently. Kept so a future dated rate can't reopen it.
     const now = LAST_INTRO_MS;
     const sessions = [session(now - 2 * 24 * 60 * 60 * 1000)];
     const weekly = computeWeeklySpend(sessions, now).reduce((n, b) => n + b.usd, 0);
     expect(weekly).toBeCloseTo(attributeSpend(sessions).totalUsd, 9);
-    expect(weekly).toBeCloseTo(INTRO_USD, 9);
+    expect(weekly).toBeCloseTo(SONNET5_USD, 9);
   });
 });

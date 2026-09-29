@@ -58,7 +58,7 @@ describe('OpenAI rates that have already regressed once', () => {
   // reports a write count.
   it('cacheWrite is 1.25x input on GPT-5.6+, and equal to input below it', () => {
     for (const [model, p] of Object.entries(OPENAI_PRICING)) {
-      const premium = model.startsWith('gpt-5.6');
+      const premium = model.startsWith('gpt-5.6') || model.startsWith('gpt-6');
       expect(p.cacheWrite, `${model} carries a cacheWrite rate`).toBeTypeOf('number');
       expect(p.cacheWrite, `${model}: ${premium ? '5.6+ premium' : 'no write fee'}`).toBeCloseTo(
         premium ? p.input * 1.25 : p.input,

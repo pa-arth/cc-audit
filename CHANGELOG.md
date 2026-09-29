@@ -38,6 +38,13 @@ Notable changes to `@promptster/cc-audit`. GitHub Releases carry the same notes
 
 ### Fixed
 
+- **Pricing re-synced from config-cost (2026-09-22).** The vendored table was last
+  synced 2026-08-24 and was still charging **Sonnet 5 at $3/$15 from 2026-09-01**.
+  Anthropic cancelled that price rise, so every Sonnet 5 figure since then read 1.5x
+  high. The sync also adds Claude Opus 5.5 ($4/$20, cache read $0.20), Fable 5.1 and
+  Mythos 5.1, GPT-6 Astra/Sol/Luna and GPT-5.6 Cyber. Before this, turns on any of
+  those models fell back to another model's rate.
+
 - **OpenAI cache writes were billed at the plain input rate.** `pricing.ts` carried the
   comment "no separate write bucket" and priced written tokens at `input`. True until the
   GPT-5.6 GA (2026-07-09), when OpenAI added a write premium — so every 5.6 cache write was

@@ -1,6 +1,6 @@
 // ---------------------------------------------------------------------------
 // VENDORED from @promptster/config-cost (packages/config-cost/src/pricing.ts).
-// Last synced: 2026-08-24 via scripts/sync-pricing.mjs — do not hand-edit; re-run
+// Last synced: 2026-09-22 via scripts/sync-pricing.mjs — do not hand-edit; re-run
 // the script against a fresh backend checkout instead.
 //
 // ⚠️  DRIFT RISK — this is a hand-copied mirror, not a package dependency.
@@ -23,7 +23,7 @@
 // sha256 below is of the upstream body as copied; sync-pricing.mjs re-checks it and
 // refuses to overwrite a hand-edited mirror. Fix pricing bugs UPSTREAM in config-cost
 // and re-sync — an edit made only here is reverted by the next sync.
-// Upstream-body-sha256: dde35d97446808671ebe321af4b8a439982b0eb82bfe9e54665bf23d03bbe479
+// Upstream-body-sha256: c013b7443d816b6ce26115d8b6fed1c067ecf16b98852dc01738f4cc39a11a04
 // ---------------------------------------------------------------------------
 
 // ── Anthropic ──────────────────────────────────────────────────────────────
@@ -52,6 +52,16 @@ export interface ComputeCostParams {
 // Source: https://docs.anthropic.com/en/docs/about-claude/pricing
 // Cache multipliers: read = 0.1x input, 5min write = 1.25x input, 1hr write = 2x input.
 export const ANTHROPIC_PRICING: Record<string, AnthropicModelPricing> = {
+  // ── Claude Fable 5.1 (verified September 2026) ──
+  // Same input/output and cache-write rates as Fable 5. Anthropic reduced the
+  // cache-read multiplier for 5.1 from 0.1x to 0.025x input ($0.25/MTok).
+  'claude-fable-5-1': {
+    input: 10,
+    output: 50,
+    cacheRead: 0.25,
+    cacheWrite5min: 12.5,
+    cacheWrite1hr: 20,
+  },
   // ── Claude Fable 5 (verified June 2026: $10/$50, standard cache multipliers) ──
   'claude-fable-5': {
     input: 10,
@@ -67,6 +77,24 @@ export const ANTHROPIC_PRICING: Record<string, AnthropicModelPricing> = {
     cacheRead: 1,
     cacheWrite5min: 12.5,
     cacheWrite1hr: 20,
+  },
+  'claude-mythos-5-1': {
+    input: 10,
+    output: 50,
+    cacheRead: 0.25,
+    cacheWrite5min: 12.5,
+    cacheWrite1hr: 20,
+  },
+  // ── Claude Opus 5.5 (verified September 2026) ──
+  // Cheaper than Opus 5 on every axis: $4/$20, standard write multipliers
+  // (1.25x / 2x), but cache reads at 0.05x input ($0.20/MTok), not 0.1x.
+  // Fast mode is $8/$40 — same unpriceable-flag caveat as Opus 5 below.
+  'claude-opus-5-5': {
+    input: 4,
+    output: 20,
+    cacheRead: 0.2,
+    cacheWrite5min: 5,
+    cacheWrite1hr: 8,
   },
   // ── Claude Opus 5 (verified July 2026: $5/$25, standard cache multipliers —
   // same rates as the 4.x Opus line). NOTE: Opus 5 (and 4.8) support a "fast
@@ -97,14 +125,27 @@ export const ANTHROPIC_PRICING: Record<string, AnthropicModelPricing> = {
     cacheWrite5min: 6.25,
     cacheWrite1hr: 10,
   },
-  // ── Claude Sonnet 5 (steady-state rates; intro pricing is handled by the
-  // dated INTRO_PRICING override below) ──
+  // ── Claude Sonnet 5 — $2/$10, ONE rate, no step-up ──
+  //
+  // #200 (2026-06-30) entered $3/$15 here as a forward-dated "steady state", on
+  // the announced plan that Sonnet 5's $2/$10 introductory rate would step up on
+  // 2026-09-01. THE STEP-UP DID NOT HAPPEN. Re-checked 2026-09-01, the first day
+  // the projection was load-bearing: Anthropic's pricing table still publishes
+  // Sonnet 5 at $2 / $10 per MTok, and LiteLLM agrees. The dated INTRO_PRICING
+  // override that used to carry $2/$10 is gone with it — there is no longer a
+  // cutoff to be on either side of.
+  //
+  // This is why `litellm-drift` is a NETWORK test and not a snapshot: the
+  // divergence appeared the moment the projected rate went live, not when it was
+  // written.
   'claude-sonnet-5': {
-    input: 3,
-    output: 15,
-    cacheRead: 0.3,
-    cacheWrite5min: 3.75,
-    cacheWrite1hr: 6,
+    input: 2,
+    output: 10,
+    // Standard Anthropic cache multipliers off input, same as every other entry:
+    // read 0.1x, 5-min write 1.25x, 1-hour write 2x.
+    cacheRead: 0.2,
+    cacheWrite5min: 2.5,
+    cacheWrite1hr: 4,
   },
   // ── Claude 4.6 ──
   'claude-opus-4-6': {
@@ -192,13 +233,15 @@ const SONNET_FALLBACK = ANTHROPIC_PRICING['claude-sonnet-4-6']!;
 // by the turn's timestamp — a flat table entry would reprice old usage at the new
 // rate. `until` is the first instant the steady-state (base-table) rate applies.
 // After the cutoff these entries go inert and can be removed.
-const INTRO_PRICING: Array<{ model: string; until: number; rates: AnthropicModelPricing }> = [
-  {
-    model: 'claude-sonnet-5',
-    until: Date.UTC(2026, 8, 1), // Sept 1 2026 00:00 UTC (month is 0-indexed: 8 = September)
-    rates: { input: 2, output: 10, cacheRead: 0.2, cacheWrite5min: 2.5, cacheWrite1hr: 4 },
-  },
-];
+//
+// EMPTY, deliberately, and the machinery is kept. Its only entry was Sonnet 5's
+// $2/$10 through 2026-08-31, added by #200 against an announced step-up to
+// $3/$15 that never landed. With the base row corrected to $2/$10 the override
+// became an exact duplicate of the row it overrode — a no-op asserting a cutoff
+// that does not exist — so it is removed rather than left to read as if Sonnet 5
+// were priced two ways. The lookup below still threads a turn timestamp, so the
+// next genuinely dated rate is a one-entry edit and not a re-plumbing.
+const INTRO_PRICING: Array<{ model: string; until: number; rates: AnthropicModelPricing }> = [];
 
 /**
  * Look up static Anthropic pricing for a model ID.
@@ -519,6 +562,15 @@ export interface ComputeOpenAICostParams {
 // stray cached-token count can never under-bill them — the discount has to be
 // published before we apply it.
 export const OPENAI_PRICING: Record<string, OpenAIModelPricing> = {
+  // ── GPT-6 Astra (verified September 2026) ──
+  // Standard short-context API rate. Requests above 272k input tokens use
+  // separate long-context multipliers that this flat table cannot represent.
+  'gpt-6-astra': { input: 10, cachedInput: 1, output: 50, cacheWrite: 12.5 },
+  // Sol and Luna verified 2026-09-22, same short-context caveat as Astra.
+  'gpt-6-sol': { input: 2, cachedInput: 0.2, output: 10, cacheWrite: 2.5 },
+  'gpt-6-luna': { input: 0.1, cachedInput: 0.01, output: 0.5, cacheWrite: 0.125 },
+  // ── GPT-5.6 Cyber (verified 2026-09-22; no long-context tier published) ──
+  'gpt-5.6-cyber': { input: 12.5, cachedInput: 1.25, output: 75, cacheWrite: 15.625 },
   // ── GPT-5.6 (GA 2026-07-09) ──
   // Sol matches the GPT-5.5 tier. Terra and Luna were REPRICED after GA and the
   // rows below are the post-repricing rates, cross-checked against LiteLLM by
@@ -698,14 +750,19 @@ export function computeOpenAICost(params: ComputeOpenAICostParams): number {
 // no other rail and appear in neither table, so 82% of the live external org's
 // Cursor turns price at nothing. THAT is the gap this closes.
 //
-// ⚠ ONE FORWARD-DATED DIVERGENCE, recorded because it is not visible today.
-// `claude-sonnet-5` agrees ($2/$10) only because `INTRO_PRICING` overrides the
-// base row until 2026-09-01. Cursor's page shows $2 with no expiry. If Cursor
-// does not follow Anthropic's step to $3/$15, one canonical key has to return
-// two different rates depending on who billed it — and `INTRO_PRICING` matches
-// on the RESOLVED key, so that is not a value to update, it is a lookup needing
-// a second axis. Re-check the page after 2026-09-01; do not pre-build the axis
-// on a guess.
+// ✅ THE FORWARD-DATED DIVERGENCE RESOLVED ITSELF — no second axis needed.
+// This note used to warn that `claude-sonnet-5` agreed with Cursor's page at
+// $2/$10 only because `INTRO_PRICING` overrode the base row until 2026-09-01,
+// and that if Cursor did not follow Anthropic's step to $3/$15 the one canonical
+// key would have to return two rates depending on who billed it. It said:
+// re-check the page after 2026-09-01, do not pre-build the axis on a guess.
+//
+// Re-checked 2026-09-01. NOBODY stepped: Anthropic's own pricing table still
+// publishes Sonnet 5 at $2/$10, which is what Cursor's page said all along and
+// what LiteLLM has been asserting against us. The guess that needed the axis was
+// ours, not Cursor's — the base row was corrected to $2/$10 and the override
+// deleted. One key, one rate, both rails agree. Not pre-building the axis was
+// the right call.
 //
 // PROVENANCE, and how much weight it carries: these rates are read off Cursor's
 // published pricing page, dated above. That is the billing contract and the only
@@ -758,13 +815,17 @@ export interface CursorModelPricing {
  * `-fast` is a REAL price tier, not decoration: it is 2x input and cache-read
  * across the pool, 2x output on Grok 4.6 and Composer 2.5, and 3x output on Grok
  * 4.5. That asymmetry is why each tier is its own row and why
- * {@link getCursorPricing} has no prefix arm — a `-fast` id falling back to its
+ * {@link getCursorPricing} resolves only documented effort/speed aliases — a `-fast` id falling back to its
  * base key would under-bill by 2-3x, which is the mispricing #528 removed on the
  * OpenAI side arriving through a different door.
  */
 export const CURSOR_PRICING: Record<string, CursorModelPricing> = {
   // Grok (xAI, resold by Cursor). Priced at CURSOR's rates, not xAI's list —
   // the customer's bill comes from Cursor.
+  // Grok 4.7 added 2026-09-22. Its "500k" context tier ($4/$1/$12, fast
+  // $6/$1.5/$18) is not rowed: no observed id to key it on.
+  'grok-4.7': { input: 2, cacheRead: 0.5, output: 6 },
+  'grok-4.7-fast': { input: 4, cacheRead: 1, output: 12 },
   'grok-4.6': { input: 2, cacheRead: 0.5, output: 6 },
   'grok-4.6-fast': { input: 4, cacheRead: 1, output: 12 },
   'grok-4.5': { input: 2, cacheRead: 0.5, output: 6 },
@@ -784,15 +845,13 @@ export const CURSOR_PRICING: Record<string, CursorModelPricing> = {
  *   grok-4-6-0805-row17-48300032-fp4-effort-high   122
  *   grok-4-6-0808-row24-52297728-fp4-effort-high    93
  *   grok-4-6-fp4-effort-high                        85
- *   cursor-grok-4.6-high                            28
- *   cursor-grok-4.6-high-fast                       47
- *   cursor-grok-4.5-high-fast                       16
  *   grok-4-6-0809-row26-54198272-fp4-effort-high    21
  *
- * `row17` / `48300032` are a build checkpoint, `fp4` a quantization, and
- * `effort-high` a reasoning tier. Cursor publishes a rate for NONE of them, and
- * on this rail a tier suffix is worth 2-3x, so mapping them to the family rate
- * would be a guess with a two-fold error bar rather than a price.
+ * `row17` / `48300032` are a build checkpoint and `fp4` a quantization. Cursor
+ * publishes a rate for none of those internal builds. Public `cursor-grok-*`
+ * ids are different: Cursor documents effort as an independent control and
+ * publishes one Standard and one Fast price, so those exact alias shapes are
+ * resolved below without interpreting an internal build string.
  *
  * The point of recognising them anyway is the ACTION a coverage alert names.
  * `no_rate_table` tells the reader "add the row", which is the wrong fix and the
@@ -814,9 +873,9 @@ export function isCursorFamily(model: string): boolean {
 /**
  * Look up Cursor-pool pricing for a model id.
  *
- * EXACT MATCH ONLY, after stripping a `vendor/` prefix. No date arm, no affix
- * arm — see {@link CURSOR_PRICING} for why a prefix match is unsafe on this rail
- * specifically. An unrecognised tier falls through to null and is reported by
+ * Exact table match first, then documented Cursor Grok effort/speed aliases.
+ * There is no general prefix or build-string arm — see {@link CURSOR_PRICING}
+ * for why a prefix match is unsafe on this rail specifically. An unrecognised tier falls through to null and is reported by
  * {@link isCursorFamily} as a variant we refuse to guess at, which is the
  * honest answer and the one a human can act on.
  *
@@ -828,5 +887,7 @@ export function getCursorPricing(model: string): CursorModelPricing | null {
   if (CURSOR_PRICING[model]) return CURSOR_PRICING[model];
   const stripped = model.replace(/^[^/]+\//, '');
   if (stripped !== model && CURSOR_PRICING[stripped]) return CURSOR_PRICING[stripped];
+  const alias = /^(?:cursor-)?(grok-4\.[567])-(?:low|medium|high|xhigh)(-fast)?$/.exec(stripped);
+  if (alias) return CURSOR_PRICING[`${alias[1]}${alias[2] ?? ''}`] ?? null;
   return null;
 }
