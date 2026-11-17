@@ -1,11 +1,12 @@
 name: CI
 
-# Lint, typecheck, test, and build on every push to main and every PR.
-# The publish workflow re-runs the same gate on tag pushes; this catches
-# breakage before it ever reaches a release.
+# Lint, typecheck, test, and build on every PR. No `push: main` run: the PR
+# run already checked the change, and publish.yml re-runs the same gate on the
+# `v*` tag before it publishes, so nothing reads a run on main. The PR run
+# tests the PR merged onto main as it was then; to check main itself (after
+# two PRs land back to back, or a direct push), run this by hand
+# (workflow_dispatch).
 on:
-  push:
-    branches: [main]
   pull_request:
   workflow_dispatch:
 
